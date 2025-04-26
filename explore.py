@@ -23,15 +23,16 @@ def lfm(l=199,sr=4,bw=4e6):
 
     #2*om*199/1e6 = bw
     om=bw*1e6/199/2.0
-    
+    # positive to negative LFM
     return(n.array(n.exp(1j*2*n.pi*(tidx*bw/2-om*tidx**2.0)),dtype=n.complex64))
     
 
 def readsanya(f):
 
     code=lfm()
-    plt.specgram(code,NFFT=64,Fs=4e6,noverlap=16)
-    plt.show()
+    if False:
+        plt.specgram(code,NFFT=64,Fs=4e6,noverlap=16)
+        plt.show()
     
     if False:
         plt.plot(code.real)
@@ -60,8 +61,6 @@ def readsanya(f):
  #   plt.show()
     print("az %1.2f (deg) el %1.2f (deg) tp %1.2f (us) tipp %1.2f (us) r0 %1.2f (km) r1 %1.2f (km) sr %1.2f (MHz) bw %1.2f (MHz)"%(az,el,t_p,t_ipp,r0,r1,sr,bw))
 
-    
-    
     #There are three variables in each mat file.
     #1. para: The experimental configuration parameters. Maybe, you only need the para([ 7 8 10 12 13 14 15 16]) . There are the azimuth (degree),
     #elevation (degree), pulse width of linear frequency modulation (us), IPP (us), gate start (km), gate end (km), sampling rate(MHz),
@@ -70,12 +69,11 @@ def readsanya(f):
     #3. data_raw: The raw IQ data with dimensions [time, sampling points at range].
     #Range=para(13):0.15/para(15):para(13)+(size(data_raw,2)-1)*0.15/para(15).
 
-    
     #The site geographic information in the WGS84 :
     #lat0  = [18.3492  ; 19.5281  ; 19.5982  ];     % Lat.  of Sanya, Danzhou, Wenchang
     #lon0 = [109.6222; 109.1322; 110.7908];     % Lon. of Sanya, Danzhou, Wenchang
     #alt0  = [0.05        ; 0.0999    ;  0.0249   ];     % Alt.   of Sanya, Danzhou, Wenchang
-
+    
     h.close()
     z=n.array(zz["real"]+zz["imag"]*1j,dtype=n.complex64)
     ranges=r0+3e8*n.arange(len(z))/(1e6*sr)/2/1e3
@@ -108,9 +106,13 @@ def readsanya(f):
         raw=n.array(raw)
 
         plt.pcolormesh(times,ranges,n.abs(echoes.T))
-        plt.show()
-        plt.pcolormesh(times,n.arange(echoes.shape[1]),n.abs(raw.T))
-        plt.show()
+        #
+        plt.title("%02d-%02d-%02d %02d-%02d-%1.2f"%(tm[0,0],tm[1,0],tm[2,0],tm[3,0],tm[4,0],tm[5,0],tm[6,0]))
+        plt.savefig("sanya%02d-%02d-%02d %02d-%02d-%1.2f.png"%(tm[0,0],tm[1,0],tm[2,0],tm[3,0],tm[4,0],tm[5,0],tm[6,0]))
+        plt.close()
+#        plt.show()
+#        plt.pcolormesh(times,n.arange(echoes.shape[1]),n.abs(raw.T))
+ #       plt.show()
 
 
 dirnames=["/data1/SANYA/Juha/20240422/Sanya",
