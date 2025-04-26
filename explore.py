@@ -82,10 +82,16 @@ def readsanya(f):
     L = n.conj(n.fft.fft(code,4096))
     echoes=[]
     raw=[]
+    dts=[]
     for i in range(z.shape[1]):
         zd[:,i]=n.convolve(z[:,i],n.conj(code),mode="same")#n.fft.ifft(n.fft.fft(z[:,i],4096)*L)[0:zd.shape[0]]
         noise=n.median(n.abs(zd[:,i]))
         if n.max(n.abs(zd[:,i]))/noise > 10:
+            base_dt = n.datetime64(f'{int((tm[0,i]+2000)):04d}-{int(tm[1,i]):02d}-{int(tm[2,i]):02d}T{int(tm[3,i]):02d}:{int(tm[4,i]):02d}')
+            dt=base_dt + n.timedelta64(int(n.floor(tm[5,i])),"s")+n.timedelta64(int(n.round(1e9*(tm[5,i]-int(n.floor(tm[5,i]))))),"ns")
+            print(tm[0,i])
+            print(dt)
+            dts.append(dt)
             echoes.append(zd[:,i])
             raw.append(z[:,i])
   #          plt.specgram(z[:,i],NFFT=64,Fs=4e6,noverlap=16)
@@ -105,10 +111,10 @@ def readsanya(f):
         echoes=n.array(echoes)
         raw=n.array(raw)
 
-        plt.pcolormesh(times,ranges,n.abs(echoes.T))
+        plt.pcolormesh(dts,ranges,n.abs(echoes.T))
         #
-        plt.title("%02d-%02d-%02d %02d-%02d-%1.2f"%(tm[0,0],tm[1,0],tm[2,0],tm[3,0],tm[4,0],tm[5,0],tm[6,0]))
-        plt.savefig("sanya%02d-%02d-%02d %02d-%02d-%1.2f.png"%(tm[0,0],tm[1,0],tm[2,0],tm[3,0],tm[4,0],tm[5,0],tm[6,0]))
+        plt.title(dts[0])
+        plt.savefig("sanya%02d-%02d-%02d %02d-%02d-%1.2f.png"%(tm[0,0],tm[1,0],tm[2,0],tm[3,0],tm[4,0],tm[5,0]))
         plt.close()
 #        plt.show()
 #        plt.pcolormesh(times,n.arange(echoes.shape[1]),n.abs(raw.T))
