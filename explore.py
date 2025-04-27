@@ -92,7 +92,7 @@ def readsanya(f,site="sanya"):
     for i in range(z.shape[1]):
         zd[:,i]=n.convolve(z[:,i],n.conj(code),mode="same")#n.fft.ifft(n.fft.fft(z[:,i],4096)*L)[0:zd.shape[0]]
         noise=n.median(n.abs(zd[:,i]))
-        if n.max(n.abs(zd[:,i]))/noise > 10:
+        if n.max(n.abs(zd[:,i]))/noise > 6:
             rgmax=n.argmax(n.abs(zd[:,i]))
 #            print(rgmax)
             # if more than 10 ipps since last detection
