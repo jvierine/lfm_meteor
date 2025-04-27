@@ -124,14 +124,16 @@ def readsanya(f,site="sanya"):
                     #
                     plt.title(dt0)
                     plt.tight_layout()
-                    plt.savefig("%s-%02d-%02d-%02d %02d-%02d-%1.2f.png"%(site,tm[0,0],tm[1,0],tm[2,0],tm[3,0],tm[4,0],tm[5,0]))
+                    plt.savefig("%s-%1.3f.png"%(site,deltaf[0]))
                     plt.close()
-                    ho=h5py.File("%s-%02d-%02d-%02d %02d-%02d-%1.2f.h5"%(site,tm[0,0],tm[1,0],tm[2,0],tm[3,0],tm[4,0],tm[5,0]),"w")
+                    ho=h5py.File("%s-%1.3f.h5"%(site,deltaf[0]),"w")
                     ho["echoes"]=echoes
                     ho["raw"]=raw
                     ho["times_ns"]=delta
                     ho["r0"]=r0
                     ho["site"]=site
+                    ho["az"]=az
+                    ho["el"]=el
                     ho.close()
                 # make new event
                 echoes=[]
