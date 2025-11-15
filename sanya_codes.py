@@ -11,6 +11,29 @@ p_san=jcoord.geodetic2ecef(lat0[0], lon0[0], alt0[0]*1e3)
 p_dan=jcoord.geodetic2ecef(lat0[1], lon0[1], alt0[1]*1e3)
 p_wen=jcoord.geodetic2ecef(lat0[2], lon0[2], alt0[2]*1e3)
 
+def save_sanya_waveform_file(code,fname="sanya.bin",plot=True):
+    """
+        waveform in "code" has to be 30 MHz sample-rate
+        16-bit integer I
+        16-bit integer Q
+        sampler-rate 30 MHz
+        2^16 samples data length
+        amplitude = 2^15 - 1
+    """
+    I=n.zeros(2**16,dtype=n.int16)
+    Q=n.zeros(2**16,dtype=n.int16)
+    I[0:len(code)]=n.floor(n.real(code)*(2**15-1))
+    Q[0:len(code)]=n.floor(n.imag(code)*(2**15-1))
+    if plot:
+        plt.plot(I)
+        plt.plot(Q)
+        plt.show()
+    # first store I
+    f=open(fname,"wb")
+    I.tofile(f)
+    Q.tofile(f)
+    f.close()
+    print("wrote %s"%(fname))
 
 def lfm(l=199,sr=4,bw=4e6):
     tidx=n.arange(l*sr)/(sr*1e6)
@@ -25,7 +48,7 @@ def lfm(l=199,sr=4,bw=4e6):
     om = bw / (2.0*(l/1e6))
 
     #2*om*199/1e6 = bw
-    om=bw*1e6/199/2.0
+    om=bw*1e6/l/2.0
     # positive to negative LFM
     return(n.array(n.exp(1j*2*n.pi*(tidx*bw/2-om*tidx**2.0)),dtype=n.complex64))
 
@@ -48,14 +71,50 @@ def range_doppler_ambiguity(code,dops=n.linspace(-100e3,100e3,num=300),ranges=10
     S=S/n.max(S)
     dB=10.0*n.log10(S)
     mdb=n.max(dB)
-    plt.pcolormesh(dops/1e3,rgs,dB,vmin=mdb-2,vmax=mdb)
-    plt.title("Range-Doppler ambiguity function\n N=199 samples sr=4 MHz B=4 MHz radar_freq=440 MHz")
-    plt.colorbar()
+    plt.pcolormesh(dops/1e3,rgs,dB,vmin=mdb-6,vmax=mdb)
+    plt.title("Range-Doppler ambiguity function")#\n N=199 samples sr=4 MHz B=4 MHz radar_freq=440 MHz")
+    cb=plt.colorbar()
+    cb.set_label("dB")
     plt.xlabel("Doppler (km/s)")
     plt.ylabel("Range (m)")    
     plt.show()
 
 if __name__ == "__main__":
-    code=lfm()
-    range_doppler_ambiguity(code )
-    
+    code1=lfm(l=200,sr=30)
+    range_doppler_ambiguity(code1, sr=30e6, dops=n.linspace(-100e3,100e3,num=300) )
+
+
+    code1=lfm(l=100,sr=30)
+    #code1=lfm(l=100)
+    code2=n.concatenate((code1,n.conj(code1[::-1])))
+    # save 4 MHz up-down chirp
+    save_sanya_waveform_file(code2,fname="up_down_lfm_4MHz.bin")
+    tvec=1e6*n.arange(len(code2))/30e6
+
+    plt.plot(tvec,code2.real*(2**15-1))
+    plt.plot(tvec,code2.imag*(2**15-1))
+    plt.plot(tvec,n.abs(code2*(2**15-1)))
+
+    plt.xlabel("Time ($\mu$s)")
+    plt.title("4 MHz Up-Down LFM Chirp")
+    plt.show()
+    range_doppler_ambiguity(code2, sr=30e6, dops=n.linspace(-100e3,100e3,num=300) )
+
+    code1=lfm(l=100,sr=30,bw=16e6)
+    code2=n.concatenate((code1,n.conj(code1[::-1])))
+    # save 16 MHz up-down chirp
+    save_sanya_waveform_file(code2,fname="up_down_lfm_16MHz.bin")
+
+    plt.plot(tvec,code2.real*(2**15-1))
+    plt.plot(tvec,code2.imag*(2**15-1))
+    plt.plot(tvec,n.abs(code2*(2**15-1)))
+    plt.xlabel("Time ($\mu$s)")
+    plt.title("16 MHz Up-Down LFM Chirp")
+    plt.show()
+
+
+    range_doppler_ambiguity(code2, sr=30e6, dops=n.linspace(-100e3,100e3,num=300), nint=4 )
+ #   range_doppler_ambiguity(code2,sr=10, dops=n.linspace(-1e3,1e3,num=300),ranges=100)
+
+  #  range_doppler_ambiguity(code2 )
+
