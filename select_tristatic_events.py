@@ -8,6 +8,8 @@ import numpy as np
 
 
 C = 299792458.0
+SOURCE_TIMEZONE_OFFSET_HOURS = 8
+SOURCE_TIMEZONE_OFFSET_NS = int(SOURCE_TIMEZONE_OFFSET_HOURS * 3600 * 1e9)
 RESULTS_DIR = os.path.expanduser("~/src/lfm_meteor/results")
 INDEX_PATH = os.path.join(RESULTS_DIR, "head_echoes", "head_echo_index.h5")
 TRISTATIC_DIR = os.path.join(RESULTS_DIR, "tristatic_head_echoes")
@@ -48,6 +50,9 @@ def load_events():
         sites = decode_strings(h["site"][()])
         dt0 = h["dt0_ns"][()].astype(np.int64)
         dt1 = h["dt1_ns"][()].astype(np.int64)
+        if str(h.attrs.get("times_ns_time_scale", "")).upper() != "UTC":
+            dt0 = dt0 - SOURCE_TIMEZONE_OFFSET_NS
+            dt1 = dt1 - SOURCE_TIMEZONE_OFFSET_NS
         median_range_km = h["median_range_km"][()].astype(np.float64)
         event_h5 = decode_strings(h["event_h5"][()])
 
@@ -180,6 +185,9 @@ def write_tristatic_index(triplets):
         h["sanya_delay_us"] = np.asarray([t[0].delay_us for t in triplets], dtype=np.float64)
         h["danzhou_delay_us"] = np.asarray([t[1].delay_us for t in triplets], dtype=np.float64)
         h["wenchang_delay_us"] = np.asarray([t[2].delay_us for t in triplets], dtype=np.float64)
+        h.attrs["times_ns_time_scale"] = "UTC"
+        h.attrs["source_time_zone"] = "Beijing local time (UTC+8)"
+        h.attrs["source_time_correction"] = "legacy event index times are corrected by subtracting 8 hours"
 
 
 def main():

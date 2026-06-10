@@ -46,7 +46,9 @@ def lfm(l=199, sr=4, bw=4e6):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Detect head echoes and write RTIs for all events.")
+    parser = argparse.ArgumentParser(
+        description="Matched-filter the Sanya raw data, detect head echoes, and write RTIs for all events."
+    )
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     parser.add_argument("--results-dir", default=DEFAULT_RESULTS_DIR)
     parser.add_argument("--snr-threshold", type=float, default=6.0)
