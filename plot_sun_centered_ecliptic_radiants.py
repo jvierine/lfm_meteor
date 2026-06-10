@@ -115,12 +115,13 @@ def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s):
     )
     ax.scatter(0.0, 0.0, marker="*", s=130, color="#f4a300", edgecolor="black", linewidth=0.5, zorder=5, label="Sun")
     ax.grid(True, alpha=0.45)
-    ax.set_xlabel(r"Sun-centered ecliptic longitude, $\lambda-\lambda_\odot$")
-    ax.set_ylabel(r"Ecliptic latitude, $\beta$")
+    ax.set_xlabel(r"Sun-centered ecliptic longitude, $\lambda-\lambda_\odot$", labelpad=12)
+    ax.set_ylabel(r"Ecliptic latitude, $\beta$", labelpad=12)
     ax.set_xticklabels(centered_tick_labels())
-    cb = fig.colorbar(sc, ax=ax, orientation="horizontal", pad=0.09, fraction=0.06)
+    cb = fig.colorbar(sc, ax=ax, orientation="horizontal", pad=0.15, fraction=0.055)
     cb.set_label("Fitted speed (km s$^{-1}$)")
-    ax.legend(loc="lower left", bbox_to_anchor=(0.02, -0.12), frameon=False)
+    cb.ax.xaxis.labelpad = 8
+    ax.legend(loc="lower left", bbox_to_anchor=(0.02, 0.03), frameon=False)
     fig.tight_layout()
 
     os.makedirs(os.path.dirname(OUTPUT_PNG), exist_ok=True)
@@ -142,9 +143,8 @@ def plot_radiant_diagnostic(lambda_minus_sun_deg, beta_deg, speed_km_s):
     )
     x_rad = np.deg2rad(centered_plot_longitude_deg(lambda_minus_sun_deg))
     y_rad = np.deg2rad(beta_deg)
-    high_speed = speed_km_s >= np.nanpercentile(speed_km_s, 90.0)
 
-    fig = plt.figure(figsize=(8.8, 5.3))
+    fig = plt.figure(figsize=(8.8, 5.8))
     ax = fig.add_subplot(111, projection="hammer")
     sc = ax.scatter(
         x_rad,
@@ -156,15 +156,6 @@ def plot_radiant_diagnostic(lambda_minus_sun_deg, beta_deg, speed_km_s):
         linewidths=0.25,
         edgecolors="white",
         label="All fitted radiants",
-    )
-    ax.scatter(
-        x_rad[high_speed],
-        y_rad[high_speed],
-        facecolors="none",
-        edgecolors="#d83b2d",
-        s=70,
-        linewidths=1.2,
-        label="Fastest 10%",
     )
 
     source_markers = [
@@ -189,12 +180,13 @@ def plot_radiant_diagnostic(lambda_minus_sun_deg, beta_deg, speed_km_s):
         labelled_sources.add(label)
 
     ax.grid(True, alpha=0.45)
-    ax.set_xlabel(r"Sun-centered ecliptic longitude, $\lambda-\lambda_\odot$")
-    ax.set_ylabel(r"Ecliptic latitude, $\beta$")
+    ax.set_xlabel(r"Sun-centered ecliptic longitude, $\lambda-\lambda_\odot$", labelpad=12)
+    ax.set_ylabel(r"Ecliptic latitude, $\beta$", labelpad=12)
     ax.set_xticklabels(centered_tick_labels())
-    cb = fig.colorbar(sc, ax=ax, orientation="horizontal", pad=0.09, fraction=0.06)
+    cb = fig.colorbar(sc, ax=ax, orientation="horizontal", pad=0.15, fraction=0.055)
     cb.set_label("Fitted geocentric speed (km s$^{-1}$)")
-    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.24), ncol=3, frameon=False)
+    cb.ax.xaxis.labelpad = 8
+    ax.legend(loc="lower left", bbox_to_anchor=(0.02, 0.03), ncol=1, frameon=False)
     fig.tight_layout()
     fig.savefig(DIAGNOSTIC_OUTPUT_PNG, dpi=240, bbox_inches="tight")
     plt.close(fig)
