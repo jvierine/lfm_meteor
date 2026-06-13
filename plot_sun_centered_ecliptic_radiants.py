@@ -16,6 +16,12 @@ PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/sun_centered
 PLOT_CENTER_LONGITUDE_DEG = 270.0
 
 
+def fixed_ecliptic_equinox(times):
+    """Use one ecliptic coordinate system for all event radiants."""
+    median_unix = float(np.nanmedian(times.unix))
+    return Time(median_unix, format="unix", scale="utc")
+
+
 def wrap180(deg):
     return (np.asarray(deg, dtype=np.float64) + 180.0) % 360.0 - 180.0
 
@@ -46,6 +52,7 @@ def load_fits(path):
 
 def calculate_radiants(t0_ns, v0_gcrs_mps):
     times = Time(np.asarray(t0_ns, dtype=np.float64) / 1e9, format="unix", scale="utc")
+    fixed_equinox = fixed_ecliptic_equinox(times)
     radiant_unit = -v0_gcrs_mps / np.linalg.norm(v0_gcrs_mps, axis=1)[:, None]
     radiant_gcrs = SkyCoord(
         GCRS(
@@ -57,7 +64,7 @@ def calculate_radiants(t0_ns, v0_gcrs_mps):
             obstime=times,
         )
     )
-    ecliptic_frame = GeocentricTrueEcliptic(obstime=times, equinox=times)
+    ecliptic_frame = GeocentricTrueEcliptic(obstime=times, equinox=fixed_equinox)
     radiant_ecl = radiant_gcrs.transform_to(ecliptic_frame)
     sun_ecl = get_sun(times).transform_to(ecliptic_frame)
 
@@ -65,16 +72,17 @@ def calculate_radiants(t0_ns, v0_gcrs_mps):
     beta_deg = radiant_ecl.lat.to_value(u.deg)
     sun_lambda_deg = sun_ecl.lon.to_value(u.deg)
     sun_centered_lambda_deg = wrap360(lambda_deg - sun_lambda_deg)
-    return lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg
+    return lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg, fixed_equinox.isot
 
 
-def write_h5(path, event_id, t0_ns, speed_km_s, rms_total_path_residual_m, n_points, lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg):
+def write_h5(path, event_id, t0_ns, speed_km_s, rms_total_path_residual_m, n_points, lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg, fixed_equinox_iso):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     string_dtype = h5py.string_dtype(encoding="utf-8")
     with h5py.File(path, "w") as h:
         h.attrs["script"] = os.path.basename(__file__)
         h.attrs["input_h5"] = INPUT_H5
         h.attrs["coordinate_frame"] = "GeocentricTrueEcliptic"
+        h.attrs["fixed_ecliptic_equinox_utc"] = fixed_equinox_iso
         h.attrs["longitude_convention"] = "lambda_radiant - lambda_sun wrapped to [0, 360) deg"
         h.attrs["radiant_definition"] = "incoming radiant direction = -v0_gcrs"
         h["event_id"] = event_id.astype(string_dtype)
@@ -113,7 +121,6 @@ def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s):
         linewidths=0.25,
         edgecolors="white",
     )
-    ax.scatter(0.0, 0.0, marker="*", s=130, color="#f4a300", edgecolor="black", linewidth=0.5, zorder=5, label="Sun")
     ax.grid(True, alpha=0.45)
     ax.set_xlabel(r"Sun-centered ecliptic longitude, $\lambda-\lambda_\odot$", labelpad=12)
     ax.set_ylabel(r"Ecliptic latitude, $\beta$", labelpad=12)
@@ -121,7 +128,6 @@ def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s):
     cb = fig.colorbar(sc, ax=ax, orientation="horizontal", pad=0.15, fraction=0.055)
     cb.set_label("Fitted speed (km s$^{-1}$)")
     cb.ax.xaxis.labelpad = 8
-    ax.legend(loc="lower left", bbox_to_anchor=(0.02, 0.03), frameon=False)
     fig.tight_layout()
 
     os.makedirs(os.path.dirname(OUTPUT_PNG), exist_ok=True)
@@ -194,7 +200,7 @@ def plot_radiant_diagnostic(lambda_minus_sun_deg, beta_deg, speed_km_s):
 
 def main():
     event_id, t0_ns, v0_gcrs_mps, speed_km_s, rms_total_path_residual_m, n_points = load_fits(INPUT_H5)
-    lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg = calculate_radiants(t0_ns, v0_gcrs_mps)
+    lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg, fixed_equinox_iso = calculate_radiants(t0_ns, v0_gcrs_mps)
     write_h5(
         OUTPUT_H5,
         event_id,
@@ -206,10 +212,12 @@ def main():
         beta_deg,
         sun_lambda_deg,
         sun_centered_lambda_deg,
+        fixed_equinox_iso,
     )
     plot_radiants(sun_centered_lambda_deg, beta_deg, speed_km_s)
     plot_radiant_diagnostic(sun_centered_lambda_deg, beta_deg, speed_km_s)
     print(f"radiants: {len(event_id)}")
+    print(f"fixed ecliptic equinox UTC: {fixed_equinox_iso}")
     print(f"lambda-lambda_sun deg [0,360) median/range: {np.nanmedian(sun_centered_lambda_deg):.2f} / {np.nanmin(sun_centered_lambda_deg):.2f} to {np.nanmax(sun_centered_lambda_deg):.2f}")
     print(f"beta deg median/range: {np.nanmedian(beta_deg):.2f} / {np.nanmin(beta_deg):.2f} to {np.nanmax(beta_deg):.2f}")
     print(OUTPUT_H5)

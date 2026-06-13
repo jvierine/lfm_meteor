@@ -1,50 +1,19 @@
-import h5py
-import glob
-import scipy.constants as c
-
-fl=glob.glob("/mnt/data/juha/SANYA/Juha/20240422/Sanya/*.mat")
-h=h5py.File(fl[0],"r")
-#print(h.keys())
-#print(h["para"][()])
+SPEED_OF_LIGHT = 299792458.0
 
 
+# Original first-sample delay calculations.
+# Sanya uses r0 = 69.9 km monostatic.
+# Danzhou and Wenchang use the equivalent-path offsets from the original analysis.
 
-p=h["para"][()]
-#for i in range(len(p)):
- #   print("%d %1.2f"%(i+1,h["para"][()][i]))
-
-
-rt=h["para"][()][12,0]
-rc=rt
-
-# timesampe of first sample
-t0 = (1e3*(rt+rc))/c.c
-print("Sanya time of first sample %1.2f (microseconds)"%(t0*1e6))
-h.close()
-fl=glob.glob("/mnt/data/juha/SANYA/Juha/20240422/Danzhou/*.mat")
-h=h5py.File(fl[0],"r")
-
-# The first range is
-rt=h["para"][()][12,0]
-
-# time of first sample
-# 
-t0 = (69.9e3+28.1378e3)/(c.c/2)
-print("Danzhou time of first sample %1.2f (microseconds)"%(t0*1e6))
+sanya_r0_km = 69.9
+danzhou_equiv_r0_km = 69.9 + 28.1378
+wenchang_equiv_r0_km = 69.9 + 45.7489
 
 
-
-h.close()
-fl=glob.glob("/mnt/data/juha/SANYA/Juha/20240422/Wenchang/*.mat")
-h=h5py.File(fl[0],"r")
-
-# The first range is
-rt=h["para"][()][12,0]
-
-# time of first sample
-t0 = (69.9e3+45.7489e3)/(c.c/2)
-print("Wenchang time of first sample %1.2f (microseconds)"%(t0*1e6))
-
-h.close()
+def delay_us(equivalent_range_km):
+    return 2.0 * equivalent_range_km * 1e3 / SPEED_OF_LIGHT * 1e6
 
 
+print("Sanya time of first sample %1.2f (microseconds)" % (delay_us(sanya_r0_km)))
+print("Danzhou time of first sample %1.2f (microseconds)" % (delay_us(danzhou_equiv_r0_km)))
+print("Wenchang time of first sample %1.2f (microseconds)" % (delay_us(wenchang_equiv_r0_km)))
