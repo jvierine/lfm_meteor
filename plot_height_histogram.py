@@ -12,6 +12,7 @@ import sanya_opts as sc
 
 OUTPUT_PNG = os.path.join("results", "meteor_height_histogram.png")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_height_histogram.png"
+INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260611c.h5")
 BIN_SIZE_KM = 1.0
 COMMON_VOLUME_ALT_KM = 94.988
 MONOSTATIC_SANYA_H5 = os.path.join("results", "sanya_monostatic_ranges_v20260610.h5")
@@ -37,6 +38,18 @@ def sanya_slant_ranges_to_heights_km(ranges_km, az_deg=SANYA_AZ_DEG, el_deg=SANY
 
 
 def collect_heights():
+    if os.path.exists(INPUT_H5):
+        chunks = []
+        with h5py.File(INPUT_H5, "r") as h:
+            for event_id in h["event_id"][:]:
+                name = event_id.decode("utf-8") if isinstance(event_id, bytes) else str(event_id)
+                chunks.append(np.asarray(h["points"][name]["alt_km"][:], dtype=np.float64))
+        if not chunks:
+            raise RuntimeError(f"No fitted trajectory samples found in {INPUT_H5}")
+        altitudes_km = np.concatenate(chunks)
+        altitudes_km = altitudes_km[np.isfinite(altitudes_km)]
+        return altitudes_km, 0
+
     altitudes_km = []
     n_rejected = 0
     for trajectory in build_trajectories():
@@ -168,6 +181,7 @@ def main():
     if mono_alt_km.size > 0:
         print(f"sanya monostatic height range: {np.nanmin(mono_alt_km):.3f} to {np.nanmax(mono_alt_km):.3f} km")
     print(f"bins: {bin_start:.0f} to {bin_stop:.0f} km in {BIN_SIZE_KM:.0f} km steps")
+    print(INPUT_H5 if os.path.exists(INPUT_H5) else "legacy point solver")
     print(OUTPUT_PNG)
     print(PAPER_OUTPUT_PNG)
 

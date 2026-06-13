@@ -1,5 +1,6 @@
 import os
 
+import h5py
 import jcoord
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,6 +15,8 @@ from grid_search_delays_beam_axis import (
 
 
 OUTPUT_PNG = os.path.join("results", "meteor_positions_latlon_height.png")
+PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_positions_latlon_height.png"
+INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260611c.h5")
 BEAM_AZ_DEG = 15.0
 BEAM_EL_DEG = 75.0
 MAX_LAT_DEG = 18.7
@@ -40,6 +43,25 @@ def beam_axis_llh(max_range_km=170.0, n_points=500):
 
 
 def solve_all_positions(dan_delay0_us=DAN_CENTER_US, wen_delay0_us=WEN_CENTER_US):
+    if os.path.exists(INPUT_H5):
+        llh_chunks = []
+        with h5py.File(INPUT_H5, "r") as h:
+            for event_id in h["event_id"][:]:
+                name = event_id.decode("utf-8") if isinstance(event_id, bytes) else str(event_id)
+                group = h["points"][name]
+                llh_chunks.append(
+                    np.column_stack(
+                        [
+                            group["lat_deg"][:],
+                            group["lon_deg"][:],
+                            group["alt_km"][:] * 1e3,
+                        ]
+                    )
+                )
+        if not llh_chunks:
+            raise RuntimeError(f"No fitted trajectory samples found in {INPUT_H5}")
+        return np.vstack(llh_chunks), len(llh_chunks)
+
     trajectories = build_trajectories()
     llh_chunks = []
     for trajectory in trajectories:
@@ -105,6 +127,8 @@ def main():
     )
     fig.tight_layout()
     fig.savefig(OUTPUT_PNG, dpi=220)
+    os.makedirs(os.path.dirname(PAPER_OUTPUT_PNG), exist_ok=True)
+    fig.savefig(PAPER_OUTPUT_PNG, dpi=220)
     plt.close(fig)
 
     print(f"points: {lat_deg.size}")
@@ -113,7 +137,9 @@ def main():
     print(f"height range: {np.nanmin(alt_km):.3f} to {np.nanmax(alt_km):.3f} km")
     print(f"latitude range: {np.nanmin(lat_deg):.6f} to {np.nanmax(lat_deg):.6f} deg")
     print(f"longitude range: {np.nanmin(lon_deg):.6f} to {np.nanmax(lon_deg):.6f} deg")
+    print(INPUT_H5 if os.path.exists(INPUT_H5) else "legacy point solver")
     print(OUTPUT_PNG)
+    print(PAPER_OUTPUT_PNG)
 
 
 if __name__ == "__main__":

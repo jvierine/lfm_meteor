@@ -8,8 +8,8 @@ from astropy.coordinates import CartesianRepresentation, GCRS, GeocentricTrueEcl
 from astropy.time import Time
 
 
-INPUT_H5 = os.path.join("results", "gcrs_trajectory_fits_lfm_ambiguity_v20260610.h5")
-OUTPUT_H5 = os.path.join("results", "sun_centered_ecliptic_radiants_v20260610.h5")
+INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260611c.h5")
+OUTPUT_H5 = os.path.join("results", "sun_centered_ecliptic_radiants_v20260611c.h5")
 OUTPUT_PNG = os.path.join("results", "sun_centered_ecliptic_radiants.png")
 DIAGNOSTIC_OUTPUT_PNG = os.path.join("results", "sun_centered_ecliptic_radiants_diagnostic.png")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/sun_centered_ecliptic_radiants.png"
@@ -42,9 +42,17 @@ def centered_tick_labels():
 def load_fits(path):
     with h5py.File(path, "r") as h:
         event_id = np.asarray([x.decode("utf-8") if isinstance(x, bytes) else str(x) for x in h["event_id"][:]])
-        t0_ns = h["t0_ns"][:]
-        v0_gcrs_mps = h["v0_gcrs_mps"][:]
-        speed_km_s = h["speed_km_s"][:]
+        if "t0_ns" in h and "v0_gcrs_mps" in h:
+            t0_ns = h["t0_ns"][:]
+            v0_gcrs_mps = h["v0_gcrs_mps"][:]
+            speed_km_s = h["speed_km_s"][:]
+        else:
+            t0_ns = np.asarray([h["points"][name]["time_ns"][0] for name in event_id], dtype=np.int64)
+            v0_gcrs_mps = np.asarray([h["points"][name]["params"][:][3:6] for name in event_id], dtype=np.float64)
+            if "start_speed_km_s" in h:
+                speed_km_s = h["start_speed_km_s"][:]
+            else:
+                speed_km_s = np.linalg.norm(v0_gcrs_mps, axis=1) / 1e3
         rms_total_path_residual_m = h["rms_total_path_residual_m"][:]
         n_points = h["n_points"][:]
     return event_id, t0_ns, v0_gcrs_mps, speed_km_s, rms_total_path_residual_m, n_points
