@@ -23,9 +23,12 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default="/Users/jvi019/src/sanya_tristatic_paper/figures/satellite_candidates",
     )
-    p.add_argument("--min-pulses", type=int, default=10)
+    p.add_argument("--min-pulses", type=int, default=30)
     p.add_argument("--max-groups", type=int, default=12)
-    p.add_argument("--max-abs-offset-km", type=float, default=50.0)
+    p.add_argument("--max-beam-angle-deg", type=float, default=3.0)
+    p.add_argument("--min-median-snr-db", type=float, default=35.0)
+    p.add_argument("--target-offset-km", type=float, default=15.0)
+    p.add_argument("--offset-window-km", type=float, default=5.0)
     return p.parse_args()
 
 
@@ -91,10 +94,19 @@ def main() -> None:
     grouped = pd.read_csv(grouped_path)
     raw = pd.read_csv(raw_path)
 
-    grouped = grouped[grouped["n_pulses"] >= args.min_pulses].copy()
-    grouped["abs_median_offset_km"] = grouped["median_range_offset_km"].abs()
-    grouped = grouped[grouped["abs_median_offset_km"] <= args.max_abs_offset_km]
-    grouped = grouped.sort_values(["abs_median_offset_km", "n_pulses"], ascending=[True, False])
+    grouped = grouped[
+        (grouped["n_pulses"] >= args.min_pulses)
+        & (grouped["median_beam_angle_deg"] <= args.max_beam_angle_deg)
+        & (grouped["median_snr_db"] >= args.min_median_snr_db)
+    ].copy()
+    grouped["target_offset_error_km"] = (
+        grouped["median_range_offset_km"] - args.target_offset_km
+    ).abs()
+    grouped = grouped[grouped["target_offset_error_km"] <= args.offset_window_km]
+    grouped = grouped.sort_values(
+        ["target_offset_error_km", "median_beam_angle_deg", "n_pulses"],
+        ascending=[True, True, False],
+    )
     selected = grouped.head(args.max_groups)
 
     manifest = []
@@ -112,6 +124,8 @@ def main() -> None:
                 "n_pulses": int(group["n_pulses"]),
                 "median_range_offset_km": float(group["median_range_offset_km"]),
                 "median_beam_angle_deg": float(group["median_beam_angle_deg"]),
+                "median_snr_db": float(group["median_snr_db"]),
+                "target_offset_error_km": float(group["target_offset_error_km"]),
                 "path": out_png,
             }
         )
@@ -123,7 +137,8 @@ def main() -> None:
     for item in manifest:
         print(
             f"{item['path']}  sat={item['sat_id']} alias={item['alias_n']} "
-            f"n={item['n_pulses']} offset={item['median_range_offset_km']:.2f} km"
+            f"n={item['n_pulses']} beam={item['median_beam_angle_deg']:.2f} deg "
+            f"snr={item['median_snr_db']:.1f} dB offset={item['median_range_offset_km']:.2f} km"
         )
 
 
