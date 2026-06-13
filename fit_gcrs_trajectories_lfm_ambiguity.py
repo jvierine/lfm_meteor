@@ -114,8 +114,14 @@ def doppler_from_path_length_rate_hz(path_length_rate_mps):
 
 
 def lfm_total_path_bias_m(path_length_rate_mps):
+    """Apparent total-path bias from the Sanya LFM range-Doppler coupling.
+
+    Satellite passes validate the convention that the measured apparent path is
+    geometric_path + (f0/gamma) * path_length_rate.  Callers therefore add this
+    helper to the geometric tx-target-rx path when predicting measurements.
+    """
     doppler_hz = doppler_from_path_length_rate_hz(path_length_rate_mps)
-    return C * doppler_hz / CHIRP_RATE_HZ_PER_S
+    return -C * doppler_hz / CHIRP_RATE_HZ_PER_S
 
 
 def half_path_from_total_path_m(total_path_m):
@@ -320,7 +326,7 @@ def write_h5(path, fits):
         h.attrs["source_time_zone"] = "Beijing local time, UTC+8"
         h.attrs["source_time_correction"] = "UTC time_ns = raw MATLAB local time_ns - 8 hours"
         h.attrs["source_timezone_offset_hours"] = SOURCE_TIMEZONE_OFFSET_HOURS
-        h.attrs["lfm_total_path_bias_m"] = "c*(-path_length_rate/wavelength)/(bandwidth/duration)"
+        h.attrs["lfm_total_path_bias_m"] = "validated satellite convention: +(f0/chirp_rate)*path_length_rate"
         h.attrs["half_path_diagnostic_coordinate_m"] = "diagnostic half-path coordinate only; not used for fitting"
         h.attrs["fit_residual_coordinate"] = "total propagation path length"
         h.attrs["radar_frequency_hz"] = RADAR_FREQUENCY_HZ
