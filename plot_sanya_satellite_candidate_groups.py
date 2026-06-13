@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
         default="/Users/jvi019/src/sanya_tristatic_paper/figures/satellite_candidates",
     )
     p.add_argument("--min-pulses", type=int, default=30)
-    p.add_argument("--max-groups", type=int, default=24)
+    p.add_argument("--max-groups", type=int, default=0, help="Maximum groups to plot; <=0 plots all.")
     p.add_argument("--max-beam-angle-deg", type=float, default=2.0)
     p.add_argument("--min-median-snr-db", type=float, default=15.0)
     p.add_argument("--max-offset-span-km", type=float, default=2.0)
@@ -128,7 +128,7 @@ def main() -> None:
         sort_cols = ["median_beam_angle_deg", "n_pulses"]
         ascending = [True, False]
     grouped = grouped.sort_values(sort_cols, ascending=ascending)
-    selected = grouped.head(args.max_groups)
+    selected = grouped if args.max_groups <= 0 else grouped.head(args.max_groups)
 
     manifest = []
     for _, group in selected.iterrows():

@@ -19,30 +19,42 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--output", default="candidate_group_contact_sheet.png")
     p.add_argument("--cols", type=int, default=2)
+    p.add_argument("--per-page", type=int, default=12)
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     manifest = pd.read_csv(os.path.join(args.plot_dir, "candidate_group_plots.csv"))
-    n = len(manifest)
-    rows = (n + args.cols - 1) // args.cols
-    fig, axes = plt.subplots(rows, args.cols, figsize=(12, 3.7 * rows), constrained_layout=True)
-    axes = axes.ravel()
-    for ax, (_, row) in zip(axes, manifest.iterrows()):
-        image = mpimg.imread(row["path"])
-        ax.imshow(image)
-        ax.set_axis_off()
-        ax.set_title(
-            f"NORAD {row['sat_id']} alias {int(row['alias_n'])}, "
-            f"n={int(row['n_pulses'])}, offset={row['median_range_offset_km']:.2f} km",
-            fontsize=9,
-        )
-    for ax in axes[n:]:
-        ax.set_axis_off()
-    output = os.path.join(args.plot_dir, args.output)
-    fig.savefig(output, dpi=180)
-    print(output)
+    base, ext = os.path.splitext(args.output)
+    n_total = len(manifest)
+    outputs = []
+    for page_start in range(0, n_total, args.per_page):
+        page = manifest.iloc[page_start : page_start + args.per_page]
+        n = len(page)
+        rows = (n + args.cols - 1) // args.cols
+        fig, axes = plt.subplots(rows, args.cols, figsize=(12, 3.7 * rows), constrained_layout=True)
+        axes = axes.ravel()
+        for ax, (_, row) in zip(axes, page.iterrows()):
+            image = mpimg.imread(row["path"])
+            ax.imshow(image)
+            ax.set_axis_off()
+            ax.set_title(
+                f"NORAD {row['sat_id']} alias {int(row['alias_n'])}, "
+                f"n={int(row['n_pulses'])}, offset={row['median_range_offset_km']:.2f} km, "
+                f"span={row['offset_span_km']:.2f} km",
+                fontsize=9,
+            )
+        for ax in axes[n:]:
+            ax.set_axis_off()
+        page_no = len(outputs) + 1
+        output_name = args.output if n_total <= args.per_page else f"{base}_page{page_no:02d}{ext}"
+        output = os.path.join(args.plot_dir, output_name)
+        fig.savefig(output, dpi=180)
+        plt.close(fig)
+        outputs.append(output)
+    for output in outputs:
+        print(output)
 
 
 if __name__ == "__main__":
