@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Use high-SNR Sanya satellite passes to test the LFM Doppler range sign.
+"""Test the LFM Doppler range-correction sign with satellite passes.
 
-The test is intentionally narrow: use only bright detections whose raw
-observed-minus-predicted aliased range offset is already near the satellite
-calibration family, then estimate range-rates from polynomial range fits.
+Selection is deliberately simple: high-SNR detections whose raw diagnostic
+range offset is 16 +/- 1 km.  There is no boresight-angle cut and no SNR
+weighting.  For each event--satellite--alias pass, fit an unweighted polynomial
+to observed range, use its derivative for the Doppler range correction, and
+choose the sign that gives the smallest within-pass range-offset variance.
 """
 
 from __future__ import annotations
@@ -27,17 +29,9 @@ CHIRP_RATE_HZ_PER_S = BANDWIDTH_HZ / LFM_DURATION_S
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--results-dir",
-        default="results/satellite_correlation/v20260613c_snr15_full",
-        help="Directory containing sanya_satellite_detection_matches_raw.csv.",
-    )
-    p.add_argument(
-        "--output-dir",
-        default="results/satellite_correlation/v20260613c_snr15_full/lfm_doppler_sign_highsnr",
-    )
+    p.add_argument("--results-dir", default="results/satellite_correlation/v20260613c_snr15_full")
+    p.add_argument("--output-dir", default="results/satellite_correlation/v20260613c_snr15_full/lfm_doppler_sign_highsnr")
     p.add_argument("--min-snr-db", type=float, default=30.0)
-    p.add_argument("--max-beam-angle-deg", type=float, default=2.0)
     p.add_argument("--target-offset-km", type=float, default=16.0)
     p.add_argument("--offset-half-width-km", type=float, default=1.0)
     p.add_argument("--min-pulses", type=int, default=8)
@@ -68,10 +62,6 @@ def row_float(row: dict, key: str) -> float:
     return float(row[key])
 
 
-def snr_weight(snr_db: np.ndarray) -> np.ndarray:
-    return np.power(10.0, snr_db / 10.0)
-
-
 def group_key(row: dict) -> tuple[str, str, int]:
     return row["event_id"], row["sat_id"], int(row["alias_n"])
 
@@ -83,72 +73,61 @@ def group_rows(rows: list[dict]) -> dict[tuple[str, str, int], list[dict]]:
     return groups
 
 
-def weighted_mean(values: np.ndarray, weights: np.ndarray) -> float:
-    return float(np.sum(weights * values) / np.sum(weights))
+def rms_about_mean(values: np.ndarray) -> float:
+    values = np.asarray(values, dtype=float)
+    return float(np.sqrt(np.mean((values - np.mean(values)) ** 2.0)))
 
 
-def weighted_rms(values: np.ndarray, weights: np.ndarray, center: float) -> float:
-    return float(np.sqrt(np.sum(weights * (values - center) ** 2.0) / np.sum(weights)))
-
-
-def weighted_poly_rate(
+def polynomial_range_rate(
     time_s: np.ndarray,
     ranges_km: np.ndarray,
-    weights: np.ndarray,
     degree: int,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     degree = max(1, min(int(degree), len(time_s) - 1))
-    t_center = weighted_mean(time_s, weights)
-    t_fit = time_s - t_center
-    coeff = np.polyfit(t_fit, ranges_km, degree, w=np.sqrt(weights))
-    rate_coeff = np.polyder(coeff)
+    t_fit = time_s - np.mean(time_s)
+    coeff = np.polyfit(t_fit, ranges_km, degree)
     fitted_range_km = np.polyval(coeff, t_fit)
-    rate_km_s = np.polyval(rate_coeff, t_fit)
-    rms_m = weighted_rms(ranges_km, weights, fitted_range_km) * 1e3
-    return rate_km_s, fitted_range_km, rms_m
+    rate_km_s = np.polyval(np.polyder(coeff), t_fit)
+    return rate_km_s, fitted_range_km, rms_about_mean(ranges_km - fitted_range_km) * 1e3
 
 
-def summarize_variant(rows: list[dict], offset_key: str) -> dict[str, float]:
-    values_km = np.asarray([row_float(row, offset_key) for row in rows], dtype=float)
-    weights = np.asarray([row_float(row, "snr_weight") for row in rows], dtype=float)
-    mean_km = weighted_mean(values_km, weights)
+def summarize_pulses(rows: list[dict], key: str) -> dict[str, float]:
+    values = np.asarray([row_float(row, key) for row in rows], dtype=float)
     return {
-        "weighted_mean_offset_km": mean_km,
-        "weighted_rms_about_mean_m": weighted_rms(values_km, weights, mean_km) * 1e3,
-        "unweighted_mean_offset_km": float(np.mean(values_km)),
-        "unweighted_rms_about_mean_m": float(np.sqrt(np.mean((values_km - np.mean(values_km)) ** 2.0)) * 1e3),
+        "mean_offset_km": float(np.mean(values)),
+        "rms_about_mean_m": rms_about_mean(values) * 1e3,
     }
 
 
-def summarize_groups(group_summaries: list[dict], offset_key: str) -> dict[str, float]:
-    means_km = np.asarray([row[offset_key] for row in group_summaries], dtype=float)
-    weights = np.asarray([row["total_snr_weight"] for row in group_summaries], dtype=float)
-    center_km = weighted_mean(means_km, weights)
+def summarize_pass_means(pass_rows: list[dict], key: str) -> dict[str, float]:
+    values = np.asarray([row[key] for row in pass_rows], dtype=float)
     return {
-        "weighted_mean_of_pass_offsets_km": center_km,
-        "snr_weighted_pass_mean_rms_m": weighted_rms(means_km, weights, center_km) * 1e3,
-        "unweighted_pass_mean_rms_m": float(np.sqrt(np.mean((means_km - np.mean(means_km)) ** 2.0)) * 1e3),
+        "mean_of_pass_offsets_km": float(np.mean(values)),
+        "pass_mean_rms_m": rms_about_mean(values) * 1e3,
     }
 
 
-def build_high_snr_passes(raw_rows: list[dict], args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
-    pulse_rows = []
+def summarize_within_pass_variance(pass_rows: list[dict], key: str) -> dict[str, float]:
+    rms_values = np.asarray([row[key.replace("_km", "_internal_rms_m")] for row in pass_rows], dtype=float)
+    return {
+        "internal_variance_rms_m": float(np.sqrt(np.mean(rms_values**2))),
+        "mean_internal_rms_m": float(np.mean(rms_values)),
+    }
+
+
+def build_passes(raw_rows: list[dict], args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
+    selected = []
     for row in raw_rows:
-        snr_db = row_float(row, "snr_db")
-        beam_deg = row_float(row, "beam_angle_deg")
-        raw_offset_km = row_float(row, "range_offset_km")
-        if snr_db < args.min_snr_db:
+        if row_float(row, "snr_db") < args.min_snr_db:
             continue
-        if beam_deg > args.max_beam_angle_deg:
+        if abs(row_float(row, "range_offset_km") - args.target_offset_km) > args.offset_half_width_km:
             continue
-        if abs(raw_offset_km - args.target_offset_km) > args.offset_half_width_km:
-            continue
-        pulse_rows.append(dict(row))
+        selected.append(dict(row))
 
     corrected_rows = []
-    group_summaries = []
+    pass_summaries = []
     lfm_factor_s = RADAR_FREQUENCY_HZ / CHIRP_RATE_HZ_PER_S
-    for key, rows in sorted(group_rows(pulse_rows).items()):
+    for key, rows in sorted(group_rows(selected).items()):
         if len(rows) < args.min_pulses:
             continue
         rows = sorted(rows, key=lambda row: row["time_utc"])
@@ -158,36 +137,19 @@ def build_high_snr_passes(raw_rows: list[dict], args: argparse.Namespace) -> tup
         pred = np.asarray([row_float(row, "predicted_aliased_range_km") for row in rows], dtype=float)
         snr_db = np.asarray([row_float(row, "snr_db") for row in rows], dtype=float)
         beam = np.asarray([row_float(row, "beam_angle_deg") for row in rows], dtype=float)
-        weights = snr_weight(snr_db)
 
-        obs_rate_km_s, obs_fit_km, obs_fit_rms_m = weighted_poly_rate(
-            t_rel, obs, weights, args.poly_degree
-        )
-        pred_rate_km_s, pred_fit_km, pred_fit_rms_m = weighted_poly_rate(
-            t_rel, pred, weights, args.poly_degree
-        )
-        raw_offsets = obs - pred
-
-        # Sanya monostatic one-way range shift from a polynomial range-rate.
-        # The two possible sign conventions are tested symmetrically below.
-        shift_from_obs_rate_km = -lfm_factor_s * obs_rate_km_s
-        shift_from_pred_rate_km = -lfm_factor_s * pred_rate_km_s
+        obs_rate_km_s, obs_fit_km, obs_fit_rms_m = polynomial_range_rate(t_rel, obs, args.poly_degree)
+        pred_rate_km_s, pred_fit_km, pred_fit_rms_m = polynomial_range_rate(t_rel, pred, args.poly_degree)
+        shift_obs_km = -lfm_factor_s * obs_rate_km_s
+        shift_pred_km = -lfm_factor_s * pred_rate_km_s
 
         pass_corrected = []
-        for row, w, obs_rate, pred_rate, obs_fit, pred_fit, obs_shift, pred_shift in zip(
-            rows,
-            weights,
-            obs_rate_km_s,
-            pred_rate_km_s,
-            obs_fit_km,
-            pred_fit_km,
-            shift_from_obs_rate_km,
-            shift_from_pred_rate_km,
+        for row, obs_rate, pred_rate, obs_fit, pred_fit, obs_shift, pred_shift in zip(
+            rows, obs_rate_km_s, pred_rate_km_s, obs_fit_km, pred_fit_km, shift_obs_km, shift_pred_km
         ):
             out = dict(row)
             obs_km = row_float(row, "observed_range_km")
             pred_km = row_float(row, "predicted_aliased_range_km")
-            out["snr_weight"] = float(w)
             out["observed_poly_range_km"] = float(obs_fit)
             out["predicted_poly_range_km"] = float(pred_fit)
             out["observed_poly_range_rate_km_s"] = float(obs_rate)
@@ -201,7 +163,6 @@ def build_high_snr_passes(raw_rows: list[dict], args: argparse.Namespace) -> tup
             out["offset_minus_predicted_rate_km"] = obs_km - (pred_km - pred_shift)
             pass_corrected.append(out)
 
-        pass_weights = np.asarray([row_float(row, "snr_weight") for row in pass_corrected], dtype=float)
         summary = {
             "event_id": key[0],
             "sat_id": key[1],
@@ -209,82 +170,75 @@ def build_high_snr_passes(raw_rows: list[dict], args: argparse.Namespace) -> tup
             "n_pulses": len(rows),
             "start_utc": rows[0]["time_utc"],
             "stop_utc": rows[-1]["time_utc"],
-            "total_snr_weight": float(np.sum(pass_weights)),
             "mean_snr_db": float(np.mean(snr_db)),
             "max_snr_db": float(np.max(snr_db)),
-            "snr_weighted_beam_angle_deg": weighted_mean(beam, weights),
+            "mean_beam_angle_deg": float(np.mean(beam)),
             "min_beam_angle_deg": float(np.min(beam)),
-            "poly_degree": args.poly_degree,
+            "max_beam_angle_deg": float(np.max(beam)),
+            "beam_angle_span_deg": float(np.max(beam) - np.min(beam)),
+            "poly_degree": int(args.poly_degree),
             "observed_poly_fit_rms_m": obs_fit_rms_m,
             "predicted_poly_fit_rms_m": pred_fit_rms_m,
-            "observed_range_rate_mean_km_s": weighted_mean(obs_rate_km_s, weights),
-            "predicted_range_rate_mean_km_s": weighted_mean(pred_rate_km_s, weights),
-            "lfm_shift_from_observed_rate_mean_m": weighted_mean(shift_from_obs_rate_km, weights) * 1e3,
-            "lfm_shift_from_predicted_rate_mean_m": weighted_mean(shift_from_pred_rate_km, weights) * 1e3,
-            "raw_offset_span_m": float((np.max(raw_offsets) - np.min(raw_offsets)) * 1e3),
+            "observed_range_rate_mean_km_s": float(np.mean(obs_rate_km_s)),
+            "predicted_range_rate_mean_km_s": float(np.mean(pred_rate_km_s)),
+            "lfm_shift_from_observed_rate_mean_m": float(np.mean(shift_obs_km)) * 1e3,
+            "lfm_shift_from_predicted_rate_mean_m": float(np.mean(shift_pred_km)) * 1e3,
+            "raw_offset_span_m": float((np.max(obs - pred) - np.min(obs - pred)) * 1e3),
         }
-        for offset_key in (
-            "offset_no_lfm_km",
-            "offset_plus_observed_rate_km",
-            "offset_minus_observed_rate_km",
-            "offset_plus_predicted_rate_km",
-            "offset_minus_predicted_rate_km",
-        ):
+        for offset_key in VARIANTS:
             values = np.asarray([row_float(row, offset_key) for row in pass_corrected], dtype=float)
-            summary[offset_key] = weighted_mean(values, pass_weights)
-            summary[offset_key.replace("_km", "_internal_rms_m")] = weighted_rms(
-                values, pass_weights, summary[offset_key]
-            ) * 1e3
+            summary[offset_key] = float(np.mean(values))
+            summary[offset_key.replace("_km", "_internal_rms_m")] = rms_about_mean(values) * 1e3
 
         corrected_rows.extend(pass_corrected)
-        group_summaries.append(summary)
+        pass_summaries.append(summary)
+    return corrected_rows, pass_summaries
 
-    return corrected_rows, group_summaries
+
+VARIANTS = (
+    "offset_no_lfm_km",
+    "offset_plus_observed_rate_km",
+    "offset_minus_observed_rate_km",
+    "offset_plus_predicted_rate_km",
+    "offset_minus_predicted_rate_km",
+)
 
 
-def make_plot(path: str, group_summaries: list[dict]) -> None:
-    variants = [
+def make_plot(path: str, pass_summaries: list[dict]) -> None:
+    styles = [
         ("offset_no_lfm_km", "No LFM", "#5f6368"),
         ("offset_plus_observed_rate_km", "+ observed-rate shift", "#d95f02"),
         ("offset_minus_observed_rate_km", "- observed-rate shift", "#1b9e77"),
         ("offset_plus_predicted_rate_km", "+ TLE-rate shift", "#7570b3"),
         ("offset_minus_predicted_rate_km", "- TLE-rate shift", "#e7298a"),
     ]
-    weights = np.asarray([row["total_snr_weight"] for row in group_summaries], dtype=float)
-    shift_m = np.asarray([row["lfm_shift_from_observed_rate_mean_m"] for row in group_summaries], dtype=float)
+    shift_m = np.asarray([row["lfm_shift_from_observed_rate_mean_m"] for row in pass_summaries], dtype=float)
+    beam_span = np.asarray([row["beam_angle_span_deg"] for row in pass_summaries], dtype=float)
+    sizes = 32 + 18 * np.sqrt(np.maximum(beam_span, 0.0))
 
     fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.2), constrained_layout=True)
     ax = axes[0]
-    for key, label, color in variants:
-        offsets = np.asarray([row[key] for row in group_summaries], dtype=float)
-        center = weighted_mean(offsets, weights)
-        ax.scatter(
-            shift_m,
-            (offsets - center) * 1e3,
-            s=20 + 0.00035 * weights,
-            color=color,
-            alpha=0.78,
-            label=label,
-        )
-    ax.axhline(0.0, color="black", lw=0.8, alpha=0.55)
-    ax.set_xlabel("Pass mean LFM shift from polynomial range-rate (m)")
-    ax.set_ylabel("Pass mean offset minus weighted mean (m)")
-    ax.set_title("High-SNR satellite passes")
+    for key, label, color in styles:
+        y = np.asarray([row[key.replace("_km", "_internal_rms_m")] for row in pass_summaries], dtype=float)
+        ax.scatter(shift_m, y, s=sizes, color=color, alpha=0.78, label=label)
+    ax.set_xlabel("Mean LFM range shift from observed polynomial range-rate (m)")
+    ax.set_ylabel("Within-pass corrected-offset RMS (m)")
+    ax.set_title("Unweighted variance per pass")
     ax.legend(frameon=False, fontsize=7.5)
 
     ax = axes[1]
-    rms = []
     labels = []
+    rms = []
     colors = []
-    for key, label, color in variants:
-        stats = summarize_groups(group_summaries, key)
-        rms.append(stats["snr_weighted_pass_mean_rms_m"])
+    for key, label, color in styles:
+        stats = summarize_within_pass_variance(pass_summaries, key)
         labels.append(label)
+        rms.append(stats["internal_variance_rms_m"])
         colors.append(color)
     ax.bar(np.arange(len(labels)), rms, color=colors, alpha=0.85)
     ax.set_xticks(np.arange(len(labels)), labels, rotation=25, ha="right")
-    ax.set_ylabel("SNR-weighted RMS of pass mean offsets (m)")
-    ax.set_title("Lower is more consistent")
+    ax.set_ylabel("Unweighted within-pass variance RMS (m)")
+    ax.set_title("Lower is the correct Doppler sign")
     fig.savefig(path, dpi=220)
 
 
@@ -292,34 +246,25 @@ def main() -> None:
     args = parse_args()
     raw_path = os.path.join(args.results_dir, "sanya_satellite_detection_matches_raw.csv")
     raw_rows = read_csv(raw_path)
-    corrected_rows, group_summaries = build_high_snr_passes(raw_rows, args)
+    corrected_rows, pass_summaries = build_passes(raw_rows, args)
     if not corrected_rows:
-        raise RuntimeError("No high-SNR satellite pulses survived the selection.")
+        raise RuntimeError("No satellite pulses survived the selection.")
 
-    variants = [
-        "offset_no_lfm_km",
-        "offset_plus_observed_rate_km",
-        "offset_minus_observed_rate_km",
-        "offset_plus_predicted_rate_km",
-        "offset_minus_predicted_rate_km",
-    ]
-    pulse_summary = {key: summarize_variant(corrected_rows, key) for key in variants}
-    pass_summary = {key: summarize_groups(group_summaries, key) for key in variants}
-    best_observed_rate = min(
+    within_pass = {key: summarize_within_pass_variance(pass_summaries, key) for key in VARIANTS}
+    best_observed = min(
         ("offset_plus_observed_rate_km", "offset_minus_observed_rate_km"),
-        key=lambda key: pass_summary[key]["snr_weighted_pass_mean_rms_m"],
+        key=lambda key: within_pass[key]["internal_variance_rms_m"],
     )
-
     output = {
         "input_raw_csv": raw_path,
         "selection": {
             "min_snr_db": args.min_snr_db,
-            "max_beam_angle_deg": args.max_beam_angle_deg,
+            "beam_angle_filter": None,
             "target_offset_km": args.target_offset_km,
             "offset_half_width_km": args.offset_half_width_km,
             "min_pulses": args.min_pulses,
             "poly_degree": args.poly_degree,
-            "snr_weight": "10**(snr_db/10)",
+            "weighting": "none",
         },
         "lfm": {
             "radar_frequency_hz": RADAR_FREQUENCY_HZ,
@@ -329,29 +274,26 @@ def main() -> None:
             "range_shift_from_rate_km": "-(f0/gamma) * polynomial_range_rate_km_s",
         },
         "n_selected_pulses": len(corrected_rows),
-        "n_selected_passes": len(group_summaries),
-        "pulse_summary": pulse_summary,
-        "pass_mean_summary": pass_summary,
-        "best_observed_rate_sign": best_observed_rate,
+        "n_selected_passes": len(pass_summaries),
+        "pulse_summary": {key: summarize_pulses(corrected_rows, key) for key in VARIANTS},
+        "pass_mean_summary": {key: summarize_pass_means(pass_summaries, key) for key in VARIANTS},
+        "within_pass_variance_summary": within_pass,
+        "best_observed_rate_sign": best_observed,
         "best_observed_rate_sign_label": {
             "offset_plus_observed_rate_km": "observed - (predicted + shift)",
             "offset_minus_observed_rate_km": "observed - (predicted - shift)",
-        }[best_observed_rate],
-        "top_passes_by_snr_weight": sorted(
-            group_summaries,
-            key=lambda row: row["total_snr_weight"],
-            reverse=True,
-        )[:20],
+        }[best_observed],
+        "top_passes_by_pulses": sorted(pass_summaries, key=lambda row: row["n_pulses"], reverse=True)[:20],
     }
 
     os.makedirs(args.output_dir, exist_ok=True)
     raw_out = os.path.join(args.output_dir, "satellite_lfm_doppler_sign_highsnr_raw.csv")
-    group_out = os.path.join(args.output_dir, "satellite_lfm_doppler_sign_highsnr_passes.csv")
+    pass_out = os.path.join(args.output_dir, "satellite_lfm_doppler_sign_highsnr_passes.csv")
     summary_out = os.path.join(args.output_dir, "satellite_lfm_doppler_sign_highsnr_summary.json")
     plot_out = os.path.join(args.output_dir, "satellite_lfm_doppler_sign_highsnr_consistency.png")
     write_csv(raw_out, corrected_rows, list(corrected_rows[0].keys()))
-    write_csv(group_out, group_summaries, list(group_summaries[0].keys()))
-    make_plot(plot_out, group_summaries)
+    write_csv(pass_out, pass_summaries, list(pass_summaries[0].keys()))
+    make_plot(plot_out, pass_summaries)
     with open(summary_out, "w", encoding="utf-8") as fh:
         json.dump(output, fh, indent=2)
     print(json.dumps(output, indent=2), flush=True)
