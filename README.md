@@ -160,6 +160,22 @@ Danzhou   438.426 us
 Wenchang  430.906 us
 ```
 
+## Sanya Range Calibration
+
+The satellite TLE correlation memo gives a pulse-level SNR-weighted Sanya range
+offset of:
+
+```text
+observed Sanya range - TLE-predicted aliased range = +16.0186 km
+```
+
+Use the constants in `sanya_opts.py` for this value. To correct observed
+Sanya ranges onto the TLE satellite range scale, apply:
+
+```text
+corrected_sanya_range_km = observed_sanya_range_km - 16.0186
+```
+
 ## GCRS Trajectory Fit Product
 
 The main trajectory product is:

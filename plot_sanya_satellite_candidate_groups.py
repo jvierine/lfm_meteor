@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from sanya_opts import SANYA_TLE_RANGE_OFFSET_KM
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -28,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-beam-angle-deg", type=float, default=2.0)
     p.add_argument("--min-median-snr-db", type=float, default=15.0)
     p.add_argument("--max-offset-span-km", type=float, default=2.0)
-    p.add_argument("--target-offset-km", type=float, default=None)
+    p.add_argument("--target-offset-km", type=float, default=SANYA_TLE_RANGE_OFFSET_KM)
     p.add_argument("--offset-window-km", type=float, default=None)
     return p.parse_args()
 

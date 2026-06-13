@@ -10,6 +10,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from sanya_opts import (
+    SANYA_TLE_RANGE_OFFSET_PREFILTER_CENTER_KM,
+    SANYA_TLE_RANGE_OFFSET_PREFILTER_HALF_WIDTH_KM,
+)
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -22,8 +27,8 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default="/Users/jvi019/src/sanya_tristatic_paper/figures/satellite_candidates/sanya_offset_vs_beam_16km.png",
     )
-    p.add_argument("--center-offset-km", type=float, default=16.0)
-    p.add_argument("--offset-half-width-km", type=float, default=2.0)
+    p.add_argument("--center-offset-km", type=float, default=SANYA_TLE_RANGE_OFFSET_PREFILTER_CENTER_KM)
+    p.add_argument("--offset-half-width-km", type=float, default=SANYA_TLE_RANGE_OFFSET_PREFILTER_HALF_WIDTH_KM)
     p.add_argument("--min-pulses", type=int, default=3)
     return p.parse_args()
 

@@ -21,6 +21,12 @@ import numpy as np
 from skyfield.api import EarthSatellite, load, wgs84
 
 try:
+    from sanya_opts import SANYA_RANGE_CORRECTION_KM, SANYA_TLE_RANGE_OFFSET_KM
+except Exception:
+    SANYA_TLE_RANGE_OFFSET_KM = 16.0186
+    SANYA_RANGE_CORRECTION_KM = -SANYA_TLE_RANGE_OFFSET_KM
+
+try:
     from mpi4py import MPI
 except Exception:
     MPI = None
@@ -487,6 +493,9 @@ def main() -> None:
         "sanya_alt_km": SANYA_ALT_KM,
         "sanya_tx_az_deg": SANYA_TX_AZ_DEG,
         "sanya_tx_el_deg": SANYA_TX_EL_DEG,
+        "sanya_tle_range_offset_km": SANYA_TLE_RANGE_OFFSET_KM,
+        "sanya_range_correction_km": SANYA_RANGE_CORRECTION_KM,
+        "sanya_range_correction_sign": "corrected_observed_range_km = observed_range_km + sanya_range_correction_km",
         "time_correction_mode": time_correction_mode,
         "source_timezone_offset_hours": source_timezone_offset_hours,
     }
