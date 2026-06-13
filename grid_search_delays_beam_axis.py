@@ -175,6 +175,20 @@ def solve_position(san_range_km, dan_range_km, wen_range_km, x0):
     san_range_m = san_range_km * 1e3
     dan_equiv_m = dan_range_km * 1e3
     wen_equiv_m = wen_range_km * 1e3
+    dan_target_m = 2.0 * dan_equiv_m - san_range_m
+    wen_target_m = 2.0 * wen_equiv_m - san_range_m
+
+    fast = solve_three_spheres(
+        p_san,
+        p_dan,
+        p_wen,
+        san_range_m,
+        dan_target_m,
+        wen_target_m,
+        x0,
+    )
+    if fast is not None:
+        return fast
 
     def residual(x):
         r_san = np.linalg.norm(x - p_san)
@@ -192,6 +206,34 @@ def solve_position(san_range_km, dan_range_km, wen_range_km, x0):
     return so.least_squares(residual, x0=x0, method="lm").x
 
 
+def solve_three_spheres(p1, p2, p3, r1, r2, r3, x0):
+    ex = p2 - p1
+    d = np.linalg.norm(ex)
+    if not np.isfinite(d) or d <= 0.0:
+        return None
+    ex = ex / d
+    p3p1 = p3 - p1
+    i = float(np.dot(ex, p3p1))
+    ey0 = p3p1 - i * ex
+    j = np.linalg.norm(ey0)
+    if not np.isfinite(j) or j <= 0.0:
+        return None
+    ey = ey0 / j
+    ez = np.cross(ex, ey)
+
+    x = (r1 * r1 - r2 * r2 + d * d) / (2.0 * d)
+    y = (r1 * r1 - r3 * r3 + i * i + j * j - 2.0 * i * x) / (2.0 * j)
+    z2 = r1 * r1 - x * x - y * y
+    if not np.isfinite(z2):
+        return None
+    if z2 < -1.0:
+        return None
+    z = np.sqrt(max(z2, 0.0))
+    a = p1 + x * ex + y * ey + z * ez
+    b = p1 + x * ex + y * ey - z * ez
+    return a if np.linalg.norm(a - x0) <= np.linalg.norm(b - x0) else b
+
+
 def build_trajectories():
     san_events = load_events(SAN_PATTERN)
     dan_events = load_events(DAN_PATTERN)
@@ -202,7 +244,10 @@ def build_trajectories():
         matches = match_pulses(san_event, dan_event, wen_event)
         if len(matches) < 3:
             continue
-        san_ranges_all = range_gates_to_km(san_event.range_gate, san_event.r0_km, san_event.sr_mhz)
+        san_ranges_all = (
+            range_gates_to_km(san_event.range_gate, san_event.r0_km, san_event.sr_mhz)
+            + sc.SANYA_RANGE_CORRECTION_KM
+        )
         san_ranges = []
         dan_gates = []
         wen_gates = []
@@ -302,6 +347,8 @@ def main():
         h["score_grid_km"] = score_grid_km
         h["mean_alt_grid_km"] = mean_alt_grid_km
         h["median_alt_grid_km"] = median_alt_grid_km
+        h.attrs["sanya_range_correction_km"] = sc.SANYA_RANGE_CORRECTION_KM
+        h.attrs["sanya_range_correction_sign"] = "san_range_km = raw_range_km + SANYA_RANGE_CORRECTION_KM"
 
     fig, ax = plt.subplots(figsize=(8, 6))
     mesh = ax.pcolormesh(wen_grid, dan_grid, score_grid_km, shading="auto")
