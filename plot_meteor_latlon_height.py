@@ -16,7 +16,7 @@ from grid_search_delays_beam_axis import (
 
 OUTPUT_PNG = os.path.join("results", "meteor_positions_latlon_height.png")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_positions_latlon_height.png"
-INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260611c.h5")
+INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260613b.h5")
 BEAM_AZ_DEG = 15.0
 BEAM_EL_DEG = 75.0
 MAX_LAT_DEG = 18.7

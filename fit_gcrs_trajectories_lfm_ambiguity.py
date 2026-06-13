@@ -27,7 +27,8 @@ from grid_search_delays_beam_axis import (
 )
 
 
-OUTPUT_H5 = os.path.join("results", "gcrs_trajectory_fits_lfm_ambiguity_v20260610.h5")
+SCRIPT_VERSION = "v20260613b"
+OUTPUT_H5 = os.path.join("results", f"gcrs_trajectory_fits_lfm_ambiguity_{SCRIPT_VERSION}.h5")
 MIN_POINTS = 3
 MATCH_TOLERANCE_MS = 7.5
 SOURCE_TIMEZONE_OFFSET_HOURS = 8.0
@@ -202,12 +203,15 @@ def solve_triplet(event_id, san_event, dan_event, wen_event):
         return None
     input_times_are_utc = event_times_are_utc(san_event, dan_event, wen_event)
 
-    san_one_way_ranges_km = range_gates_to_km(san_event.range_gate, san_event.r0_km, san_event.sr_mhz)
-    san_total_paths_m = 2.0 * san_one_way_ranges_km * 1e3
+    # Memo 3 convention: after applying the Sanya satellite range correction,
+    # all three links use the same tx-target-rx zero-gate delay origin.
+    san_total_paths_m = delay_us_to_total_path_m(
+        sc.SANYA_CORRECTED_TXRX_DELAY_US + gate_to_delay_us(san_event.range_gate, san_event.sr_mhz)
+    )
     dan_total_paths_m = delay_us_to_total_path_m(DAN_CENTER_US + gate_to_delay_us(dan_event.range_gate, dan_event.sr_mhz))
     wen_total_paths_m = delay_us_to_total_path_m(WEN_CENTER_US + gate_to_delay_us(wen_event.range_gate, wen_event.sr_mhz))
 
-    x0 = initial_guess(san_event.az_deg, san_event.el_deg, float(np.median(san_one_way_ranges_km)))
+    x0 = initial_guess(san_event.az_deg, san_event.el_deg, float(np.nanmedian(san_total_paths_m) / 2e3))
     points_ecef_m = []
     measured_total_paths_m = []
     beijing_local_times_ns = []

@@ -8,8 +8,8 @@ from astropy.coordinates import CartesianRepresentation, GCRS, GeocentricTrueEcl
 from astropy.time import Time
 
 
-INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260611c.h5")
-OUTPUT_H5 = os.path.join("results", "sun_centered_ecliptic_radiants_v20260611c.h5")
+INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260613b.h5")
+OUTPUT_H5 = os.path.join("results", "sun_centered_ecliptic_radiants_v20260613b.h5")
 OUTPUT_PNG = os.path.join("results", "sun_centered_ecliptic_radiants.png")
 DIAGNOSTIC_OUTPUT_PNG = os.path.join("results", "sun_centered_ecliptic_radiants_diagnostic.png")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/sun_centered_ecliptic_radiants.png"

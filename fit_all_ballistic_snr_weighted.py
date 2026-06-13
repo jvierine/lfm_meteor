@@ -27,10 +27,10 @@ else:
     SIZE = COMM.Get_size()
 
 
-SCRIPT_VERSION = "v20260611c"
+SCRIPT_VERSION = "v20260613b"
 OUTPUT_H5 = os.path.join("results", f"all_tristatic_ballistic_snr_weighted_{SCRIPT_VERSION}.h5")
 OUTPUT_JSON = os.path.join("results", f"all_tristatic_ballistic_snr_weighted_{SCRIPT_VERSION}.json")
-FIT_H5 = "results/gcrs_trajectory_fits_lfm_ambiguity_v20260610.h5"
+FIT_H5 = "results/gcrs_trajectory_fits_lfm_ambiguity_v20260613b.h5"
 UPSAMPLE_FACTOR = 4
 MIN_POINTS = 8
 MAX_LAT_DEG = gfit.MAX_LAT_DEG
@@ -150,7 +150,11 @@ def matched_measurements_from_sites(san_event, dan_event, wen_event, site_data, 
         si, di, wi = match["san_idx"], match["dan_idx"], match["wen_idx"]
         measured.append(
             [
-                2.0 * refined["sanya_range_km"][si] * 1e3,
+                float(
+                    gfit.delay_us_to_total_path_m(
+                        sc.SANYA_CORRECTED_TXRX_DELAY_US + refined["sanya_gate"][si] / site_data["sanya"]["sr_mhz"]
+                    )
+                ),
                 float(gfit.delay_us_to_total_path_m(gfit.DAN_CENTER_US + refined["danzhou_gate"][di] / site_data["danzhou"]["sr_mhz"])),
                 float(gfit.delay_us_to_total_path_m(gfit.WEN_CENTER_US + refined["wenchang_gate"][wi] / site_data["wenchang"]["sr_mhz"])),
             ]

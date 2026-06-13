@@ -12,7 +12,7 @@ import sanya_opts as sc
 
 OUTPUT_PNG = os.path.join("results", "meteor_height_histogram.png")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_height_histogram.png"
-INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260611c.h5")
+INPUT_H5 = os.path.join("results", "all_tristatic_ballistic_snr_weighted_v20260613b.h5")
 BIN_SIZE_KM = 1.0
 COMMON_VOLUME_ALT_KM = 94.988
 MONOSTATIC_SANYA_H5 = os.path.join("results", "sanya_monostatic_ranges_v20260610.h5")
