@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--results-dir",
-        default="results/satellite_correlation/v20260613c_full",
+        default="results/satellite_correlation/v20260613c_snr15_full",
         help="Directory containing the satellite correlation CSV files.",
     )
     p.add_argument(
@@ -24,11 +24,12 @@ def parse_args() -> argparse.Namespace:
         default="/Users/jvi019/src/sanya_tristatic_paper/figures/satellite_candidates",
     )
     p.add_argument("--min-pulses", type=int, default=30)
-    p.add_argument("--max-groups", type=int, default=12)
-    p.add_argument("--max-beam-angle-deg", type=float, default=3.0)
-    p.add_argument("--min-median-snr-db", type=float, default=35.0)
-    p.add_argument("--target-offset-km", type=float, default=15.0)
-    p.add_argument("--offset-window-km", type=float, default=5.0)
+    p.add_argument("--max-groups", type=int, default=24)
+    p.add_argument("--max-beam-angle-deg", type=float, default=2.0)
+    p.add_argument("--min-median-snr-db", type=float, default=15.0)
+    p.add_argument("--max-offset-span-km", type=float, default=2.0)
+    p.add_argument("--target-offset-km", type=float, default=None)
+    p.add_argument("--offset-window-km", type=float, default=None)
     return p.parse_args()
 
 
@@ -78,6 +79,7 @@ def plot_group(raw: pd.DataFrame, group: pd.Series, out_png: str) -> None:
     title = (
         f"{group['event_id']}  NORAD {group['sat_id']}  alias {int(group['alias_n'])}\n"
         f"n={int(group['n_pulses'])}, median offset={float(group['median_range_offset_km']):.2f} km, "
+        f"span={float(group['offset_span_km']):.2f} km, "
         f"median beam={float(group['median_beam_angle_deg']):.2f} deg"
     )
     fig.suptitle(title, fontsize=10)
@@ -91,22 +93,41 @@ def main() -> None:
 
     grouped_path = os.path.join(args.results_dir, "sanya_satellite_detection_matches_grouped.csv")
     raw_path = os.path.join(args.results_dir, "sanya_satellite_detection_matches_raw.csv")
-    grouped = pd.read_csv(grouped_path)
-    raw = pd.read_csv(raw_path)
+    grouped = pd.read_csv(grouped_path, dtype={"sat_id": str})
+    raw = pd.read_csv(raw_path, dtype={"sat_id": str}, low_memory=False)
+
+    raw_keys = ["event_id", "sat_id", "alias_n"]
+    raw_for_span = raw.copy()
+    raw_for_span["sat_id"] = raw_for_span["sat_id"].astype(str)
+    offset_span = (
+        raw_for_span.groupby(raw_keys)["range_offset_km"]
+        .agg(offset_min_km="min", offset_max_km="max")
+        .reset_index()
+    )
+    offset_span["offset_span_km"] = (
+        offset_span["offset_max_km"] - offset_span["offset_min_km"]
+    )
+    grouped["sat_id"] = grouped["sat_id"].astype(str)
+    grouped = grouped.merge(offset_span, on=raw_keys, how="left")
 
     grouped = grouped[
         (grouped["n_pulses"] >= args.min_pulses)
         & (grouped["median_beam_angle_deg"] <= args.max_beam_angle_deg)
         & (grouped["median_snr_db"] >= args.min_median_snr_db)
+        & (grouped["offset_span_km"] <= args.max_offset_span_km)
     ].copy()
-    grouped["target_offset_error_km"] = (
-        grouped["median_range_offset_km"] - args.target_offset_km
-    ).abs()
-    grouped = grouped[grouped["target_offset_error_km"] <= args.offset_window_km]
-    grouped = grouped.sort_values(
-        ["target_offset_error_km", "median_beam_angle_deg", "n_pulses"],
-        ascending=[True, True, False],
-    )
+    if args.target_offset_km is not None and args.offset_window_km is not None:
+        grouped["target_offset_error_km"] = (
+            grouped["median_range_offset_km"] - args.target_offset_km
+        ).abs()
+        grouped = grouped[grouped["target_offset_error_km"] <= args.offset_window_km]
+        sort_cols = ["target_offset_error_km", "median_beam_angle_deg", "n_pulses"]
+        ascending = [True, True, False]
+    else:
+        grouped["target_offset_error_km"] = np.nan
+        sort_cols = ["median_beam_angle_deg", "n_pulses"]
+        ascending = [True, False]
+    grouped = grouped.sort_values(sort_cols, ascending=ascending)
     selected = grouped.head(args.max_groups)
 
     manifest = []
@@ -125,6 +146,7 @@ def main() -> None:
                 "median_range_offset_km": float(group["median_range_offset_km"]),
                 "median_beam_angle_deg": float(group["median_beam_angle_deg"]),
                 "median_snr_db": float(group["median_snr_db"]),
+                "offset_span_km": float(group["offset_span_km"]),
                 "target_offset_error_km": float(group["target_offset_error_km"]),
                 "path": out_png,
             }
@@ -138,7 +160,8 @@ def main() -> None:
         print(
             f"{item['path']}  sat={item['sat_id']} alias={item['alias_n']} "
             f"n={item['n_pulses']} beam={item['median_beam_angle_deg']:.2f} deg "
-            f"snr={item['median_snr_db']:.1f} dB offset={item['median_range_offset_km']:.2f} km"
+            f"snr={item['median_snr_db']:.1f} dB offset={item['median_range_offset_km']:.2f} km "
+            f"span={item['offset_span_km']:.2f} km"
         )
 
 

@@ -15,13 +15,13 @@ import pandas as pd
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--results-dir", default="results/satellite_correlation/v20260613c_full")
+    p.add_argument("--results-dir", default="results/satellite_correlation/v20260613c_snr15_full")
     p.add_argument(
         "--output-dir",
         default="/Users/jvi019/src/sanya_tristatic_paper/figures/satellite_low_beam_angle",
     )
     p.add_argument("--max-passes", type=int, default=24)
-    p.add_argument("--snr-min-db", type=float, default=35.0)
+    p.add_argument("--snr-min-db", type=float, default=15.0)
     p.add_argument("--contact-cols", type=int, default=3)
     return p.parse_args()
 
@@ -131,8 +131,12 @@ def make_contact_sheet(manifest: pd.DataFrame, output: str, cols: int) -> None:
 def main() -> None:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    passes = pd.read_csv(os.path.join(args.results_dir, "sanya_satellite_passes.csv"))
-    raw = pd.read_csv(os.path.join(args.results_dir, "sanya_satellite_detection_matches_raw.csv"))
+    passes = pd.read_csv(os.path.join(args.results_dir, "sanya_satellite_passes.csv"), dtype={"sat_id": str})
+    raw = pd.read_csv(
+        os.path.join(args.results_dir, "sanya_satellite_detection_matches_raw.csv"),
+        dtype={"sat_id": str},
+        low_memory=False,
+    )
 
     selected = passes.sort_values("min_beam_angle_deg").head(args.max_passes)
     manifest = []
