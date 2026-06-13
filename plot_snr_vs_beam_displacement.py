@@ -29,8 +29,8 @@ from grid_search_delays_beam_axis import (
 OUTPUT_PNG = os.path.join("results", "snr_vs_beam_displacement.png")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/memo_snr_beam_displacement.png"
 SANYA_BEAM_WIDTH_DEG = 0.9
-DEFAULT_DAN_DELAY_US = 359.0
-DEFAULT_WEN_DELAY_US = 360.0
+DEFAULT_DAN_DELAY_US = sc.DANZHOU_FIRST_SAMPLE_DELAY_US
+DEFAULT_WEN_DELAY_US = sc.WENCHANG_FIRST_SAMPLE_DELAY_US
 
 
 @dataclass

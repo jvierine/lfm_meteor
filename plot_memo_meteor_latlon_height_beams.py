@@ -31,8 +31,8 @@ DEFAULT_PAPER_OUTPUT = (
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--dan-delay-us", type=float, default=359.0)
-    p.add_argument("--wen-delay-us", type=float, default=360.0)
+    p.add_argument("--dan-delay-us", type=float, default=sc.DANZHOU_FIRST_SAMPLE_DELAY_US)
+    p.add_argument("--wen-delay-us", type=float, default=sc.WENCHANG_FIRST_SAMPLE_DELAY_US)
     p.add_argument("--max-lat-deg", type=float, default=18.7)
     p.add_argument("--beam-max-range-km", type=float, default=240.0)
     p.add_argument("--output", default=DEFAULT_OUTPUT)
