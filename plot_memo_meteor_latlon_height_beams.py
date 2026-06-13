@@ -159,7 +159,7 @@ def main() -> None:
     fig.suptitle(
         "Tri-static meteor head-echo positions and radar beam lines\n"
         f"Sanya correction {sc.SANYA_RANGE_CORRECTION_KM:+.4f} km; "
-        f"Danzhou delay {args.dan_delay_us:.0f} us; Wenchang delay {args.wen_delay_us:.0f} us"
+        f"Danzhou delay {args.dan_delay_us:.4f} us; Wenchang delay {args.wen_delay_us:.4f} us"
     )
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
