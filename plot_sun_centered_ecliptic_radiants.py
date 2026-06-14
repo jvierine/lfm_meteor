@@ -184,8 +184,9 @@ def observation_times(t0_ns):
     t0 = Time(float(np.nanmin(t0_ns)) / 1e9, format="unix", scale="utc")
     t1 = Time(float(np.nanmax(t0_ns)) / 1e9, format="unix", scale="utc")
     duration_h = (t1 - t0).to_value(u.hour)
-    n_step = max(2, int(np.ceil(duration_h * 60.0 / VISIBILITY_TIME_STEP_MIN)) + 1)
-    sample_times = t0 + np.linspace(0.0, duration_h, n_step) * u.hour
+    n_interval = max(1, int(np.ceil(duration_h * 60.0 / VISIBILITY_TIME_STEP_MIN)))
+    midpoint_h = (np.arange(n_interval, dtype=np.float64) + 0.5) * duration_h / n_interval
+    sample_times = t0 + midpoint_h * u.hour
     return t0, t1, sample_times
 
 
@@ -225,7 +226,8 @@ def radiant_visibility_grid(sample_times, fixed_equinox_iso, n_lon=145, n_lat=73
     visible_counts = np.zeros_like(plot_lon_mesh, dtype=np.float64)
 
     location = EarthLocation(lat=float(sc.lat0[0]) * u.deg, lon=float(sc.lon0[0]) * u.deg, height=float(sc.alt0[0]) * u.km)
-    ecliptic_frame = GeocentricTrueEcliptic(obstime=sample_times, equinox=Time(fixed_equinox_iso, format="isot", scale="utc"))
+    fixed_equinox = Time(fixed_equinox_iso, format="isot", scale="utc")
+    ecliptic_frame = GeocentricTrueEcliptic(obstime=sample_times, equinox=fixed_equinox)
     sun_ecl = get_sun(sample_times).transform_to(ecliptic_frame)
 
     flat_beta = beta_mesh.ravel()
@@ -235,13 +237,16 @@ def radiant_visibility_grid(sample_times, fixed_equinox_iso, n_lon=145, n_lat=73
         coord = SkyCoord(
             lon=lon_deg * u.deg,
             lat=flat_beta * u.deg,
-            frame=GeocentricTrueEcliptic(obstime=time, equinox=ecliptic_frame.equinox),
+            frame=GeocentricTrueEcliptic(obstime=time, equinox=fixed_equinox),
         )
         alt = coord.transform_to(AltAz(obstime=time, location=location)).alt.to_value(u.deg)
         visible_counts += (alt.reshape(plot_lon_mesh.shape) > 0.0).astype(np.float64)
 
-    dt_h = (sample_times[1] - sample_times[0]).to_value(u.hour) if len(sample_times) > 1 else 0.0
-    visibility_hours = np.minimum(visible_counts * dt_h, (sample_times[-1] - sample_times[0]).to_value(u.hour))
+    if len(sample_times) > 1:
+        dt_h = (sample_times[1] - sample_times[0]).to_value(u.hour)
+    else:
+        dt_h = VISIBILITY_TIME_STEP_MIN / 60.0
+    visibility_hours = visible_counts * dt_h
     return plot_lon_mesh, beta_mesh, visibility_hours
 
 
