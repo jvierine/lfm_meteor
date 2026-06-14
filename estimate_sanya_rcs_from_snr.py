@@ -6,6 +6,7 @@ import shutil
 import h5py
 import jcoord
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import numpy as np
 
 import fit_gcrs_trajectories_lfm_ambiguity as gfit
@@ -216,7 +217,6 @@ def make_plot(rows, joined_rows, output_base):
     alt_km = np.asarray([row["alt_km"] for row in rows], dtype=np.float64)
     joined_rcs_dbsm = np.asarray([row["rcs_dbsm"] for row in joined_rows], dtype=np.float64)
     joined_mass_kg = np.asarray([row["mass_kg"] for row in joined_rows], dtype=np.float64)
-    joined_b_drag = np.asarray([row["b_drag_m2_per_kg"] for row in joined_rows], dtype=np.float64)
     joined_speed_km_s = np.asarray([row["speed_km_s"] for row in joined_rows], dtype=np.float64)
     joined_frac_unc = np.asarray([row["frac_uncertainty"] for row in joined_rows], dtype=np.float64)
     constrained = np.isfinite(joined_frac_unc) & (joined_frac_unc < MAX_BALLISTIC_FRACTIONAL_UNCERTAINTY)
@@ -270,9 +270,9 @@ def make_plot(rows, joined_rows, output_base):
         mass_sc = axes[1, 0].scatter(
             joined_rcs_dbsm[constrained],
             joined_mass_kg[constrained],
-            c=joined_b_drag[constrained],
+            c=joined_speed_km_s[constrained],
             s=12,
-            cmap="plasma",
+            cmap="viridis",
             alpha=0.55,
             edgecolors="none",
         )
@@ -295,13 +295,25 @@ def make_plot(rows, joined_rows, output_base):
             bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.5},
         )
         cb_mass = fig.colorbar(mass_sc, ax=axes[1, 0], fraction=0.046, pad=0.035)
-        cb_mass.set_label(r"$B=C_DA/m$ (m$^2$ kg$^{-1}$)")
+        cb_mass.set_label(r"$v_g$ (km s$^{-1}$)")
 
-        axes[1, 1].scatter(joined_rcs_dbsm, joined_speed_km_s, s=12, color="#1b7837", alpha=0.5, edgecolors="none")
+        speed_mass_good = constrained & np.isfinite(joined_mass_kg) & (joined_mass_kg > 0.0)
+        speed_sc = axes[1, 1].scatter(
+            joined_rcs_dbsm[speed_mass_good],
+            joined_speed_km_s[speed_mass_good],
+            c=joined_mass_kg[speed_mass_good],
+            s=12,
+            cmap="magma",
+            norm=LogNorm(),
+            alpha=0.58,
+            edgecolors="none",
+        )
         axes[1, 1].set_xlabel("Sanya RCS estimate (dBsm)")
         axes[1, 1].set_ylabel(r"$v_g$ (km s$^{-1}$)")
         axes[1, 1].set_title(r"$v_g$ versus RCS")
         axes[1, 1].grid(True, color="0.88", lw=0.7)
+        cb_speed = fig.colorbar(speed_sc, ax=axes[1, 1], fraction=0.046, pad=0.035)
+        cb_speed.set_label("Mass estimate (kg)")
 
         png = f"{output_base}.png"
         pdf = f"{output_base}.pdf"
