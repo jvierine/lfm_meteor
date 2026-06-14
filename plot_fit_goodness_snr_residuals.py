@@ -75,30 +75,14 @@ def robust_ylim(values):
     return (-1.08 * limit, 1.08 * limit)
 
 
-def main_mode_median_sigma(values):
+def mean_standard_deviation(values):
     finite = np.asarray(values, dtype=np.float64)
     finite = finite[np.isfinite(finite)]
     if len(finite) < MIN_BIN_COUNT:
-        return np.nan, np.nan, len(finite)
-
-    center = float(np.nanmedian(finite))
-    sigma = 1.4826 * float(np.nanmedian(np.abs(finite - center)))
-    if not np.isfinite(sigma) or sigma <= 0.0:
-        sigma = float(np.nanstd(finite))
-    if not np.isfinite(sigma) or sigma <= 0.0:
-        return center, 0.0, len(finite)
-
-    for _ in range(3):
-        central = finite[np.abs(finite - center) <= 2.5 * sigma]
-        if len(central) < MIN_BIN_COUNT:
-            break
-        center = float(np.nanmedian(central))
-        sigma = 1.4826 * float(np.nanmedian(np.abs(central - center)))
-        if not np.isfinite(sigma) or sigma <= 0.0:
-            sigma = float(np.nanstd(central))
-        finite = central
-
-    return center, sigma, len(finite)
+        return np.nan, np.nan
+    center = float(np.nanmean(finite))
+    sigma = float(np.nanstd(finite, ddof=1))
+    return center, sigma
 
 
 def snr_bin_summaries(snr_db, values):
@@ -110,17 +94,16 @@ def snr_bin_summaries(snr_db, values):
         use = (snr_db >= lo) & (snr_db < hi) & np.isfinite(values)
         if np.count_nonzero(use) < MIN_BIN_COUNT:
             continue
-        median, sigma, n_main = main_mode_median_sigma(values[use])
-        if np.isfinite(median) and np.isfinite(sigma):
+        mean, sigma = mean_standard_deviation(values[use])
+        if np.isfinite(mean) and np.isfinite(sigma):
             summaries.append(
                 {
                     "lo": float(lo),
                     "hi": float(hi),
                     "center": 0.5 * float(lo + hi),
-                    "median": median,
+                    "mean": mean,
                     "sigma": sigma,
                     "n": int(np.count_nonzero(use)),
-                    "n_main": int(n_main),
                 }
             )
     return summaries
@@ -132,7 +115,7 @@ def draw_snr_summaries(ax, snr_db, values, color="#b2182b"):
         return summaries
 
     x = np.asarray([row["center"] for row in summaries], dtype=np.float64)
-    y = np.asarray([row["median"] for row in summaries], dtype=np.float64)
+    y = np.asarray([row["mean"] for row in summaries], dtype=np.float64)
     sigma = np.asarray([row["sigma"] for row in summaries], dtype=np.float64)
     ax.errorbar(
         x,
@@ -146,15 +129,15 @@ def draw_snr_summaries(ax, snr_db, values, color="#b2182b"):
         ecolor=color,
         elinewidth=1.4,
         capsize=3.0,
-        label=r"10 dB bin median $\pm\sigma$",
+        label=r"10 dB bin mean $\pm$ std.",
         zorder=5,
     )
 
     y0, y1 = ax.get_ylim()
     text_offset = 0.025 * (y1 - y0)
     for row in summaries:
-        sign = 1.0 if row["median"] >= 0.0 else -1.0
-        label_y = row["median"] + sign * (row["sigma"] + text_offset)
+        sign = 1.0 if row["mean"] >= 0.0 else -1.0
+        label_y = row["mean"] + sign * (row["sigma"] + text_offset)
         label_y = float(np.clip(label_y, y0 + 0.04 * (y1 - y0), y1 - 0.04 * (y1 - y0)))
         ax.text(
             row["center"],
@@ -240,8 +223,7 @@ def make_plot(input_h5, output_base, copy_to_article=False):
         for row in summaries:
             print(
                 f"  {row['lo']:.0f}-{row['hi']:.0f} dB: "
-                f"median={row['median']:.2f} m sigma_main={row['sigma']:.2f} m "
-                f"n={row['n']} n_main={row['n_main']}"
+                f"mean={row['mean']:.2f} m std={row['sigma']:.2f} m n={row['n']}"
             )
 
     if copy_to_article:
