@@ -11,6 +11,7 @@ from astropy.coordinates import GCRS, ITRS, CartesianRepresentation
 from astropy.time import Time
 
 import fit_gcrs_trajectories_lfm_ambiguity as gfit
+import plot_memo09_antenna_gain_patterns as gain_model
 
 
 INPUT_H5 = "results/all_tristatic_ballistic_snr_weighted_v20260613b.h5"
@@ -22,6 +23,7 @@ COMMON_VOLUME_LAT_DEG = 18.567821
 COMMON_VOLUME_LON_DEG = 109.683719
 COMMON_VOLUME_ALT_KM = 94.988
 SANYA_TX_BEAMWIDTH_3DB_DEG = 0.9
+SANYA_PATTERN_MIN_HALF_SPAN_KM = 4.0
 
 
 def decode_strings(values):
@@ -165,6 +167,38 @@ def horizontal_offsets_km(points_ecef_m, origin_ecef_m, lat_deg, lon_deg):
     east_km = (rel @ east) / 1e3
     north_km = (rel @ north) / 1e3
     return east_km, north_km
+
+
+def ecef_unit_to_enu(unit_ecef, lat_deg, lon_deg):
+    east, north, up = enu_basis(lat_deg, lon_deg)
+    vector = np.asarray(unit_ecef, dtype=np.float64)
+    return np.stack([vector @ east, vector @ north, vector @ up], axis=-1)
+
+
+def sanya_relative_gain_db_at_offsets(east_km, north_km, origin_ecef_m):
+    east_axis, north_axis, _up_axis = enu_basis(COMMON_VOLUME_LAT_DEG, COMMON_VOLUME_LON_DEG)
+    points = (
+        np.asarray(origin_ecef_m, dtype=np.float64)[None, None, :]
+        + np.asarray(east_km, dtype=np.float64)[..., None] * 1e3 * east_axis[None, None, :]
+        + np.asarray(north_km, dtype=np.float64)[..., None] * 1e3 * north_axis[None, None, :]
+    )
+    los_ecef = points - gfit.LINK_TX_POSITIONS_M[0][None, None, :]
+    los_ecef = los_ecef / np.linalg.norm(los_ecef, axis=-1, keepdims=True)
+    san_lat, san_lon, _san_alt = jcoord.ecef2geodetic(*gfit.LINK_TX_POSITIONS_M[0])
+    los_enu = ecef_unit_to_enu(los_ecef, san_lat, san_lon)
+
+    site = gain_model.SITES[0]
+    pointing = gain_model.unit(gain_model.azel_to_enu(site.pointing_az_deg, site.pointing_el_deg))
+    _normal, tilt_axis, panel_cross_axis = gain_model.panel_axes(site)
+    power = gain_model.aperture_power(
+        los_enu,
+        pointing,
+        tilt_axis,
+        panel_cross_axis,
+        site.dim_tilt_plane_m,
+        site.dim_cross_tilt_m,
+    )
+    return 10.0 * np.log10(np.maximum(power, 1e-10))
 
 
 def retained_sanya_snr_db(group, n_points):
@@ -318,17 +352,6 @@ def plot_event(h, idx, event_id, output_base):
         zorder=3,
     )
     ax_map.plot(fit_east_km, fit_north_km, color=fit_color, lw=1.8, label="_nolegend_", zorder=2)
-    beam_circle = plt.Circle(
-        (0.0, 0.0),
-        beam_radius_km,
-        fill=False,
-        color="0.25",
-        lw=1.2,
-        ls="--",
-        label="Sanya 3-dB beam",
-        zorder=1,
-    )
-    ax_map.add_patch(beam_circle)
     ax_map.set_aspect("equal", adjustable="box")
     padding_km = 0.15
     all_east = np.concatenate([measured_east_km, fit_east_km, [-beam_radius_km, beam_radius_km]])
@@ -336,13 +359,26 @@ def plot_event(h, idx, event_id, output_base):
     xmid = 0.5 * (np.nanmin(all_east) + np.nanmax(all_east))
     ymid = 0.5 * (np.nanmin(all_north) + np.nanmax(all_north))
     half_span = 0.5 * max(np.nanmax(all_east) - np.nanmin(all_east), np.nanmax(all_north) - np.nanmin(all_north))
-    half_span += padding_km
+    half_span = max(half_span + padding_km, SANYA_PATTERN_MIN_HALF_SPAN_KM)
+    pattern_grid = np.linspace(-half_span, half_span, 401)
+    pattern_east_km, pattern_north_km = np.meshgrid(pattern_grid, pattern_grid)
+    relative_gain_db = sanya_relative_gain_db_at_offsets(pattern_east_km, pattern_north_km, beam_center_ecef_m)
+    contours = ax_map.contour(
+        pattern_east_km,
+        pattern_north_km,
+        relative_gain_db,
+        levels=[-30.0, -20.0, -13.3, -3.0],
+        colors=["0.65", "0.45", "0.25", "0.10"],
+        linewidths=[0.7, 0.8, 0.95, 1.2],
+        linestyles=[":", "--", "-.", "-"],
+        zorder=1,
+    )
+    ax_map.clabel(contours, fmt={-30.0: "-30", -20.0: "-20", -13.3: "-13", -3.0: "-3 dB"}, fontsize=7)
     ax_map.set_xlim(xmid - half_span, xmid + half_span)
     ax_map.set_ylim(ymid - half_span, ymid + half_span)
     ax_map.set_xlabel("East (km)")
     ax_map.set_ylabel("North (km)")
     ax_map.grid(True, color="0.88", lw=0.7)
-    ax_map.legend(loc="best", frameon=False)
     cbar = fig.colorbar(snr_scatter, ax=ax_map, fraction=0.046, pad=0.04)
     cbar.set_label("Sanya SNR (dB)")
 
