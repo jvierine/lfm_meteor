@@ -347,8 +347,8 @@ def plot_event(h, idx, event_id, output_base):
         c=sanya_snr_db,
         s=22,
         cmap="viridis",
-        edgecolor="0.15",
-        linewidth=0.35,
+        edgecolors="none",
+        linewidths=0.0,
         zorder=3,
     )
     ax_map.plot(fit_east_km, fit_north_km, color=fit_color, lw=1.8, label="_nolegend_", zorder=2)
