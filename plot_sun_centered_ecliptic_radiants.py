@@ -19,6 +19,7 @@ PAPER_OUTPUT_PDF = "/Users/jvi019/src/sanya_tristatic_paper/figures/sun_centered
 PAPER_INTERVAL_TEX = "/Users/jvi019/src/sanya_tristatic_paper/tables/radiant_observation_interval.tex"
 PLOT_CENTER_LONGITUDE_DEG = 270.0
 VISIBILITY_TIME_STEP_MIN = 5.0
+ELEVATION_EFFICIENCY_BETA = 0.8125
 
 
 def fixed_ecliptic_equinox(times):
@@ -218,12 +219,20 @@ def write_interval_tex(path, t0, t1):
         fh.write("\\bottomrule\\end{tabular}\n")
 
 
+def elevation_detection_efficiency(elevation_deg, beta=ELEVATION_EFFICIENCY_BETA):
+    elevation_deg = np.asarray(elevation_deg, dtype=np.float64)
+    efficiency = np.sin(np.deg2rad(np.clip(elevation_deg, 0.0, 90.0))) ** (2.0 * beta)
+    efficiency[elevation_deg <= 0.0] = 0.0
+    return efficiency
+
+
 def radiant_visibility_grid(sample_times, fixed_equinox_iso, n_lon=145, n_lat=73):
     plot_lon_deg = np.linspace(-180.0, 180.0, n_lon)
     beta_deg = np.linspace(-90.0, 90.0, n_lat)
     plot_lon_mesh, beta_mesh = np.meshgrid(plot_lon_deg, beta_deg)
     lambda_minus_sun = plot_longitude_to_sun_centered_deg(plot_lon_mesh)
     visible_counts = np.zeros_like(plot_lon_mesh, dtype=np.float64)
+    effective_counts = np.zeros_like(plot_lon_mesh, dtype=np.float64)
 
     location = EarthLocation(lat=float(sc.lat0[0]) * u.deg, lon=float(sc.lon0[0]) * u.deg, height=float(sc.alt0[0]) * u.km)
     fixed_equinox = Time(fixed_equinox_iso, format="isot", scale="utc")
@@ -240,26 +249,29 @@ def radiant_visibility_grid(sample_times, fixed_equinox_iso, n_lon=145, n_lat=73
             frame=GeocentricTrueEcliptic(obstime=time, equinox=fixed_equinox),
         )
         alt = coord.transform_to(AltAz(obstime=time, location=location)).alt.to_value(u.deg)
-        visible_counts += (alt.reshape(plot_lon_mesh.shape) > 0.0).astype(np.float64)
+        alt_grid = alt.reshape(plot_lon_mesh.shape)
+        visible_counts += (alt_grid > 0.0).astype(np.float64)
+        effective_counts += elevation_detection_efficiency(alt_grid)
 
     if len(sample_times) > 1:
         dt_h = (sample_times[1] - sample_times[0]).to_value(u.hour)
     else:
         dt_h = VISIBILITY_TIME_STEP_MIN / 60.0
     visibility_hours = visible_counts * dt_h
-    return plot_lon_mesh, beta_mesh, visibility_hours
+    effective_hours = effective_counts * dt_h
+    return plot_lon_mesh, beta_mesh, visibility_hours, effective_hours
 
 
-def add_visibility_overlay(ax, plot_lon_mesh, beta_mesh, visibility_hours):
+def add_visibility_overlay(ax, plot_lon_mesh, beta_mesh, visibility_hours, effective_hours):
     x_rad = np.deg2rad(plot_lon_mesh)
     y_rad = np.deg2rad(beta_mesh)
     zero_visible = np.ma.masked_where(visibility_hours > 0.0, np.ones_like(visibility_hours))
     ax.contourf(x_rad, y_rad, zero_visible, levels=[0.5, 1.5], colors=["0.86"], alpha=1.0, zorder=0)
-    max_hours = float(np.nanmax(visibility_hours))
+    max_hours = float(np.nanmax(effective_hours))
     if max_hours >= 1.0:
         levels = np.arange(1.0, np.floor(max_hours) + 1.0, 1.0)
-        contours = ax.contour(x_rad, y_rad, visibility_hours, levels=levels, colors="0.35", linewidths=0.65, alpha=0.75, zorder=1)
-        ax.clabel(contours, fmt=lambda value: f"{value:.0f} h", fontsize=7, inline=True)
+        contours = ax.contour(x_rad, y_rad, effective_hours, levels=levels, colors="0.35", linewidths=0.65, alpha=0.75, zorder=1)
+        ax.clabel(contours, fmt=lambda value: f"{value:.0f} eff. h", fontsize=7, inline=True)
 
 
 def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s, visibility):
