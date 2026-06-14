@@ -149,16 +149,6 @@ def make_plot(input_h5, output_base, copy_to_article=False):
         }
     ):
         fig, ax = plt.subplots(figsize=(6.2, 5.25), constrained_layout=True)
-        ax.pcolormesh(
-            east_grid,
-            north_grid,
-            gain_db,
-            cmap="Greys_r",
-            vmin=-32.0,
-            vmax=0.0,
-            shading="auto",
-            rasterized=True,
-        )
         hist = ax.pcolormesh(
             east_edges,
             north_edges,
