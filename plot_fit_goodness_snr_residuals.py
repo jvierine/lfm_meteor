@@ -12,6 +12,8 @@ import plot_article_event_fit as event_plot
 INPUT_H5 = "results/all_tristatic_ballistic_snr_weighted_v20260613b.h5"
 OUTPUT_BASE = "results/fit_goodness_snr_residuals"
 ARTICLE_FIGURE_DIR = "/Users/jvi019/src/sanya_tristatic_paper/figures"
+SNR_BIN_WIDTH_DB = 10.0
+MIN_BIN_COUNT = 25
 
 
 def decode_strings(values):
@@ -73,6 +75,99 @@ def robust_ylim(values):
     return (-1.08 * limit, 1.08 * limit)
 
 
+def main_mode_median_sigma(values):
+    finite = np.asarray(values, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if len(finite) < MIN_BIN_COUNT:
+        return np.nan, np.nan, len(finite)
+
+    center = float(np.nanmedian(finite))
+    sigma = 1.4826 * float(np.nanmedian(np.abs(finite - center)))
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        sigma = float(np.nanstd(finite))
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        return center, 0.0, len(finite)
+
+    for _ in range(3):
+        central = finite[np.abs(finite - center) <= 2.5 * sigma]
+        if len(central) < MIN_BIN_COUNT:
+            break
+        center = float(np.nanmedian(central))
+        sigma = 1.4826 * float(np.nanmedian(np.abs(central - center)))
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            sigma = float(np.nanstd(central))
+        finite = central
+
+    return center, sigma, len(finite)
+
+
+def snr_bin_summaries(snr_db, values):
+    first_edge = SNR_BIN_WIDTH_DB * np.floor(np.nanmin(snr_db) / SNR_BIN_WIDTH_DB)
+    last_edge = SNR_BIN_WIDTH_DB * np.ceil(np.nanmax(snr_db) / SNR_BIN_WIDTH_DB)
+    edges = np.arange(first_edge, last_edge + SNR_BIN_WIDTH_DB, SNR_BIN_WIDTH_DB)
+    summaries = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        use = (snr_db >= lo) & (snr_db < hi) & np.isfinite(values)
+        if np.count_nonzero(use) < MIN_BIN_COUNT:
+            continue
+        median, sigma, n_main = main_mode_median_sigma(values[use])
+        if np.isfinite(median) and np.isfinite(sigma):
+            summaries.append(
+                {
+                    "lo": float(lo),
+                    "hi": float(hi),
+                    "center": 0.5 * float(lo + hi),
+                    "median": median,
+                    "sigma": sigma,
+                    "n": int(np.count_nonzero(use)),
+                    "n_main": int(n_main),
+                }
+            )
+    return summaries
+
+
+def draw_snr_summaries(ax, snr_db, values, color="#b2182b"):
+    summaries = snr_bin_summaries(snr_db, values)
+    if not summaries:
+        return summaries
+
+    x = np.asarray([row["center"] for row in summaries], dtype=np.float64)
+    y = np.asarray([row["median"] for row in summaries], dtype=np.float64)
+    sigma = np.asarray([row["sigma"] for row in summaries], dtype=np.float64)
+    ax.errorbar(
+        x,
+        y,
+        yerr=sigma,
+        fmt="s",
+        ms=4.2,
+        mfc=color,
+        mec="white",
+        mew=0.6,
+        ecolor=color,
+        elinewidth=1.4,
+        capsize=3.0,
+        label=r"10 dB bin median $\pm\sigma$",
+        zorder=5,
+    )
+
+    y0, y1 = ax.get_ylim()
+    text_offset = 0.025 * (y1 - y0)
+    for row in summaries:
+        sign = 1.0 if row["median"] >= 0.0 else -1.0
+        label_y = row["median"] + sign * (row["sigma"] + text_offset)
+        label_y = float(np.clip(label_y, y0 + 0.04 * (y1 - y0), y1 - 0.04 * (y1 - y0)))
+        ax.text(
+            row["center"],
+            label_y,
+            f"{row['sigma']:.0f} m",
+            ha="center",
+            va="bottom" if sign > 0 else "top",
+            fontsize=7.5,
+            color=color,
+        )
+    return summaries
+
+
 def make_plot(input_h5, output_base, copy_to_article=False):
     residuals = collect_residuals(input_h5)
     snr_db = residuals[:, 0]
@@ -95,6 +190,7 @@ def make_plot(input_h5, output_base, copy_to_article=False):
             (axes[0], along_residual_m, "Along-track residual (m)"),
             (axes[1], cross_residual_m, "Cross-track residual (m)"),
         ]
+        all_summaries = {}
         for ax, values, ylabel in panels:
             ax.scatter(
                 snr_db,
@@ -110,9 +206,12 @@ def make_plot(input_h5, output_base, copy_to_article=False):
             ax.set_xlabel("SNR (dB)")
             ax.set_ylabel(ylabel)
             ax.set_ylim(*robust_ylim(values))
+            ax.set_yscale("symlog", linthresh=2.0, linscale=0.7)
+            all_summaries[ylabel] = draw_snr_summaries(ax, snr_db, values)
 
         axes[0].set_title("Along-track")
         axes[1].set_title("Cross-track")
+        axes[0].legend(loc="lower right", frameon=True, framealpha=0.86)
         axes[0].text(
             0.02,
             0.98,
@@ -136,6 +235,14 @@ def make_plot(input_h5, output_base, copy_to_article=False):
     print(f"positions={len(snr_db)}")
     print(f"along_rms_m={np.sqrt(np.nanmean(along_residual_m**2)):.3f}")
     print(f"cross_rms_m={np.sqrt(np.nanmean(cross_residual_m**2)):.3f}")
+    for name, summaries in all_summaries.items():
+        print(name)
+        for row in summaries:
+            print(
+                f"  {row['lo']:.0f}-{row['hi']:.0f} dB: "
+                f"median={row['median']:.2f} m sigma_main={row['sigma']:.2f} m "
+                f"n={row['n']} n_main={row['n_main']}"
+            )
 
     if copy_to_article:
         os.makedirs(ARTICLE_FIGURE_DIR, exist_ok=True)
