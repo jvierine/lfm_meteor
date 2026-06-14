@@ -27,6 +27,9 @@ NOISE_BANDWIDTH_HZ = 1.0 / TX_PULSE_LENGTH_S
 SANYA_SYSTEM_TEMPERATURE_K = 120.0
 CONSERVATIVE_SYSTEM_TEMPERATURE_K = 130.0
 MIN_RELATIVE_GAIN_DB = -3.0
+RHO_METEOROID_KG_M3 = 3000.0
+CD_ASSUMED = 1.0
+MAX_BALLISTIC_FRACTIONAL_UNCERTAINTY = 1.0
 
 
 def decode_strings(values):
@@ -117,6 +120,63 @@ def collect_estimates(input_h5, system_temperature_k=SANYA_SYSTEM_TEMPERATURE_K)
     return rows
 
 
+def load_event_parameters(input_h5):
+    with h5py.File(input_h5, "r") as h:
+        event_ids = decode_strings(h["event_id"][:])
+        b_drag = np.asarray(h["b_drag_m2_per_kg"][:], dtype=np.float64)
+        log10_b_std = np.asarray(h["log10_b_std"][:], dtype=np.float64)
+        speed_km_s = np.asarray(h["speed_km_s"][:], dtype=np.float64)
+
+    sigma_b = np.log(10.0) * b_drag * log10_b_std
+    frac_unc = sigma_b / b_drag
+    params = {}
+    for event_id, b, s_log10, f_unc, speed in zip(event_ids, b_drag, log10_b_std, frac_unc, speed_km_s):
+        if not (np.isfinite(b) and b > 0.0):
+            continue
+        q_kg_m2, diameter_m, mass_kg = mass_from_b_drag(b)
+        params[event_id] = {
+            "b_drag_m2_per_kg": float(b),
+            "log10_b_std": float(s_log10),
+            "frac_uncertainty": float(f_unc),
+            "inverse_b_kg_per_m2": float(q_kg_m2),
+            "diameter_m": float(diameter_m),
+            "mass_kg": float(mass_kg),
+            "speed_km_s": float(speed),
+        }
+    return params
+
+
+def mass_from_b_drag(b_drag):
+    q_kg_m2 = 1.0 / np.asarray(b_drag, dtype=np.float64)
+    diameter_m = 3.0 * CD_ASSUMED * q_kg_m2 / (2.0 * RHO_METEOROID_KG_M3)
+    mass_kg = RHO_METEOROID_KG_M3 * np.pi * diameter_m**3 / 6.0
+    return q_kg_m2, diameter_m, mass_kg
+
+
+def event_level_rows(rows, event_params):
+    by_event = {}
+    for row in rows:
+        by_event.setdefault(row["event_id"], []).append(row)
+
+    event_rows = []
+    for event_id, event_pulses in by_event.items():
+        params = event_params.get(event_id)
+        if params is None:
+            continue
+        rcs_dbsm = np.asarray([row["rcs_dbsm"] for row in event_pulses], dtype=np.float64)
+        rcs_m2 = np.asarray([row["rcs_m2"] for row in event_pulses], dtype=np.float64)
+        event_rows.append(
+            {
+                "event_id": event_id,
+                "n_inbeam_pulses": len(event_pulses),
+                "median_rcs_dbsm": float(np.nanmedian(rcs_dbsm)),
+                "median_rcs_m2": float(np.nanmedian(rcs_m2)),
+                **params,
+            }
+        )
+    return event_rows
+
+
 def write_csv(rows, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fieldnames = list(rows[0].keys())
@@ -164,45 +224,90 @@ def write_summary_tex(rows, path):
         f.write("\\end{tabular}\n")
 
 
-def make_plot(rows, output_base):
+def make_plot(rows, event_rows, output_base):
     rcs_dbsm = np.asarray([row["rcs_dbsm"] for row in rows], dtype=np.float64)
     snr_db = np.asarray([row["sanya_snr_db"] for row in rows], dtype=np.float64)
     alt_km = np.asarray([row["alt_km"] for row in rows], dtype=np.float64)
+    event_rcs_dbsm = np.asarray([row["median_rcs_dbsm"] for row in event_rows], dtype=np.float64)
+    event_mass_kg = np.asarray([row["mass_kg"] for row in event_rows], dtype=np.float64)
+    event_b_drag = np.asarray([row["b_drag_m2_per_kg"] for row in event_rows], dtype=np.float64)
+    event_speed_km_s = np.asarray([row["speed_km_s"] for row in event_rows], dtype=np.float64)
+    event_frac_unc = np.asarray([row["frac_uncertainty"] for row in event_rows], dtype=np.float64)
+    constrained = np.isfinite(event_frac_unc) & (event_frac_unc < MAX_BALLISTIC_FRACTIONAL_UNCERTAINTY)
     with plt.rc_context(
         {
-            "font.size": 10.5,
-            "axes.labelsize": 11,
-            "axes.titlesize": 11,
-            "xtick.labelsize": 9.5,
-            "ytick.labelsize": 9.5,
+            "font.size": 9.5,
+            "axes.labelsize": 10,
+            "axes.titlesize": 10,
+            "xtick.labelsize": 8.5,
+            "ytick.labelsize": 8.5,
             "figure.dpi": 160,
             "savefig.dpi": 300,
         }
     ):
-        fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.4), constrained_layout=True)
+        fig, axes = plt.subplots(2, 2, figsize=(7.4, 6.2), constrained_layout=True)
+        axes = np.asarray(axes)
         bins = np.linspace(np.nanpercentile(rcs_dbsm, 1.0), np.nanpercentile(rcs_dbsm, 99.0), 34)
-        axes[0].hist(rcs_dbsm, bins=bins, color="#4c78a8", alpha=0.86)
-        axes[0].axvline(np.nanmedian(rcs_dbsm), color="0.15", lw=1.2, ls="--")
-        axes[0].set_xlabel("Sanya RCS estimate (dBsm)")
-        axes[0].set_ylabel("Pulse count")
-        axes[0].set_title("In-beam RCS distribution")
-        axes[0].text(
+        axes[0, 0].hist(rcs_dbsm, bins=bins, color="#4c78a8", alpha=0.86)
+        axes[0, 0].axvline(np.nanmedian(rcs_dbsm), color="0.15", lw=1.2, ls="--")
+        axes[0, 0].set_xlabel("Sanya RCS estimate (dBsm)")
+        axes[0, 0].set_ylabel("Pulse count")
+        axes[0, 0].set_title("In-beam RCS distribution")
+        axes[0, 0].text(
             0.03,
             0.96,
-            f"{len(rows):,} pulses inside Sanya -3 dB contour\nTsys={SANYA_SYSTEM_TEMPERATURE_K:.0f} K",
-            transform=axes[0].transAxes,
+            f"{len(rows):,} pulses; {len(event_rows):,} events\nTsys={SANYA_SYSTEM_TEMPERATURE_K:.0f} K",
+            transform=axes[0, 0].transAxes,
             ha="left",
             va="top",
-            fontsize=8.5,
+            fontsize=8,
             bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.5},
         )
-        sc = axes[1].scatter(snr_db, rcs_dbsm, c=alt_km, s=10, cmap="viridis", alpha=0.55, edgecolors="none")
-        axes[1].set_xlabel("Sanya SNR (dB)")
-        axes[1].set_ylabel("Sanya RCS estimate (dBsm)")
-        axes[1].set_title("RCS versus SNR")
-        axes[1].grid(True, color="0.88", lw=0.7)
-        cb = fig.colorbar(sc, ax=axes[1], fraction=0.046, pad=0.035)
+
+        sc = axes[0, 1].scatter(snr_db, rcs_dbsm, c=alt_km, s=10, cmap="viridis", alpha=0.55, edgecolors="none")
+        axes[0, 1].set_xlabel("Sanya SNR (dB)")
+        axes[0, 1].set_ylabel("Sanya RCS estimate (dBsm)")
+        axes[0, 1].set_title("RCS versus SNR")
+        axes[0, 1].grid(True, color="0.88", lw=0.7)
+        cb = fig.colorbar(sc, ax=axes[0, 1], fraction=0.046, pad=0.035)
         cb.set_label("Altitude (km)")
+
+        mass_sc = axes[1, 0].scatter(
+            event_rcs_dbsm[constrained],
+            event_mass_kg[constrained],
+            c=event_b_drag[constrained],
+            s=20,
+            cmap="plasma",
+            alpha=0.78,
+            edgecolors="none",
+        )
+        axes[1, 0].set_yscale("log")
+        axes[1, 0].set_xlabel("Event median Sanya RCS (dBsm)")
+        axes[1, 0].set_ylabel(r"Mass estimate (kg)")
+        axes[1, 0].set_title("Ballistic mass versus RCS")
+        axes[1, 0].grid(True, color="0.88", lw=0.7, which="both")
+        if np.any(constrained):
+            ylo, yhi = np.nanpercentile(event_mass_kg[constrained], [1.0, 99.0])
+            axes[1, 0].set_ylim(0.6 * ylo, 1.6 * yhi)
+        axes[1, 0].text(
+            0.03,
+            0.96,
+            rf"{int(np.count_nonzero(constrained))} events with $\sigma_B/B<1$",
+            transform=axes[1, 0].transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.5},
+        )
+        cb_mass = fig.colorbar(mass_sc, ax=axes[1, 0], fraction=0.046, pad=0.035)
+        cb_mass.set_label(r"$B=C_DA/m$ (m$^2$ kg$^{-1}$)")
+
+        axes[1, 1].scatter(event_rcs_dbsm, event_speed_km_s, s=20, color="#1b7837", alpha=0.7, edgecolors="none")
+        axes[1, 1].set_xlabel("Event median Sanya RCS (dBsm)")
+        axes[1, 1].set_ylabel(r"$v_g$ (km s$^{-1}$)")
+        axes[1, 1].set_title(r"$v_g$ versus RCS")
+        axes[1, 1].grid(True, color="0.88", lw=0.7)
+
         png = f"{output_base}.png"
         pdf = f"{output_base}.pdf"
         os.makedirs(os.path.dirname(png), exist_ok=True)
@@ -221,11 +326,12 @@ def main():
     args = parser.parse_args()
 
     rows = collect_estimates(args.input, system_temperature_k=args.system_temperature_k)
+    event_rows = event_level_rows(rows, load_event_parameters(args.input))
     csv_path = f"{args.output_base}.csv"
     tex_path = f"{args.output_base}_summary.tex"
     write_csv(rows, csv_path)
     write_summary_tex(rows, tex_path)
-    png, pdf = make_plot(rows, args.output_base)
+    png, pdf = make_plot(rows, event_rows, args.output_base)
 
     rcs_m2 = np.asarray([row["rcs_m2"] for row in rows], dtype=np.float64)
     rcs_dbsm = np.asarray([row["rcs_dbsm"] for row in rows], dtype=np.float64)
@@ -234,6 +340,7 @@ def main():
     print(f"wrote {png}")
     print(f"wrote {pdf}")
     print(f"n_in_3db={len(rows)}")
+    print(f"n_events_in_3db={len(event_rows)}")
     print(f"rcs_m2_median={np.nanmedian(rcs_m2):.6e}")
     print(f"rcs_dbsm_median={np.nanmedian(rcs_dbsm):.3f}")
     print(f"tsys_130k_scale={CONSERVATIVE_SYSTEM_TEMPERATURE_K / args.system_temperature_k:.6f}")
