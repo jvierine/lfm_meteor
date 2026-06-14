@@ -19,7 +19,7 @@ PAPER_OUTPUT_PDF = "/Users/jvi019/src/sanya_tristatic_paper/figures/sun_centered
 PAPER_INTERVAL_TEX = "/Users/jvi019/src/sanya_tristatic_paper/tables/radiant_observation_interval.tex"
 PLOT_CENTER_LONGITUDE_DEG = 270.0
 VISIBILITY_TIME_STEP_MIN = 5.0
-ELEVATION_EFFICIENCY_BETA = 0.8125
+RADIANT_ALTITUDE_GAMMA = 1.47
 
 
 def fixed_ecliptic_equinox(times):
@@ -219,9 +219,9 @@ def write_interval_tex(path, t0, t1):
         fh.write("\\bottomrule\\end{tabular}\n")
 
 
-def elevation_detection_efficiency(elevation_deg, beta=ELEVATION_EFFICIENCY_BETA):
+def elevation_detection_efficiency(elevation_deg, gamma=RADIANT_ALTITUDE_GAMMA):
     elevation_deg = np.asarray(elevation_deg, dtype=np.float64)
-    efficiency = np.sin(np.deg2rad(np.clip(elevation_deg, 0.0, 90.0))) ** (2.0 * beta)
+    efficiency = np.sin(np.deg2rad(np.clip(elevation_deg, 0.0, 90.0))) ** gamma
     efficiency[elevation_deg <= 0.0] = 0.0
     return efficiency
 
