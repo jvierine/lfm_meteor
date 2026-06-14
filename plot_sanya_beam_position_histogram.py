@@ -183,8 +183,9 @@ def make_plot(input_h5, output_base, copy_to_article=False):
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlim(-GRID_LIMIT_DEG, GRID_LIMIT_DEG)
         ax.set_ylim(-GRID_LIMIT_DEG, GRID_LIMIT_DEG)
-        ax.set_xlabel("East-west angular offset (deg)")
-        ax.set_ylabel("North-south angular offset (deg)")
+        ax.set_xlabel("East (deg)")
+        ax.set_ylabel("North (deg)")
+        ax.set_title("Tri-static head echo positions")
         ax.text(
             0.02,
             0.02,
