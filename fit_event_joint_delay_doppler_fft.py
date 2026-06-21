@@ -478,6 +478,30 @@ def radius_mass_interval_text(joint_fit):
     )
 
 
+def initial_speed_uncertainty_km_s(joint_fit):
+    params = np.asarray(joint_fit.get("params", np.nan), dtype=np.float64)
+    cov = np.asarray(joint_fit.get("parameter_covariance", np.nan), dtype=np.float64)
+    if params.shape[0] < 6 or cov.shape[0] < 6 or cov.shape[1] < 6:
+        return np.nan, np.nan
+    v0_mps = params[3:6]
+    v0_norm = float(np.linalg.norm(v0_mps))
+    if not np.isfinite(v0_norm) or v0_norm <= 0.0:
+        return np.nan, np.nan
+    v_cov = cov[3:6, 3:6]
+    variance = float(v0_mps @ v_cov @ v0_mps) / (v0_norm * v0_norm)
+    sigma_mps = np.sqrt(max(variance, 0.0))
+    return v0_norm / 1e3, sigma_mps / 1e3
+
+
+def fit_quality_annotation(joint_fit):
+    v0_km_s, v0_sigma_km_s = initial_speed_uncertainty_km_s(joint_fit)
+    return (
+        f"RMS delay residual = {joint_fit['rms_total_path_residual_m']:.1f} m\n"
+        f"RMS Doppler residual = {joint_fit['rms_path_rate_residual_mps']:.0f} m/s\n"
+        f"v0 = {v0_km_s:.2f} +/- {v0_sigma_km_s:.2f} km/s"
+    )
+
+
 def deterministic_rng(event_id):
     digest = hashlib.sha256(event_id.encode("utf-8")).digest()
     seed = int.from_bytes(digest[:8], "little", signed=False) % (2**32)
@@ -574,6 +598,16 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m):
     ax.set_title("Delay measurements and fit")
     ax.grid(True, alpha=0.25)
     ax.legend(loc="best", fontsize=8, ncols=1)
+    ax.text(
+        0.04,
+        0.05,
+        fit_quality_annotation(joint_fit),
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=8.0,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.0},
+    )
 
     ax = axes[0, 1]
     along_axis = np.nanmean(np.asarray(joint_fit["v_gcrs_mps"], dtype=np.float64), axis=0)
@@ -640,13 +674,6 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m):
     ax.grid(True, alpha=0.25)
     ax.legend(loc="best", fontsize=8)
 
-    fig.suptitle(
-        f"{event_id}: joint delay + dechirped FFT fit\n"
-        f"path RMS={joint_fit['rms_total_path_residual_m']:.1f} m, "
-        f"beat RMS={joint_fit['rms_fft_residual_hz'] / 1e3:.2f} kHz, "
-        f"FFT n={joint_fit['n_fft_observations']}",
-        fontsize=11,
-    )
     fig.savefig(f"{output_base}.png", dpi=220)
     fig.savefig(f"{output_base}.pdf")
     plt.close(fig)
