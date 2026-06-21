@@ -15,7 +15,7 @@ from fit_gcrs_trajectories_lfm_ambiguity import (
 )
 
 
-INPUT_H5 = os.path.join("results", "gcrs_trajectory_fits_lfm_ambiguity_v20260610.h5")
+INPUT_H5 = os.path.join("results", "gcrs_trajectory_fits_lfm_ambiguity_v20260613b.h5")
 OUTPUT_PNG = os.path.join("results", "lfm_corrected_vs_uncorrected_positions_debug.png")
 
 

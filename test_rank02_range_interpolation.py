@@ -44,7 +44,7 @@ else:
 SCRIPT_VERSION = "v20260611b"
 EVENT_ID_LOCAL = "tri_0134_1713850083054349899"
 EVENT_ID_UTC = "tri_0134_1713821283054349899"
-FIT_H5 = "results/gcrs_trajectory_fits_lfm_ambiguity_v20260610.h5"
+FIT_H5 = "results/gcrs_trajectory_fits_lfm_ambiguity_v20260613b.h5"
 OUTPUT_BASE = os.path.join("results", f"rank02_range_interpolation_test_{SCRIPT_VERSION}")
 UPSAMPLE_FACTORS = (1, 2, 4, 8, 16, 32)
 SEARCH_HALF_WIDTH_GATES = 2.0

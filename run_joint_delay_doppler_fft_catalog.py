@@ -13,6 +13,9 @@ from grid_search_delays_beam_axis import DAN_PATTERN, SAN_PATTERN, WEN_PATTERN, 
 
 SCRIPT_VERSION = "v20260618a"
 DEFAULT_OUTPUT_DIR = os.path.join("results", f"joint_delay_doppler_fft_catalog_{joint.SCRIPT_VERSION}")
+CANONICAL_SNR_MIN_DB = 15.0
+CANONICAL_CLIP_FFT_RESIDUAL_KHZ = 2.0
+CANONICAL_SIGMA_FFT_HZ = 5000.0
 
 
 def parse_key_value_stdout(stdout):
@@ -82,7 +85,12 @@ def write_summary(path, results, args_dict):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the adopted joint delay + dechirped FFT fit over tri-static events.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the canonical Sanya tri-static joint delay + dechirped FFT "
+            "beat-frequency fit over tri-static events."
+        )
+    )
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--summary-h5", default=None)
     parser.add_argument("--event-id", action="append", default=None, help="Restrict to one or more event ids.")
@@ -92,9 +100,9 @@ def main():
     parser.add_argument("--zero-pad-factor", type=int, default=64)
     parser.add_argument("--fft-gate-upsample-factor", type=int, default=32)
     parser.add_argument("--range-upsample-factor", type=int, default=32)
-    parser.add_argument("--sigma-fft-hz", type=float, default=5000.0)
-    parser.add_argument("--clip-fft-residual-khz", type=float, default=2.0)
-    parser.add_argument("--snr-min-db", type=float, default=15.0)
+    parser.add_argument("--sigma-fft-hz", type=float, default=CANONICAL_SIGMA_FFT_HZ)
+    parser.add_argument("--clip-fft-residual-khz", type=float, default=CANONICAL_CLIP_FFT_RESIDUAL_KHZ)
+    parser.add_argument("--snr-min-db", type=float, default=CANONICAL_SNR_MIN_DB)
     parser.add_argument("--prominence-min-db", type=float, default=8.0)
     args = parser.parse_args()
 

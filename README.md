@@ -176,67 +176,99 @@ Sanya ranges onto the TLE satellite range scale, apply:
 corrected_sanya_range_km = observed_sanya_range_km - 16.0186
 ```
 
-## GCRS Trajectory Fit Product
+## Canonical Tri-static Beat-frequency Fit Product
 
-The main trajectory product is:
+The normal Sanya meteor analysis pipeline is the joint delay plus dechirped FFT
+beat-frequency fit.  For tri-static meteors, use this catalog by default:
 
 ```text
-results/gcrs_trajectory_fits_lfm_ambiguity_v20260610.h5
+results/joint_delay_doppler_fft_catalog_v20260618b/
 ```
 
 It is produced by:
 
 ```bash
-python3 fit_gcrs_trajectories_lfm_ambiguity.py
+python3 run_joint_delay_doppler_fft_catalog.py --overwrite
 ```
 
-Root-level datasets:
+The canonical run uses:
 
 ```text
-event_id
-t0_ns, t0_utc
-t0_beijing_local_ns, t0_beijing_local
-n_points, duration_s
-r0_gcrs_m, v0_gcrs_mps
-r0_prior_gcrs_m, v0_prior_gcrs_mps
-speed_km_s, prior_speed_km_s
-start_alt_km, end_alt_km
-rms_total_path_residual_m
-median_abs_total_path_residual_m
-rms_half_path_diagnostic_residual_m
-median_abs_half_path_diagnostic_residual_m
-optimizer_success, optimizer_nfev
-link_names
-link_tx_positions_m
-link_rx_positions_m
+fft_model = "range_offset_corrected_beat"
+snr_min_db = 15
+clip_fft_residual_khz = 2.0
+sigma_fft_hz = 5000
+zero_pad_factor = 64
+fft_gate_upsample_factor = 32
+range_upsample_factor = 32
 ```
 
-Per-trajectory groups live under:
+Each event has a summary plot:
 
 ```text
-points/<event_id>/
+results/joint_delay_doppler_fft_catalog_v20260618b/joint_delay_doppler_fft_<event_id>.png
 ```
 
-Common per-point datasets:
+and a numerical HDF5 file:
 
 ```text
-time_ns                    UTC pulse time, ns
-beijing_local_time_ns       original local pulse time, ns
+results/joint_delay_doppler_fft_catalog_v20260618b/joint_delay_doppler_fft_<event_id>.h5
+```
+
+The event HDF5 files store the fitted quantities under:
+
+```text
+joint_fit/
+```
+
+Key datasets:
+
+```text
+time_ns
 t_rel_s
-itrs_fit_m
-itrs_fit_v_mps
-prior_points_ecef_m
-prior_points_gcrs_m
-lat_deg, lon_deg, alt_km
 measured_total_paths_m
 predicted_total_paths_m
-total_path_residuals_m
-measured_half_path_diagnostic_m
-predicted_half_path_diagnostic_m
-half_path_diagnostic_residuals_m
+path_residuals_m
+observed_fft_beat_hz
+model_fft_peak_hz
+fft_residuals_hz
+fft_keep
+fft_doppler_hz
+model_doppler_hz
+model_path_rate_mps
+path_rate_residuals_mps
+speed_km_s
 ```
 
-Relevant attributes:
+Important attributes include:
+
+```text
+fft_model = "range_offset_corrected_beat"
+rms_total_path_residual_m
+rms_fft_residual_hz
+n_points
+n_fft_observations
+initial_radius_m
+initial_mass_kg
+```
+
+Older delay-only, ambiguity-only, Rank02, and ACF Doppler scripts were
+exploratory.  Do not use them as the Sanya meteor analysis pipeline unless a
+specific historical comparison requires it.
+
+## Legacy GCRS Trajectory Fit Product
+
+The older GCRS ambiguity product is retained only as a support/input product
+for the canonical beat-frequency fit:
+
+```text
+results/gcrs_trajectory_fits_lfm_ambiguity_v20260613b.h5
+```
+
+It should not be treated as the final Sanya tri-static meteor fit product.
+The final fit product is the joint delay plus beat-frequency catalog above.
+
+Legacy attributes used by support code include:
 
 ```text
 fit_residual_coordinate = "total propagation path length"
@@ -334,15 +366,15 @@ explore.py
 matched_filter.py
 select_tristatic_events.py
 fix_local_tristatic_time_metadata.py
-fit_gcrs_trajectories_lfm_ambiguity.py
+run_joint_delay_doppler_fft_catalog.py
+fit_event_joint_delay_doppler_fft.py
 plot_sun_centered_ecliptic_radiants.py
 plot_geocentric_velocity_distribution.py
-plot_lfm_corrected_vs_uncorrected_positions.py
 simulate_lfm_range_doppler_test.py
 ```
 
 Use the local conda environment when running analysis scripts:
 
 ```bash
-source /opt/anaconda3/bin/activate base
+conda run -n base python run_joint_delay_doppler_fft_catalog.py
 ```

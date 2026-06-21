@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-INPUT_H5 = os.path.join("results", "gcrs_trajectory_fits_lfm_ambiguity_v20260610.h5")
+INPUT_H5 = os.path.join("results", "gcrs_trajectory_fits_lfm_ambiguity_v20260613b.h5")
 OUTPUT_H5 = os.path.join("results", "geocentric_velocity_distribution_v20260611.h5")
 OUTPUT_PNG = os.path.join("results", "geocentric_velocity_distribution.png")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/geocentric_velocity_distribution.png"

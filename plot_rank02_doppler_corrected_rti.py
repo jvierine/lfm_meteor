@@ -15,7 +15,7 @@ RADAR_FREQUENCY_HZ = 440e6
 RADAR_WAVELENGTH_M = C / RADAR_FREQUENCY_HZ
 EVENT_ID_LOCAL = "tri_0134_1713850083054349899"
 EVENT_ID_UTC = "tri_0134_1713821283054349899"
-FIT_H5 = "results/gcrs_trajectory_fits_lfm_ambiguity_v20260610.h5"
+FIT_H5 = "results/gcrs_trajectory_fits_lfm_ambiguity_v20260613b.h5"
 ARTICLE_FIGURE_DIR = "/Users/jvi019/src/sanya_tristatic_paper/figures"
 OUTPUT_BASE = os.path.join(ARTICLE_FIGURE_DIR, "tristatic_rank02_doppler_corrected_rti")
 

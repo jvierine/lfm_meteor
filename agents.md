@@ -51,3 +51,18 @@ Trajectory fitting delay convention:
 - Do not use a Sanya-only monostatic `2 * range` observable in the ballistic
   fit. The fitted Sanya, Danzhou, and Wenchang observables are all
   tx-target-rx path lengths.
+
+Canonical Sanya meteor analysis pipeline:
+- The normal tri-static analysis product is the joint delay plus dechirped FFT
+  beat-frequency catalog, not the older delay-only or ACF/Rank02 experiments.
+- Use `/Users/jvi019/src/lfm_meteor/results/joint_delay_doppler_fft_catalog_v20260618b/`
+  locally as the canonical catalog.
+- Generate it with `run_joint_delay_doppler_fft_catalog.py`; this calls
+  `fit_event_joint_delay_doppler_fft.py` with the range-offset-corrected beat
+  model.
+- Canonical run settings are `snr_min_db=15`, `clip_fft_residual_khz=2.0`,
+  `sigma_fft_hz=5000`, `zero_pad_factor=64`,
+  `fft_gate_upsample_factor=32`, and `range_upsample_factor=32`.
+- The older `gcrs_trajectory_fits_lfm_ambiguity_*` product is only a support
+  input/prior for this beat-frequency pipeline. Do not present it as the final
+  Sanya tri-static meteor analysis product.
