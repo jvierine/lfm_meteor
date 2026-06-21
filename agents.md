@@ -55,8 +55,10 @@ Trajectory fitting delay convention:
 Canonical Sanya meteor analysis pipeline:
 - The normal tri-static analysis product is the joint delay plus dechirped FFT
   beat-frequency catalog, not the older delay-only or ACF/Rank02 experiments.
-- Use `/Users/jvi019/src/lfm_meteor/results/joint_delay_doppler_fft_catalog_v20260618b/`
-  locally as the canonical catalog.
+- Use `/Users/jvi019/src/lfm_meteor/results/tristatic/` locally as the
+  canonical catalog. Do not put version numbers in the canonical directory
+  name for the current selected analysis pipeline; keep version provenance in
+  HDF5 attributes and script metadata.
 - Generate it with `run_joint_delay_doppler_fft_catalog.py`; this calls
   `fit_event_joint_delay_doppler_fft.py` with the range-offset-corrected beat
   model.

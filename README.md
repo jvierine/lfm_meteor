@@ -182,7 +182,7 @@ The normal Sanya meteor analysis pipeline is the joint delay plus dechirped FFT
 beat-frequency fit.  For tri-static meteors, use this catalog by default:
 
 ```text
-results/joint_delay_doppler_fft_catalog_v20260618b/
+results/tristatic/
 ```
 
 It is produced by:
@@ -206,13 +206,13 @@ range_upsample_factor = 32
 Each event has a summary plot:
 
 ```text
-results/joint_delay_doppler_fft_catalog_v20260618b/joint_delay_doppler_fft_<event_id>.png
+results/tristatic/joint_delay_doppler_fft_<event_id>.png
 ```
 
 and a numerical HDF5 file:
 
 ```text
-results/joint_delay_doppler_fft_catalog_v20260618b/joint_delay_doppler_fft_<event_id>.h5
+results/tristatic/joint_delay_doppler_fft_<event_id>.h5
 ```
 
 The event HDF5 files store the fitted quantities under:

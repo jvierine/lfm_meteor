@@ -10,7 +10,7 @@ import numpy as np
 import fit_all_ceplecha_snr_weighted as cepl
 
 
-DEFAULT_CATALOG_DIR = "results/joint_delay_doppler_fft_catalog_v20260618b"
+DEFAULT_CATALOG_DIR = "results/tristatic"
 DEFAULT_OUTPUT_BASE = "results/joint_fft_mass_distribution_v20260618a"
 PAPER_FIGURE_DIR = "/Users/jvi019/src/sanya_tristatic_paper/figures"
 

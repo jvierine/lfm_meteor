@@ -12,7 +12,7 @@ from grid_search_delays_beam_axis import DAN_PATTERN, SAN_PATTERN, WEN_PATTERN, 
 
 
 SCRIPT_VERSION = "v20260618a"
-DEFAULT_OUTPUT_DIR = os.path.join("results", f"joint_delay_doppler_fft_catalog_{joint.SCRIPT_VERSION}")
+DEFAULT_OUTPUT_DIR = os.path.join("results", "tristatic")
 CANONICAL_SNR_MIN_DB = 15.0
 CANONICAL_CLIP_FFT_RESIDUAL_KHZ = 2.0
 CANONICAL_SIGMA_FFT_HZ = 5000.0
