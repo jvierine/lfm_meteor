@@ -495,9 +495,12 @@ def initial_speed_uncertainty_km_s(joint_fit):
 
 def fit_quality_annotation(joint_fit):
     v0_km_s, v0_sigma_km_s = initial_speed_uncertainty_km_s(joint_fit)
+    delay_mad_m = float(np.nanmedian(np.abs(joint_fit["path_residuals_m"])))
+    keep = np.asarray(joint_fit["fft_keep"], dtype=bool)
+    doppler_mad_mps = float(np.nanmedian(np.abs(joint_fit["path_rate_residuals_mps"][keep])))
     return (
-        f"RMS delay residual = {joint_fit['rms_total_path_residual_m']:.1f} m\n"
-        f"RMS Doppler residual = {joint_fit['rms_path_rate_residual_mps']:.0f} m/s\n"
+        f"median |delay residual| = {delay_mad_m:.1f} m\n"
+        f"median |Doppler residual| = {doppler_mad_mps:.0f} m/s\n"
         f"v0 = {v0_km_s:.2f} +/- {v0_sigma_km_s:.2f} km/s"
     )
 
