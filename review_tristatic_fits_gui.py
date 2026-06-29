@@ -53,7 +53,7 @@ GUI_AUTO_OUTLIER_MAX_FRACTION = 0.35
 def reserve_review_keybindings():
     """Prevent Matplotlib defaults from eating review shortcuts."""
 
-    reserved = {"b", "r", "s", "v"}
+    reserved = {"B", "C", "b", "r", "s", "v"}
     for key in list(plt.rcParams):
         if key.startswith("keymap."):
             plt.rcParams[key] = [value for value in plt.rcParams[key] if value not in reserved]
@@ -910,6 +910,26 @@ class TristaticFitReviewer:
         self.save_current(draw=False)
         self.redraw()
 
+    def toggle_bad_quality(self):
+        if self.quality == QUALITY_BAD:
+            self.set_quality(QUALITY_UNKNOWN)
+        else:
+            self.set_quality(QUALITY_BAD)
+
+    def clear_manual_rejects(self):
+        if self.manual_reject_mask is None:
+            return
+        n_reject = int(np.count_nonzero(self.manual_reject_mask))
+        if n_reject == 0:
+            self.refit_message = "clear: none"
+            self.redraw()
+            return
+        self.manual_reject_mask = np.zeros_like(self.manual_reject_mask, dtype=bool)
+        self.mask_changed_since_refit = True
+        self.refit_message = f"cleared {n_reject}"
+        self.redraw()
+        self.schedule_background_refit(redraw=False)
+
     def set_model(self, label):
         if label == self.model:
             return
@@ -941,6 +961,10 @@ class TristaticFitReviewer:
             self.set_model(MODEL_LINEAR)
         elif event.key == "b":
             self.set_model(MODEL_CEPLECHA)
+        elif event.key in ("B", "shift+b"):
+            self.toggle_bad_quality()
+        elif event.key in ("C", "shift+c"):
+            self.clear_manual_rejects()
 
     def on_pick(self, event):
         if event.artist not in self.pick_artists or len(event.ind) == 0:
@@ -1213,8 +1237,8 @@ class TristaticFitReviewer:
             f"|r0| unc {sigma_r0_m:.1f} m",
             "",
             "click: reject",
-            "keys n/p g/x/u",
-            "a/r/s v/b",
+            "keys n/p g/x/u/B",
+            "a/r/s v/b C",
         ]
         self.status_text.set_text("\n".join(params_text))
         self.fig.canvas.draw_idle()
