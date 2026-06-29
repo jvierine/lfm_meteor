@@ -393,6 +393,7 @@ def load_noise_floor_temperature(path: str | os.PathLike) -> dict[str, dict[str,
             "floor_tsys_k": floor_tsys_k,
             "model_time": mdates.num2date(sky_model.time_to_mpl(times)),
             "model_tsys_k": fitted_tsys_k,
+            "t_rec_k": float(noise_model.FITTED_T_REC_K[site_name]),
         }
     return monitors
 
@@ -502,6 +503,8 @@ def make_plot(path: str, pdf_path: str, rows: list[dict], summaries: list[dict],
             all_noise_k.append(y_k[np.isfinite(y_k)])
             model_k = monitor["model_tsys_k"]
             all_noise_k.append(model_k[np.isfinite(model_k)])
+            t_rec_k = float(monitor["t_rec_k"])
+            all_noise_k.append(np.asarray([t_rec_k], dtype=np.float64))
             ax_noise.scatter(
                 monitor["floor_time"],
                 y_k,
@@ -519,6 +522,14 @@ def make_plot(path: str, pdf_path: str, rows: list[dict], summaries: list[dict],
                 linewidth=1.7,
                 alpha=0.95,
                 zorder=4,
+            )
+            ax_noise.axhline(
+                t_rec_k,
+                color=color,
+                linewidth=1.2,
+                linestyle=":",
+                alpha=0.42,
+                zorder=2,
             )
         if all_noise_k:
             combined = np.concatenate(all_noise_k)

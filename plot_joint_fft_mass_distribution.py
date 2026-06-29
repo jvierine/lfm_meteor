@@ -23,6 +23,19 @@ def mass_from_radius(radius_m):
     return (4.0 / 3.0) * np.pi * cepl.METEOROID_DENSITY_KG_M3 * np.asarray(radius_m, dtype=np.float64) ** 3.0
 
 
+def log10_mass_to_diameter_um(log10_mass_kg):
+    mass_kg = 10.0 ** np.asarray(log10_mass_kg, dtype=np.float64)
+    radius_m = (3.0 * mass_kg / (4.0 * np.pi * cepl.METEOROID_DENSITY_KG_M3)) ** (1.0 / 3.0)
+    return 2.0e6 * radius_m
+
+
+def diameter_um_to_log10_mass(diameter_um):
+    diameter_um = np.asarray(diameter_um, dtype=np.float64)
+    radius_m = 0.5e-6 * np.maximum(diameter_um, 1.0e-9)
+    mass_kg = mass_from_radius(radius_m)
+    return np.log10(mass_kg)
+
+
 def radius_mass_95_bounds(radius_m, log10_radius_std):
     if not np.isfinite(radius_m) or radius_m <= 0.0 or not np.isfinite(log10_radius_std):
         return np.nan, np.nan, np.nan, np.nan
@@ -165,8 +178,22 @@ def plot(output_base, rows, mask, args):
     ax.axvline(np.nanmedian(log_mass), color="#17463d", lw=1.8, ls="--")
     ax.set_xlabel(r"$\log_{10}(m_0)$, initial mass in kg")
     ax.set_ylabel("Number of fitted trajectories")
-    ax.set_title(r"Initial-mass distribution")
+    ax.set_title(r"Initial-mass distribution", pad=42)
     ax.set_ylim(0.0, float(np.nanmax(n_mass)) / 0.45)
+
+    ax_diameter = ax.secondary_xaxis(
+        "top",
+        functions=(log10_mass_to_diameter_um, diameter_um_to_log10_mass),
+    )
+    diameter_min, diameter_max = log10_mass_to_diameter_um(ax.get_xlim())
+    candidate_ticks = np.asarray([5.0, 10.0, 20.0, 30.0, 50.0, 100.0, 200.0, 500.0])
+    diameter_ticks = candidate_ticks[
+        (candidate_ticks >= 0.9 * min(diameter_min, diameter_max))
+        & (candidate_ticks <= 1.1 * max(diameter_min, diameter_max))
+    ]
+    if diameter_ticks.size >= 2:
+        ax_diameter.set_xticks(diameter_ticks)
+    ax_diameter.set_xlabel(r"Equivalent diameter ($\mu$m)")
 
     ax_points = ax.twinx()
     order = np.argsort(log_mass)
@@ -213,8 +240,8 @@ def plot(output_base, rows, mask, args):
         edgecolor="0.82",
         fontsize=9.2,
     )
-    fig.savefig(output_base + ".png", dpi=300)
-    fig.savefig(output_base + ".pdf")
+    fig.savefig(output_base + ".png", dpi=300, bbox_inches="tight", pad_inches=0.03)
+    fig.savefig(output_base + ".pdf", bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
 
 

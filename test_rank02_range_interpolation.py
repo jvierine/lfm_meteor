@@ -85,7 +85,7 @@ def log(message):
         print(message, flush=True)
 
 
-def lfm(length_us=199, sr_mhz=4.0, bandwidth_hz=4e6, chirp_rate_scale=REFERENCE_CHIRP_RATE_SCALE):
+def lfm(length_us=200, sr_mhz=4.0, bandwidth_hz=4e6, chirp_rate_scale=REFERENCE_CHIRP_RATE_SCALE):
     t_s = np.arange(int(round(length_us * sr_mhz)), dtype=np.float64) / (sr_mhz * 1e6)
     sweep_rate = bandwidth_hz * 1e6 / length_us / 2.0 * float(chirp_rate_scale)
     code = np.exp(1j * 2.0 * np.pi * (t_s * bandwidth_hz / 2.0 - sweep_rate * t_s**2.0))

@@ -50,8 +50,11 @@ def load_existing_result_summary(output_h5):
                 "n_fft_observations",
                 "n_delay_clipped_observations",
                 "rms_total_path_residual_m",
+                "mean_abs_total_path_residual_m",
                 "rms_fft_residual_hz",
+                "mean_abs_fft_residual_hz",
                 "rms_path_rate_residual_mps",
+                "mean_abs_path_rate_residual_mps",
                 "initial_radius_m",
                 "initial_mass_kg",
                 "fallback_log10_radius_std",
@@ -68,8 +71,11 @@ def load_existing_result_summary(output_h5):
             if "mass_kg" in jg:
                 out["joint_final_mass_kg"] = float(jg["mass_kg"][-1])
             out["joint_path_rms_m"] = out.get("rms_total_path_residual_m", np.nan)
+            out["joint_path_mean_abs_m"] = out.get("mean_abs_total_path_residual_m", np.nan)
             out["joint_fft_rms_hz"] = out.get("rms_fft_residual_hz", np.nan)
+            out["joint_fft_mean_abs_hz"] = out.get("mean_abs_fft_residual_hz", np.nan)
             out["joint_path_rate_rms_mps"] = out.get("rms_path_rate_residual_mps", np.nan)
+            out["joint_path_rate_mean_abs_mps"] = out.get("mean_abs_path_rate_residual_mps", np.nan)
             out["joint_radius_um"] = out.get("initial_radius_m", np.nan) * 1e6
             out["joint_initial_mass_kg"] = out.get("initial_mass_kg", np.nan)
             for key in ("dynamical_model", "fallback_reason", "bad_fit_reasons", "bad_fit_recovery_step", "pre_recovery_bad_fit_reasons"):
@@ -130,8 +136,11 @@ def write_summary(path, results, args_dict):
             "n_delay_clipped_observations",
             "delay_only_path_rms_m",
             "joint_path_rms_m",
+            "joint_path_mean_abs_m",
             "joint_fft_rms_hz",
+            "joint_fft_mean_abs_hz",
             "joint_path_rate_rms_mps",
+            "joint_path_rate_mean_abs_mps",
             "all_finite_path_residual_rms_m",
             "delay_only_radius_um",
             "joint_radius_um",

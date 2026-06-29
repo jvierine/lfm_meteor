@@ -16,7 +16,8 @@ import h5py
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.widgets import Button
+from matplotlib.path import Path as MplPath
+from matplotlib.widgets import Button, LassoSelector
 
 import fit_gcrs_trajectories_lfm_ambiguity as gfit
 import fit_event_joint_delay_doppler_fft as joint_fit
@@ -29,7 +30,7 @@ SITE_COLORS = ("#4c78a8", "#f58518", "#54a24b")
 
 
 def reserve_keybindings():
-    reserved = {"left", "right", "r", "R"}
+    reserved = {"left", "right", "r", "R", "f", "F", "g", "G", "c", "C"}
     for key in list(plt.rcParams):
         if key.startswith("keymap."):
             plt.rcParams[key] = [value for value in plt.rcParams[key] if value not in reserved]
@@ -82,8 +83,12 @@ def h5_summary(path: Path):
                 "n_coincident_delay_constraint_rows",
                 "coincident_delay_weight",
                 "rms_total_path_residual_m",
+                "mean_abs_total_path_residual_m",
                 "rms_fft_residual_hz",
+                "mean_abs_fft_residual_hz",
                 "rms_path_rate_residual_mps",
+                "mean_abs_path_rate_residual_mps",
+                "fit_mode",
                 "fit_epoch_time_ns",
             ):
                 if key in g.attrs:
@@ -199,6 +204,9 @@ class EventPlotBrowser:
         self.fft_outlier = None
         self.pick_map = {}
         self.fft_secondary_axis = None
+        self.lasso = None
+        self.lasso_fft = None
+        self.lasso_axes_kind = {}
 
         self.fig, axes = plt.subplots(2, 2, figsize=(12.0, 8.8))
         plt.subplots_adjust(left=0.07, right=0.98, bottom=0.12, top=0.90, hspace=0.32, wspace=0.26)
@@ -209,19 +217,45 @@ class EventPlotBrowser:
         self.status_text = self.fig.text(0.07, 0.055, "", ha="left", va="bottom", fontsize=8.2, family="monospace")
         self.msg_text = self.fig.text(0.07, 0.025, "", ha="left", va="bottom", fontsize=9)
         self.buttons = {
-            "prev": Button(self.fig.add_axes([0.67, 0.035, 0.07, 0.045]), "Left"),
-            "next": Button(self.fig.add_axes([0.75, 0.035, 0.07, 0.045]), "Right"),
-            "refit": Button(self.fig.add_axes([0.84, 0.035, 0.11, 0.045]), "Refit (R)"),
+            "prev": Button(self.fig.add_axes([0.55, 0.035, 0.07, 0.045]), "Left"),
+            "next": Button(self.fig.add_axes([0.63, 0.035, 0.07, 0.045]), "Right"),
+            "delay_fit": Button(self.fig.add_axes([0.72, 0.035, 0.10, 0.045]), "Delay (F)"),
+            "joint_fit": Button(self.fig.add_axes([0.84, 0.035, 0.11, 0.045]), "Joint (G)"),
         }
         self.buttons["prev"].on_clicked(lambda _event: self.goto(self.index - 1))
         self.buttons["next"].on_clicked(lambda _event: self.goto(self.index + 1))
-        self.buttons["refit"].on_clicked(lambda _event: self.refit_current())
+        self.buttons["delay_fit"].on_clicked(lambda _event: self.refit_current("delay-only"))
+        self.buttons["joint_fit"].on_clicked(lambda _event: self.refit_current("joint"))
         self.fig.canvas.mpl_connect("key_press_event", self.on_key)
         self.fig.canvas.mpl_connect("pick_event", self.on_pick)
         self.timer = self.fig.canvas.new_timer(interval=500)
         self.timer.add_callback(self.poll_refit)
         self.timer.start()
+        self.setup_lasso()
         self.load_current()
+
+    def setup_lasso(self):
+        if self.lasso is not None:
+            try:
+                self.lasso.disconnect_events()
+            except Exception:
+                pass
+        if self.lasso_fft is not None:
+            try:
+                self.lasso_fft.disconnect_events()
+            except Exception:
+                pass
+        self.lasso_axes_kind = {self.ax_delay: "delay", self.ax_fft: "fft"}
+        self.lasso = LassoSelector(
+            self.ax_delay,
+            onselect=lambda verts: self.on_lasso("delay", verts),
+            button=1,
+        )
+        self.lasso_fft = LassoSelector(
+            self.ax_fft,
+            onselect=lambda verts: self.on_lasso("fft", verts),
+            button=1,
+        )
 
     def current(self):
         return self.rows[self.index]
@@ -359,13 +393,51 @@ class EventPlotBrowser:
             f"recovery: {summary.get('bad_fit_recovery_step', '')}",
             f"coincident rows: {summary.get('n_coincident_delay_constraint_rows', '')}",
             f"coincident weight: {summary.get('coincident_delay_weight', self.coincident_delay_weight)}",
+            f"fit mode: {summary.get('fit_mode', '')}",
             f"path rms m: {float(summary.get('rms_total_path_residual_m', np.nan)):.3g}",
+            f"path mean |m|: {float(summary.get('mean_abs_total_path_residual_m', np.nan)):.3g}",
             f"fft rms Hz: {float(summary.get('rms_fft_residual_hz', np.nan)):.3g}",
+            f"fft mean |Hz|: {float(summary.get('mean_abs_fft_residual_hz', np.nan)):.3g}",
             f"manual delay out: {int(np.count_nonzero(self.delay_outlier)) if self.delay_outlier is not None else 0}",
             f"manual fft out: {int(np.count_nonzero(self.fft_outlier)) if self.fft_outlier is not None else 0}",
-            "keys: left/right browse | click bottom panels toggles outlier | R refits with random starts + model re-evaluation | q closes",
+            "keys: left/right browse | lasso bottom panel = included points | click toggles | F delay-only fit | G/R joint fit | C clear masks | q closes",
         ]
         return " | ".join(str(line) for line in lines if str(line))
+
+    def save_current_masks(self):
+        row = self.current()
+        save_manual_masks(
+            self.manual_outlier_h5,
+            row["event_id"],
+            self.event_arrays["time_ns"],
+            self.delay_outlier,
+            self.fft_outlier,
+        )
+
+    def on_lasso(self, kind, vertices):
+        if self.event_arrays is None or self.delay_outlier is None or self.fft_outlier is None:
+            return
+        if vertices is None or len(vertices) < 3:
+            return
+        selector = MplPath(vertices)
+        t = np.asarray(self.event_arrays["t_rel_s"], dtype=np.float64)
+        if kind == "delay":
+            y = np.asarray(self.event_arrays["path_residuals_m"], dtype=np.float64)
+            finite = np.isfinite(t[:, None]) & np.isfinite(y)
+            points = np.column_stack([np.repeat(t, 3), y.reshape(-1)])
+            inside = selector.contains_points(points).reshape(y.shape) & finite
+            self.delay_outlier[finite] = ~inside[finite]
+            n_in = int(np.count_nonzero(inside))
+        else:
+            y = np.asarray(self.event_arrays["fft_residuals_hz"], dtype=np.float64) / 1e3
+            finite = np.isfinite(t[:, None]) & np.isfinite(y)
+            points = np.column_stack([np.repeat(t, 3), y.reshape(-1)])
+            inside = selector.contains_points(points).reshape(y.shape) & finite
+            self.fft_outlier[finite] = ~inside[finite]
+            n_in = int(np.count_nonzero(inside))
+        self.save_current_masks()
+        self.message = f"{self.current()['event_id']}: lasso kept {n_in} {kind} measurements"
+        self.load_current()
 
     def on_pick(self, event):
         if event.artist not in self.pick_map or self.event_arrays is None:
@@ -380,14 +452,8 @@ class EventPlotBrowser:
         else:
             self.fft_outlier[row_idx, col] = ~self.fft_outlier[row_idx, col]
             state = "outlier" if self.fft_outlier[row_idx, col] else "not outlier"
+        self.save_current_masks()
         row = self.current()
-        save_manual_masks(
-            self.manual_outlier_h5,
-            row["event_id"],
-            self.event_arrays["time_ns"],
-            self.delay_outlier,
-            self.fft_outlier,
-        )
         self.message = f"{row['event_id']}: {kind} {SITE_LABELS[col]} row {row_idx} -> {state}"
         self.load_current()
 
@@ -400,12 +466,21 @@ class EventPlotBrowser:
             self.goto(self.index + 1)
         elif event.key == "left":
             self.goto(self.index - 1)
-        elif event.key in {"r", "R"}:
-            self.refit_current()
+        elif event.key in {"f", "F"}:
+            self.refit_current("delay-only")
+        elif event.key in {"g", "G", "r", "R"}:
+            self.refit_current("joint")
+        elif event.key in {"c", "C"}:
+            if self.event_arrays is not None:
+                self.delay_outlier[:, :] = False
+                self.fft_outlier[:, :] = False
+                self.save_current_masks()
+                self.message = f"{self.current()['event_id']}: cleared manual masks"
+                self.load_current()
         elif event.key == "q":
             plt.close(self.fig)
 
-    def refit_command(self, row):
+    def refit_command(self, row, fit_mode):
         script = Path(__file__).with_name("fit_event_joint_delay_doppler_fft.py")
         return [
             sys.executable,
@@ -416,6 +491,10 @@ class EventPlotBrowser:
             str(self.snr_min_db),
             "--output-base",
             str(row["base"]),
+            "--seed-from-existing-h5",
+            str(row["h5"]),
+            "--fit-mode",
+            str(fit_mode),
             "--manual-outlier-h5",
             str(self.manual_outlier_h5),
             "--random-initial-guesses",
@@ -428,28 +507,29 @@ class EventPlotBrowser:
             *self.extra_fit_args,
         ]
 
-    def run_refit(self, row):
-        cmd = self.refit_command(row)
+    def run_refit(self, row, fit_mode):
+        cmd = self.refit_command(row, fit_mode)
         proc = subprocess.run(cmd, cwd=Path(__file__).parent, text=True, capture_output=True)
-        return proc.returncode, proc.stdout, proc.stderr, cmd
+        return proc.returncode, proc.stdout, proc.stderr, cmd, fit_mode
 
-    def refit_current(self):
+    def refit_current(self, fit_mode="joint"):
         if self.pending is not None and not self.pending.done():
             self.message = "Refit already running."
             self.load_current()
             return
         row = dict(self.current())
-        self.message = f"Refitting {row['event_id']}..."
-        self.pending = self.executor.submit(self.run_refit, row)
+        label = "delay-only" if fit_mode == "delay-only" else "delay+beat"
+        self.message = f"Refitting {row['event_id']} ({label}, CV vs SR model selection)..."
+        self.pending = self.executor.submit(self.run_refit, row, fit_mode)
         self.load_current()
 
     def poll_refit(self):
         if self.pending is None or not self.pending.done():
             return True
         try:
-            returncode, stdout, stderr, cmd = self.pending.result()
+            returncode, stdout, stderr, cmd, fit_mode = self.pending.result()
             if returncode == 0:
-                self.message = f"Refit finished: {self.current()['event_id']}"
+                self.message = f"Refit finished ({fit_mode}): {self.current()['event_id']}"
             else:
                 self.message = (
                     f"Refit failed ({returncode}): {self.current()['event_id']}\n"

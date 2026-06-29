@@ -26,6 +26,7 @@ SITE_ORDER = ("sanya", "danzhou", "wenchang")
 SITE_LABELS = ("Sanya", "Danzhou", "Wenchang")
 DEFAULT_FFT_TIME_PAD_US = 50.0
 DEFAULT_REFERENCE_CHIRP_RATE_SCALE = gfit.REFERENCE_CHIRP_RATE_SCALE
+CANONICAL_PULSE_LENGTH_US = gfit.LFM_DURATION_S * 1e6
 DEFAULT_FINAL_DELAY_RESIDUAL_CLIP_M = 50.0
 DEFAULT_MAX_LOG10_RADIUS_STD = 1.0
 DEFAULT_SYSTEM_NOISE_H5 = os.path.join("results", "sanya_4mhz_system_noise_power_100pulse.h5")
@@ -107,7 +108,7 @@ class RawVoltageNoisePower:
 
 
 def normalized_matched_filter_snr_db(site_data, refined_gate, site, noise_power):
-    pulse_length_us = float(site_data.get("pulse_length_us", 199.0))
+    pulse_length_us = CANONICAL_PULSE_LENGTH_US
     sr_mhz = float(site_data["sr_mhz"])
     bw_mhz = float(site_data["bw_mhz"])
     code, _t_s = interp.lfm(
@@ -235,6 +236,32 @@ def load_manual_outlier_masks(path, event_id, times_ns, n_sites=3):
     except Exception as exc:
         print(f"manual_outlier_warning={exc}")
     return path_mask, fft_mask
+
+
+def seed_params_from_existing_h5(path, fit_epoch_time_ns, default_radius_m=20e-6):
+    if not path or not os.path.exists(path):
+        return None, None
+    try:
+        with h5py.File(path, "r") as h:
+            if "joint_fit" not in h or "params" not in h["joint_fit"]:
+                return None, None
+            group = h["joint_fit"]
+            params = np.asarray(group["params"][:], dtype=np.float64)
+            model_kind = group.attrs.get("dynamical_model", "ceplecha")
+            if isinstance(model_kind, bytes):
+                model_kind = model_kind.decode("utf-8")
+            old_epoch_time_ns = int(group.attrs.get("fit_epoch_time_ns", fit_epoch_time_ns))
+    except Exception:
+        return None, None
+    if params.size < 6 or not np.all(np.isfinite(params[:6])):
+        return None, None
+    shifted = shift_constant_velocity_epoch([params[:6]], old_epoch_time_ns, fit_epoch_time_ns)[0]
+    if str(model_kind) == "ceplecha" and params.size >= 7 and np.isfinite(params[6]):
+        seed = np.asarray(params[:7], dtype=np.float64).copy()
+        seed[:6] = shifted[:6]
+        return seed, "existing_ceplecha"
+    seed = np.concatenate([shifted[:6], [np.log10(float(default_radius_m))]])
+    return seed, "existing_constant_velocity_promoted"
 
 
 def assemble_union_measurements_from_sites(events_by_site, site_data, refined, snr_by_site):
@@ -397,7 +424,7 @@ def estimate_fft_observations(
     for site_col, site in enumerate(SITE_ORDER):
         data = site_data[site]
         gates = refined[f"{site}_gate"]
-        pulse_length_us = float(data.get("pulse_length_us", 199.0))
+        pulse_length_us = CANONICAL_PULSE_LENGTH_US
         for row_idx, src_idx in enumerate(source_indices[:, site_col]):
             if src_idx < 0 or src_idx >= data["raw"].shape[0]:
                 continue
@@ -436,6 +463,8 @@ def load_site_h5_with_pulse(path, fit, site):
     with h5py.File(path, "r") as h:
         if "pulse_length_us" in h:
             data["pulse_length_us"] = float(h["pulse_length_us"][()])
+    data["source_pulse_length_us"] = float(data.get("pulse_length_us", np.nan))
+    data["pulse_length_us"] = CANONICAL_PULSE_LENGTH_US
     return data
 
 
@@ -769,6 +798,9 @@ def fit_joint_delay_doppler(
         "all_finite_path_residual_rms_m": float(np.sqrt(np.nanmean(all_finite_path_resid_m**2.0))) if all_finite_path_resid_m.size else np.nan,
         "rms_fft_residual_hz": float(np.sqrt(np.nanmean(retained_fft_resid_hz**2.0))) if retained_fft_resid_hz.size else np.nan,
         "rms_path_rate_residual_mps": float(np.sqrt(np.nanmean(retained_path_rate_resid_mps**2.0))) if retained_path_rate_resid_mps.size else np.nan,
+        "mean_abs_total_path_residual_m": finite_mean_abs(retained_path_resid_m),
+        "mean_abs_fft_residual_hz": finite_mean_abs(retained_fft_resid_hz),
+        "mean_abs_path_rate_residual_mps": finite_mean_abs(retained_path_rate_resid_mps),
         "weighted_rms": float(np.sqrt(np.nanmean(residual(result.x) ** 2.0))),
         "parameter_covariance": covariance["parameter_covariance"],
         "parameter_std": covariance["parameter_std"],
@@ -795,6 +827,14 @@ def fit_joint_delay_doppler(
 
 def mass_from_radius(radius_m):
     return (4.0 / 3.0) * np.pi * cepl.METEOROID_DENSITY_KG_M3 * float(radius_m) ** 3.0
+
+
+def finite_mean_abs(values):
+    arr = np.asarray(values, dtype=np.float64)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return np.nan
+    return float(np.mean(np.abs(finite)))
 
 
 def constant_velocity_initial_params(fit):
@@ -1148,16 +1188,27 @@ def solve_measured_positions_itrs(measured_total_paths_m, fitted_positions_itrs_
 
 def fit_quality_annotation(joint_fit):
     v0_km_s, v0_sigma_km_s = initial_speed_uncertainty_km_s(joint_fit)
-    delay_mad_m = float(np.nanmedian(np.abs(joint_fit["path_residuals_m"])))
-    keep = np.asarray(joint_fit["fft_keep"], dtype=bool)
-    doppler_mad_mps = (
-        float(np.nanmedian(np.abs(beat_residual_hz_to_total_path_rate_mps(joint_fit["fft_residuals_hz"][keep]))))
-        if np.any(keep)
+    delay_keep = np.asarray(joint_fit["path_keep"], dtype=bool)
+    delay_abs_m = np.abs(np.asarray(joint_fit["path_residuals_m"], dtype=np.float64)[delay_keep])
+    delay_mean_abs_m = (
+        float(np.nanmean(delay_abs_m[np.isfinite(delay_abs_m)]))
+        if np.any(np.isfinite(delay_abs_m))
+        else np.nan
+    )
+    fft_keep = np.asarray(joint_fit["fft_keep"], dtype=bool)
+    doppler_abs_mps = np.abs(
+        beat_residual_hz_to_total_path_rate_mps(
+            np.asarray(joint_fit["fft_residuals_hz"], dtype=np.float64)[fft_keep]
+        )
+    )
+    doppler_mean_abs_mps = (
+        float(np.nanmean(doppler_abs_mps[np.isfinite(doppler_abs_mps)]))
+        if np.any(np.isfinite(doppler_abs_mps))
         else np.nan
     )
     return (
-        f"median |delay residual| = {delay_mad_m:.1f} m\n"
-        f"median |Doppler residual| = {doppler_mad_mps:.0f} m/s\n"
+        f"mean |delay residual| = {delay_mean_abs_m:.1f} m\n"
+        f"mean |Doppler residual| = {doppler_mean_abs_mps:.0f} m/s\n"
         f"v0 = {v0_km_s:.2f} +/- {v0_sigma_km_s:.2f} km/s"
     )
 
@@ -1595,10 +1646,12 @@ def main():
         help="Use fd=0 matched-filter delays, or the older reference-Doppler-refined gates.",
     )
     parser.add_argument("--output-base", default=None)
+    parser.add_argument("--seed-from-existing-h5", default=None)
+    parser.add_argument("--fit-mode", choices=("joint", "delay-only"), default="joint")
     args = parser.parse_args()
     min_geometric_points = int(args.min_geometric_points)
-    if min_geometric_points < 4:
-        raise ValueError("--min-geometric-points must be at least 4")
+    if min_geometric_points < 3:
+        raise ValueError("--min-geometric-points must be at least 3")
     original_min_points = int(base.MIN_POINTS)
     base.MIN_POINTS = min_geometric_points
 
@@ -1677,7 +1730,22 @@ def main():
     coincident_delay_rows = np.all(path_keep_initial, axis=1)
     if np.isfinite(args.coincident_delay_weight) and args.coincident_delay_weight > 1.0:
         sigma_m[coincident_delay_rows, :] = sigma_m[coincident_delay_rows, :] / float(args.coincident_delay_weight)
-    if use_coincident_seed:
+    existing_seed, existing_seed_source = seed_params_from_existing_h5(args.seed_from_existing_h5, fit_epoch_time_ns)
+    if existing_seed is not None:
+        reference_points = reference_points_itrs(fit0, times_ns)
+        rho_of_alt_m, _msis_meta = base.density_interpolator(times_ns, reference_points)
+        delay_seed_params = existing_seed
+        delay_seed_source = existing_seed_source
+        guesses = [existing_seed]
+        delay_fit = {
+            "params": delay_seed_params,
+            "rms_total_path_residual_m": np.nan,
+            "weighted_rms": np.nan,
+            "initial_radius_m": float(10.0 ** delay_seed_params[6]),
+            "initial_mass_kg": mass_from_radius(float(10.0 ** delay_seed_params[6])),
+            "seed_source": delay_seed_source,
+        }
+    elif use_coincident_seed:
         seed_sigma_m = finite_sigma_from_snr_db(seed_snr_db, sigma_model["sigma_floor_m"], sigma_model["sigma_0_m"])
         rho_of_alt_m, _msis_meta = base.density_interpolator(seed_times_ns, points)
         guesses = cepl.unique_initial_guesses(points, seed_times_ns, reference_fit=fit0)
@@ -1730,6 +1798,10 @@ def main():
         chirp_rate_scale=args.reference_chirp_rate_scale,
     )
     fft_obs["fft_keep"] = np.asarray(fft_obs["fft_keep"], dtype=bool) & ~manual_fft_outlier
+    fit_station_bias = bool(args.fit_station_bias)
+    if args.fit_mode == "delay-only":
+        fft_obs["fft_keep"] = np.zeros_like(fft_obs["fft_keep"], dtype=bool)
+        fit_station_bias = False
     joint_fit = fit_joint_delay_doppler(
         measured,
         times_ns,
@@ -1741,7 +1813,7 @@ def main():
         args.sigma_fft_hz,
         keep_rows=np.ones(len(times_ns), dtype=bool),
         epoch_time_ns=fit_epoch_time_ns,
-        fit_station_bias=bool(args.fit_station_bias),
+        fit_station_bias=fit_station_bias,
         fft_model=args.fft_model,
         reference_chirp_rate_scale=args.reference_chirp_rate_scale,
         path_keep=path_keep_initial,
@@ -1761,7 +1833,7 @@ def main():
                 args.sigma_fft_hz,
                 keep_rows=np.ones(len(times_ns), dtype=bool),
                 epoch_time_ns=fit_epoch_time_ns,
-                fit_station_bias=bool(args.fit_station_bias),
+                fit_station_bias=fit_station_bias,
                 fft_model=args.fft_model,
                 reference_chirp_rate_scale=args.reference_chirp_rate_scale,
                 path_keep=path_keep_initial,
@@ -1778,7 +1850,7 @@ def main():
         final_path_keep,
         final_fft_keep,
         n_dyn=7,
-        fit_station_bias=bool(args.fit_station_bias),
+        fit_station_bias=fit_station_bias,
     ):
         joint_fit = fit_joint_delay_doppler(
             measured,
@@ -1791,7 +1863,7 @@ def main():
             args.sigma_fft_hz,
             keep_rows=np.ones(len(times_ns), dtype=bool),
             epoch_time_ns=fit_epoch_time_ns,
-            fit_station_bias=bool(args.fit_station_bias),
+            fit_station_bias=fit_station_bias,
             fft_model=args.fft_model,
             reference_chirp_rate_scale=args.reference_chirp_rate_scale,
             path_keep=final_path_keep,
@@ -1819,7 +1891,7 @@ def main():
             args.sigma_fft_hz,
             keep_rows=np.ones(len(times_ns), dtype=bool),
             epoch_time_ns=fit_epoch_time_ns,
-            fit_station_bias=bool(args.fit_station_bias),
+            fit_station_bias=fit_station_bias,
             fft_model=args.fft_model,
             reference_chirp_rate_scale=args.reference_chirp_rate_scale,
             path_keep=final_path_keep,
@@ -1850,7 +1922,7 @@ def main():
                 args.sigma_fft_hz,
                 keep_rows=np.ones(len(times_ns), dtype=bool),
                 epoch_time_ns=fit_epoch_time_ns,
-                fit_station_bias=bool(args.fit_station_bias),
+                fit_station_bias=fit_station_bias,
                 fft_model=args.fft_model,
                 reference_chirp_rate_scale=args.reference_chirp_rate_scale,
                 path_keep=np.asarray(joint_fit["path_keep"], dtype=bool),
@@ -1882,7 +1954,7 @@ def main():
             fft_obs,
             args.sigma_fft_hz,
             fit_epoch_time_ns,
-            bool(args.fit_station_bias),
+            fit_station_bias,
             args.fft_model,
             args.reference_chirp_rate_scale,
             args.final_delay_residual_clip_m,
@@ -1912,7 +1984,10 @@ def main():
     joint_fit["min_geometric_points"] = int(min_geometric_points)
     joint_fit["default_min_geometric_points"] = int(original_min_points)
     joint_fit["delay_seed_source"] = str(delay_seed_source)
-    joint_fit["used_coincident_delay_seed"] = bool(use_coincident_seed)
+    joint_fit["used_coincident_delay_seed"] = bool(use_coincident_seed and existing_seed is None)
+    joint_fit["fit_mode"] = str(args.fit_mode)
+    if args.seed_from_existing_h5:
+        joint_fit["seed_from_existing_h5"] = os.path.abspath(args.seed_from_existing_h5)
     output_base = args.output_base or f"{DEFAULT_OUTPUT_BASE}_{event_id}"
     write_h5(
         output_base,
@@ -1945,8 +2020,11 @@ def main():
     print(f"bad_fit_recovery_step={joint_fit.get('bad_fit_recovery_step', '')}")
     print(f"delay_only_path_rms_m={delay_fit['rms_total_path_residual_m']:.3f}")
     print(f"joint_path_rms_m={joint_fit['rms_total_path_residual_m']:.3f}")
+    print(f"joint_path_mean_abs_m={joint_fit['mean_abs_total_path_residual_m']:.3f}")
     print(f"joint_fft_rms_hz={joint_fit['rms_fft_residual_hz']:.3f}")
+    print(f"joint_fft_mean_abs_hz={joint_fit['mean_abs_fft_residual_hz']:.3f}")
     print(f"joint_path_rate_rms_mps={joint_fit['rms_path_rate_residual_mps']:.3f}")
+    print(f"joint_path_rate_mean_abs_mps={joint_fit['mean_abs_path_rate_residual_mps']:.3f}")
     print(f"delay_only_radius_um={delay_fit['initial_radius_m'] * 1e6:.3f}")
     print(f"joint_radius_um={joint_fit['initial_radius_m'] * 1e6:.3f}")
     print(f"joint_initial_mass_kg={joint_fit['initial_mass_kg']:.6e}")

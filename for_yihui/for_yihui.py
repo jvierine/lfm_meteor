@@ -181,7 +181,7 @@ def read_matlab(site):
         "time_ns": np.asarray([matlab_time_to_utc_ns(time, i) for i in range(raw.shape[1])], dtype=np.int64),
         "az": float(para[6]),
         "el": float(para[7]),
-        "pulse_us": float(para[10]),
+        "pulse_us": float(para[9]),
         "first_range_gate_km": float(para[12]),
         "last_range_gate_km": float(para[13]),
         "sample_rate_mhz": sample_rate_mhz,
