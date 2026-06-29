@@ -1,9 +1,8 @@
-"""Interactive review GUI for tri-static meteor trajectory fits.
+"""Legacy helper module for old tri-static fit review products.
 
-The GUI reads a fitted tri-static HDF5 file, displays one event at a time,
-lets the reviewer mark the fit quality, and allows pulse-level outlier masks
-to be edited by clicking plotted measurements.  Refit requests run in a
-background queue so browsing and point selection stay responsive.
+The current interactive review GUI is browse_joint_delay_doppler_event_plots.py.
+This module remains only because older mass-support scripts import helper
+functions from it while those analyses are being retired.
 """
 
 import argparse
@@ -1258,10 +1257,10 @@ def parse_args():
 
 
 def main():
-    reserve_review_keybindings()
-    args = parse_args()
-    gui = TristaticFitReviewer(args.input_h5, args.review_h5, start_event_id=args.event_id)
-    gui.show()
+    raise SystemExit(
+        "review_tristatic_fits_gui.py is retired as an interactive GUI. "
+        "Use browse_joint_delay_doppler_event_plots.py for tri-static fit review."
+    )
 
 
 if __name__ == "__main__":
