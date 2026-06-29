@@ -1,6 +1,13 @@
 import jcoord 
 import numpy as n
 
+C = 299792458.0
+# Original 2024-04-22 MATLAB raw files store para(9) = 430 for all three
+# stations. MATLAB indexing is one-based; this is para[8] in Python.
+RADAR_FREQUENCY_HZ = 430.0e6
+RADAR_FREQUENCY_MHZ = RADAR_FREQUENCY_HZ / 1.0e6
+RADAR_WAVELENGTH_M = C / RADAR_FREQUENCY_HZ
+
 lat0  = n.array([18.3492,19.5281,19.5982  ])#;     % Lat.  of Sanya, Danzhou, Wenchang
 lon0 = n.array([109.6222,109.1322,110.7908])#;     % Lon. of Sanya, Danzhou, Wenchang
 alt0  = n.array([0.05     ,0.0999 ,0.0249   ])#;     % Alt.   of Sanya, Danzhou, Wenchang

@@ -8,11 +8,12 @@ from astropy.coordinates import GCRS, ITRS, CartesianDifferential, CartesianRepr
 from astropy.time import Time
 
 import sanya_opts as sc
+from fit_gcrs_trajectories_lfm_ambiguity import REFERENCE_CHIRP_RATE_SCALE
 
 
 C = 299792458.0
-RADAR_FREQUENCY_HZ = 440e6
-RADAR_WAVELENGTH_M = C / RADAR_FREQUENCY_HZ
+RADAR_FREQUENCY_HZ = sc.RADAR_FREQUENCY_HZ
+RADAR_WAVELENGTH_M = sc.RADAR_WAVELENGTH_M
 EVENT_ID_LOCAL = "tri_0134_1713850083054349899"
 EVENT_ID_UTC = "tri_0134_1713821283054349899"
 FIT_H5 = "results/gcrs_trajectory_fits_lfm_ambiguity_v20260613b.h5"
@@ -38,9 +39,9 @@ LINK_RX_POSITIONS_M = {
 TX_POSITION_M = np.asarray(sc.p_san, dtype=np.float64)
 
 
-def lfm(length_us=199, sr_mhz=4.0, bandwidth_hz=4e6):
+def lfm(length_us=199, sr_mhz=4.0, bandwidth_hz=4e6, chirp_rate_scale=REFERENCE_CHIRP_RATE_SCALE):
     t_s = np.arange(int(length_us * sr_mhz), dtype=np.float64) / (sr_mhz * 1e6)
-    sweep_rate = bandwidth_hz * 1e6 / length_us / 2.0
+    sweep_rate = bandwidth_hz * 1e6 / length_us / 2.0 * float(chirp_rate_scale)
     code = np.exp(1j * 2 * np.pi * (t_s * bandwidth_hz / 2.0 - sweep_rate * t_s**2.0))
     return code.astype(np.complex64), t_s
 
@@ -94,7 +95,9 @@ def doppler_corrected_filter(raw, doppler_hz, sr_mhz, bandwidth_mhz):
     code, t_s = lfm(sr_mhz=sr_mhz, bandwidth_hz=bandwidth_mhz * 1e6)
     corrected = np.empty_like(raw, dtype=np.complex64)
     for idx, (row, fd_hz) in enumerate(zip(raw, doppler_hz)):
-        doppler_code = code * np.exp(-1j * 2.0 * np.pi * fd_hz * t_s).astype(np.complex64)
+        # Use the received-chirp phase convention; the matched filter applies
+        # conj(doppler_code), matching the single-pulse ACF Doppler diagnostic.
+        doppler_code = code * np.exp(1j * 2.0 * np.pi * fd_hz * t_s).astype(np.complex64)
         corrected[idx, :] = np.convolve(row, np.conj(doppler_code), mode="same")
     return corrected
 

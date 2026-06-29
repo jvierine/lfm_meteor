@@ -8,6 +8,7 @@ from mpi4py import MPI
 import numpy as n
 
 
+REFERENCE_CHIRP_RATE_SCALE = 0.994938967
 comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
@@ -39,9 +40,9 @@ def site_first_sample_r0_km(site):
     return delay_us_to_range_km(SITE_FIRST_SAMPLE_DELAY_US[site])
 
 
-def lfm(l=199, sr=4, bw=4e6):
+def lfm(l=199, sr=4, bw=4e6, chirp_rate_scale=REFERENCE_CHIRP_RATE_SCALE):
     tidx = n.arange(l * sr) / (sr * 1e6)
-    om = bw * 1e6 / 199 / 2.0
+    om = bw * 1e6 / 199 / 2.0 * float(chirp_rate_scale)
     return n.array(n.exp(1j * 2 * n.pi * (tidx * bw / 2 - om * tidx**2.0)), dtype=n.complex64)
 
 

@@ -2,6 +2,9 @@ import argparse
 import os
 
 import h5py
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.signal as sig
@@ -212,7 +215,8 @@ def image_on_common_time_grid(result, data, common_times_ns):
 
 
 def chirp_rate_hz_per_s(data):
-    return float(data["bw_mhz"]) * 1e6 / (float(data["pulse_length_us"]) * 1e-6)
+    scale = float(data.get("reference_chirp_rate_scale", interp.REFERENCE_CHIRP_RATE_SCALE))
+    return float(data["bw_mhz"]) * 1e6 / (float(data["pulse_length_us"]) * 1e-6) * scale
 
 
 def freq_khz_to_range_offset_m(freq_khz, data):

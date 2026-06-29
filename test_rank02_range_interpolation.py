@@ -19,6 +19,7 @@ from fit_gcrs_trajectories_lfm_ambiguity import (
     LINK_RX_POSITIONS_M,
     LINK_TX_POSITIONS_M,
     MAX_LAT_DEG,
+    REFERENCE_CHIRP_RATE_SCALE,
     RADAR_WAVELENGTH_M,
     WEN_CENTER_US,
     delay_us_to_total_path_m,
@@ -84,9 +85,9 @@ def log(message):
         print(message, flush=True)
 
 
-def lfm(length_us=199, sr_mhz=4.0, bandwidth_hz=4e6):
+def lfm(length_us=199, sr_mhz=4.0, bandwidth_hz=4e6, chirp_rate_scale=REFERENCE_CHIRP_RATE_SCALE):
     t_s = np.arange(int(round(length_us * sr_mhz)), dtype=np.float64) / (sr_mhz * 1e6)
-    sweep_rate = bandwidth_hz * 1e6 / length_us / 2.0
+    sweep_rate = bandwidth_hz * 1e6 / length_us / 2.0 * float(chirp_rate_scale)
     code = np.exp(1j * 2.0 * np.pi * (t_s * bandwidth_hz / 2.0 - sweep_rate * t_s**2.0))
     return code.astype(np.complex64), t_s
 
@@ -172,7 +173,9 @@ def doppler_matched_filter_peak(row, fd_hz, sr_mhz, bw_mhz, upsample_factor, coa
         raw_up = sig.resample_poly(row, upsample_factor, 1).astype(np.complex64)
         sr_up_mhz = sr_mhz * upsample_factor
     code, t_s = lfm(sr_mhz=sr_up_mhz, bandwidth_hz=bw_mhz * 1e6)
-    doppler_code = code * np.exp(-1j * 2.0 * np.pi * fd_hz * t_s).astype(np.complex64)
+    # Use the same received-chirp phase convention as the single-pulse ACF
+    # Doppler diagnostic: the matched filter applies conj(doppler_code).
+    doppler_code = code * np.exp(1j * 2.0 * np.pi * fd_hz * t_s).astype(np.complex64)
     corr = sig.fftconvolve(raw_up, np.conj(doppler_code), mode="same")
     power = np.abs(corr) ** 2.0
     if coarse_center_gate is None:

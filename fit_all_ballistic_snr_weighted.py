@@ -5,9 +5,14 @@ import h5py
 import jcoord
 import numpy as np
 import scipy.optimize as so
+from scipy.optimize._numdiff import approx_derivative
+import astropy.units as u
+from astropy.coordinates import GCRS, ITRS, CartesianDifferential, CartesianRepresentation
+from astropy.time import Time
 from pymsis import msis, utils
 
 import fit_gcrs_trajectories_lfm_ambiguity as gfit
+import sanya_opts as sc
 import test_rank02_range_interpolation as interp
 from grid_search_delays_beam_axis import DAN_PATTERN, SAN_PATTERN, WEN_PATTERN, gate_to_delay_us, load_events, pair_tristatic_events
 
@@ -36,6 +41,8 @@ MIN_POINTS = 8
 MAX_LAT_DEG = gfit.MAX_LAT_DEG
 MIN_B = 1e-4
 MAX_B = 1e3
+EARTH_MU_M3_S2 = 3.986004418e14
+EARTH_OMEGA_RAD_S = 7.2921150e-5
 MSIS_ALT_GRID_KM = np.linspace(50.0, 130.0, 321)
 SIGMA_CLIP_RMS = 4.0
 SOURCE_TIMEZONE_OFFSET_NS = int(8.0 * 3600.0 * 1e9)
@@ -142,8 +149,10 @@ def refine_site(site_data):
 
 def matched_measurements_from_sites(san_event, dan_event, wen_event, site_data, refined):
     matches = gfit.match_pulses_with_time(san_event, dan_event, wen_event)
+    input_times_are_utc = gfit.event_times_are_utc(san_event, dan_event, wen_event)
     measured = []
     times_ns = []
+    beijing_local_times_ns = []
     snr_db = []
     source_indices = []
     for match in matches:
@@ -155,11 +164,25 @@ def matched_measurements_from_sites(san_event, dan_event, wen_event, site_data, 
                         sc.SANYA_CORRECTED_TXRX_DELAY_US + refined["sanya_gate"][si] / site_data["sanya"]["sr_mhz"]
                     )
                 ),
-                float(gfit.delay_us_to_total_path_m(gfit.DAN_CENTER_US + refined["danzhou_gate"][di] / site_data["danzhou"]["sr_mhz"])),
-                float(gfit.delay_us_to_total_path_m(gfit.WEN_CENTER_US + refined["wenchang_gate"][wi] / site_data["wenchang"]["sr_mhz"])),
+                float(
+                    gfit.delay_us_to_total_path_m(
+                        sc.DANZHOU_FIRST_SAMPLE_DELAY_US + refined["danzhou_gate"][di] / site_data["danzhou"]["sr_mhz"]
+                    )
+                ),
+                float(
+                    gfit.delay_us_to_total_path_m(
+                        sc.WENCHANG_FIRST_SAMPLE_DELAY_US + refined["wenchang_gate"][wi] / site_data["wenchang"]["sr_mhz"]
+                    )
+                ),
             ]
         )
-        times_ns.append(match["time_ns"])
+        matched_time_ns = int(match["time_ns"])
+        if input_times_are_utc:
+            times_ns.append(matched_time_ns)
+            beijing_local_times_ns.append(matched_time_ns + SOURCE_TIMEZONE_OFFSET_NS)
+        else:
+            beijing_local_times_ns.append(matched_time_ns)
+            times_ns.append(matched_time_ns - SOURCE_TIMEZONE_OFFSET_NS)
         snr_db.append(
             [
                 site_data["sanya"]["snr_peak_db"][si],
@@ -171,6 +194,7 @@ def matched_measurements_from_sites(san_event, dan_event, wen_event, site_data, 
     return (
         np.asarray(measured, dtype=np.float64),
         np.asarray(times_ns, dtype=np.int64),
+        np.asarray(beijing_local_times_ns, dtype=np.int64),
         np.asarray(snr_db, dtype=np.float64),
         np.asarray(source_indices, dtype=np.int32),
     )
@@ -214,9 +238,10 @@ def density_interpolator(times_ns, points_ecef_m):
 
 
 def initial_ballistic_guess(points_ecef_m, times_ns, log10_b=1.0):
+    points_gcrs_m = gfit.ecef_to_gcrs(points_ecef_m, times_ns)
     t_rel_s = (np.asarray(times_ns, dtype=np.float64) - float(times_ns[0])) / 1e9
     design = np.column_stack([np.ones_like(t_rel_s), t_rel_s])
-    coeffs = np.linalg.lstsq(design, points_ecef_m, rcond=None)[0]
+    coeffs = np.linalg.lstsq(design, points_gcrs_m, rcond=None)[0]
     return np.concatenate([coeffs[0], coeffs[1], [float(log10_b)]])
 
 
@@ -224,10 +249,15 @@ def rk4_step(state, dt_s, b_drag, rho_of_alt_m):
     def deriv(y):
         r = y[:3]
         v = y[3:]
-        lat, lon, alt = jcoord.ecef2geodetic(r[0], r[1], r[2])
+        radius = float(np.linalg.norm(r))
+        alt = radius - 6371.0e3
         rho = float(rho_of_alt_m(alt))
-        speed = float(np.linalg.norm(v))
-        return np.concatenate([v, -b_drag * rho * speed * v])
+        gravity = -EARTH_MU_M3_S2 * r / max(radius, 1.0) ** 3.0
+        omega_cross_r = np.cross(np.array([0.0, 0.0, EARTH_OMEGA_RAD_S]), r)
+        v_rel = v - omega_cross_r
+        rel_speed = float(np.linalg.norm(v_rel))
+        drag = -b_drag * rho * rel_speed * v_rel
+        return np.concatenate([v, gravity + drag])
 
     k1 = deriv(state)
     k2 = deriv(state + 0.5 * dt_s * k1)
@@ -252,10 +282,30 @@ def propagate_ballistic(params, t_rel_s, rho_of_alt_m, dt_max_s=0.002):
     return np.asarray(positions), np.asarray(velocities), b_drag
 
 
-def predict_paths(params, t_rel_s, rho_of_alt_m):
-    x_itrs, v_itrs, b_drag = propagate_ballistic(params, t_rel_s, rho_of_alt_m)
+def gcrs_state_samples_to_itrs(positions_gcrs_m, velocities_gcrs_mps, times_ns):
+    obstime = Time(np.asarray(times_ns, dtype=np.float64) / 1e9, format="unix", scale="utc")
+    representation = CartesianRepresentation(
+        positions_gcrs_m[:, 0] * u.m,
+        positions_gcrs_m[:, 1] * u.m,
+        positions_gcrs_m[:, 2] * u.m,
+        differentials=CartesianDifferential(
+            velocities_gcrs_mps[:, 0] * u.m / u.s,
+            velocities_gcrs_mps[:, 1] * u.m / u.s,
+            velocities_gcrs_mps[:, 2] * u.m / u.s,
+        ),
+    )
+    gcrs = GCRS(representation, obstime=obstime)
+    itrs = gcrs.transform_to(ITRS(obstime=obstime))
+    positions_itrs = itrs.cartesian.without_differentials().xyz.to_value(u.m).T
+    velocities_itrs = itrs.cartesian.differentials["s"].d_xyz.to_value(u.m / u.s).T
+    return positions_itrs, velocities_itrs
+
+
+def predict_paths(params, t_rel_s, times_ns, rho_of_alt_m):
+    x_gcrs, v_gcrs, b_drag = propagate_ballistic(params, t_rel_s, rho_of_alt_m)
+    x_itrs, v_itrs = gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
     total_paths_m, path_rates_mps = gfit.link_total_paths_and_rates_m(x_itrs, v_itrs, gfit.LINK_TX_POSITIONS_M, gfit.LINK_RX_POSITIONS_M)
-    return total_paths_m + gfit.lfm_total_path_bias_m(path_rates_mps), x_itrs, v_itrs, b_drag
+    return total_paths_m + gfit.lfm_total_path_bias_m(path_rates_mps), x_gcrs, v_gcrs, x_itrs, v_itrs, b_drag
 
 
 def sigma_from_snr_db(snr_db, sigma_floor_m, sigma_0_m):
@@ -284,7 +334,7 @@ def fit_sigma_model(residuals_m, snr_db):
     }
 
 
-def linearized_covariance_summary(result, n_residuals):
+def linearized_covariance_summary(result, n_residuals, residual_func=None, jac_abs_step=None, jac_bounds=(-np.inf, np.inf)):
     n_params = int(result.x.size)
     dof = int(n_residuals - n_params)
     empty_cov = np.full((n_params, n_params), np.nan, dtype=np.float64)
@@ -296,7 +346,16 @@ def linearized_covariance_summary(result, n_residuals):
             "parameter_std": np.full(n_params, np.nan, dtype=np.float64),
             "covariance_available": False,
         }
-    jac = np.asarray(result.jac, dtype=np.float64)
+    if residual_func is not None and jac_abs_step is not None:
+        jac = approx_derivative(
+            residual_func,
+            result.x,
+            method="3-point",
+            abs_step=np.asarray(jac_abs_step, dtype=np.float64),
+            bounds=jac_bounds,
+        )
+    else:
+        jac = np.asarray(result.jac, dtype=np.float64)
     residual_variance = float(2.0 * result.cost / dof)
     try:
         covariance = np.linalg.pinv(jac.T @ jac) * residual_variance
@@ -319,7 +378,16 @@ def linearized_covariance_summary(result, n_residuals):
     }
 
 
-def fit_ballistic(measured_total_paths_m, times_ns, rho_of_alt_m, p0, sigma_m=None, keep_rows=None, robust_f_scale=2.0):
+def fit_ballistic(
+    measured_total_paths_m,
+    times_ns,
+    rho_of_alt_m,
+    p0,
+    sigma_m=None,
+    keep_rows=None,
+    robust_f_scale=2.0,
+    loss="soft_l1",
+):
     measured = np.asarray(measured_total_paths_m, dtype=np.float64)
     times = np.asarray(times_ns, dtype=np.int64)
     if keep_rows is None:
@@ -335,7 +403,7 @@ def fit_ballistic(measured_total_paths_m, times_ns, rho_of_alt_m, p0, sigma_m=No
         f_scale = robust_f_scale
 
     def residual(x):
-        pred, _x, _v, _b = predict_paths(x, t_rel_s, rho_of_alt_m)
+        pred, _xg, _vg, _xi, _vi, _b = predict_paths(x, t_rel_s, times_fit, rho_of_alt_m)
         return ((pred - measured_fit) / sigma).ravel()
 
     result = so.least_squares(
@@ -346,11 +414,11 @@ def fit_ballistic(measured_total_paths_m, times_ns, rho_of_alt_m, p0, sigma_m=No
             np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, np.log10(MAX_B)]),
         ),
         x_scale=np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 1.0]),
-        loss="soft_l1",
+        loss=loss,
         f_scale=f_scale,
         max_nfev=220,
     )
-    pred, x_itrs, v_itrs, b_drag = predict_paths(result.x, t_rel_s, rho_of_alt_m)
+    pred, x_gcrs, v_gcrs, x_itrs, v_itrs, b_drag = predict_paths(result.x, t_rel_s, times_fit, rho_of_alt_m)
     raw_resid = pred - measured_fit
     normalized = raw_resid / sigma
     llh = np.asarray([jcoord.ecef2geodetic(x[0], x[1], x[2]) for x in x_itrs], dtype=np.float64)
@@ -372,12 +440,15 @@ def fit_ballistic(measured_total_paths_m, times_ns, rho_of_alt_m, p0, sigma_m=No
         "predicted_total_paths_m": pred,
         "residuals_m": raw_resid,
         "normalized_residuals": normalized,
+        "x_gcrs_m": x_gcrs,
+        "v_gcrs_mps": v_gcrs,
         "x_itrs_m": x_itrs,
         "v_itrs_mps": v_itrs,
         "lat_deg": llh[:, 0],
         "lon_deg": llh[:, 1],
         "alt_km": llh[:, 2] / 1e3,
-        "speed_km_s": np.linalg.norm(v_itrs, axis=1) / 1e3,
+        "speed_km_s": np.linalg.norm(v_gcrs, axis=1) / 1e3,
+        "itrs_speed_km_s": np.linalg.norm(v_itrs, axis=1) / 1e3,
         "b_drag_m2_per_kg": float(b_drag),
         "rms_total_path_residual_m": float(np.sqrt(np.mean(raw_resid**2.0))),
         "median_abs_total_path_residual_m": float(np.median(np.abs(raw_resid))),
@@ -386,6 +457,7 @@ def fit_ballistic(measured_total_paths_m, times_ns, rho_of_alt_m, p0, sigma_m=No
         "optimizer_success": bool(result.success),
         "optimizer_nfev": int(result.nfev),
         "optimizer_cost": float(result.cost),
+        "optimizer_loss": loss,
     }
 
 
@@ -407,13 +479,28 @@ def process_triplet(idx, triplet, ref_fit, sigma_model=None):
             gate, range_km, power_db = refine_site(site_data[site])
             refined[f"{site}_gate"] = gate
             refined[f"{site}_range_km"] = range_km
-        measured, times_ns, snr_db, source_indices = matched_measurements_from_sites(san_event, dan_event, wen_event, site_data, refined)
+        refined["sanya_range_km"] = refined["sanya_range_km"] + sc.SANYA_RANGE_CORRECTION_KM
+        measured, times_ns, beijing_local_times_ns, snr_db, source_indices = matched_measurements_from_sites(
+            san_event,
+            dan_event,
+            wen_event,
+            site_data,
+            refined,
+        )
         if len(times_ns) < MIN_POINTS:
             return {"event_id": event_id, "status": "too_few_points", "n_points": int(len(times_ns))}
+        order = np.argsort(times_ns)
+        measured = measured[order]
+        times_ns = times_ns[order]
+        beijing_local_times_ns = beijing_local_times_ns[order]
+        snr_db = snr_db[order]
+        source_indices = source_indices[order]
         points, keep_geo = triangulate_points(measured, san_event.az_deg, san_event.el_deg)
         measured = measured[keep_geo]
         times_ns = times_ns[keep_geo]
+        beijing_local_times_ns = beijing_local_times_ns[keep_geo]
         snr_db = snr_db[keep_geo]
+        source_indices = source_indices[keep_geo]
         if len(times_ns) < MIN_POINTS:
             return {"event_id": event_id, "status": "too_few_geo_points", "n_points": int(len(times_ns))}
         rho_of_alt_m, msis_meta = density_interpolator(times_ns, points)
@@ -429,14 +516,24 @@ def process_triplet(idx, triplet, ref_fit, sigma_model=None):
             kept_indices = np.flatnonzero(fit1["keep_rows"])
             keep_rows[kept_indices] = per_pulse_norm < SIGMA_CLIP_RMS
             if np.sum(keep_rows) >= MIN_POINTS and np.sum(~keep_rows) > 0:
-                fit = fit_ballistic(measured, times_ns, rho_of_alt_m, fit1["params"], sigma_m=sigma_used, keep_rows=keep_rows)
+                fit = fit_ballistic(
+                    measured,
+                    times_ns,
+                    rho_of_alt_m,
+                    fit1["params"],
+                    sigma_m=sigma_used,
+                    keep_rows=keep_rows,
+                    loss="linear",
+                )
             else:
-                fit = fit1
+                fit = fit_ballistic(measured, times_ns, rho_of_alt_m, fit1["params"], sigma_m=sigma_used, loss="linear")
         return {
             "event_id": event_id,
             "status": "ok",
             "msis": msis_meta,
+            "beijing_local_time_ns": beijing_local_times_ns,
             "snr_db": snr_db,
+            "source_indices": source_indices,
             "sigma_m": sigma_used,
             **fit,
         }
@@ -447,9 +544,16 @@ def process_triplet(idx, triplet, ref_fit, sigma_model=None):
 def local_process(triplets, ref_fit, sigma_model=None):
     outputs = []
     for idx in range(RANK, len(triplets), SIZE):
-        outputs.append(process_triplet(idx, triplets[idx], ref_fit, sigma_model=sigma_model))
-        if len(outputs) % 5 == 0:
-            print(f"[rank {RANK}] processed {len(outputs)} local events", flush=True)
+        out = process_triplet(idx, triplets[idx], ref_fit, sigma_model=sigma_model)
+        outputs.append(out)
+        if out["status"] == "ok":
+            print(
+                f"[rank {RANK}] ok {out['event_id']} n={out['n_points']} "
+                f"rms={out['rms_total_path_residual_m']:.1f} m",
+                flush=True,
+            )
+        elif len(outputs) % 5 == 0:
+            print(f"[rank {RANK}] processed {len(outputs)} local events; last_status={out['status']}", flush=True)
     return outputs
 
 
@@ -470,9 +574,22 @@ def write_results(path, outputs, sigma_model):
         h.attrs["script"] = os.path.basename(__file__)
         h.attrs["script_version"] = SCRIPT_VERSION
         h.attrs["upsample_factor"] = UPSAMPLE_FACTOR
+        h.attrs["sanya_first_sample_delay_us"] = sc.SANYA_FIRST_SAMPLE_DELAY_US
+        h.attrs["sanya_range_correction_km"] = sc.SANYA_RANGE_CORRECTION_KM
+        h.attrs["danzhou_first_sample_delay_us"] = sc.DANZHOU_FIRST_SAMPLE_DELAY_US
+        h.attrs["wenchang_first_sample_delay_us"] = sc.WENCHANG_FIRST_SAMPLE_DELAY_US
+        h.attrs["time_scale"] = "UTC"
+        h.attrs["source_timezone_policy"] = "Use event UTC metadata when present; otherwise subtract UTC+8 from raw MATLAB local timestamps."
+        h.attrs["dynamics_model"] = "GCRS central gravity plus free-molecular drag with PyMSIS density and a co-rotating atmosphere approximation."
+        h.attrs["fit_state_frame"] = "GCRS"
+        h.attrs["path_prediction_frame"] = "ITRS station geometry after transforming GCRS state samples"
         h.attrs["sigma_floor_m"] = sigma_model["sigma_floor_m"]
         h.attrs["sigma_0_m"] = sigma_model["sigma_0_m"]
         h["event_id"] = np.asarray([o["event_id"] for o in ok], dtype=string_dtype)
+        h["t0_ns"] = np.asarray([o["time_ns"][0] for o in ok], dtype=np.int64)
+        h["r0_gcrs_m"] = np.asarray([o["params"][:3] for o in ok], dtype=np.float64)
+        h["v0_gcrs_mps"] = np.asarray([o["params"][3:6] for o in ok], dtype=np.float64)
+        h["speed_km_s"] = np.asarray([np.linalg.norm(o["params"][3:6]) / 1e3 for o in ok], dtype=np.float64)
         h["n_points"] = np.asarray([o["n_points"] for o in ok], dtype=np.int32)
         h["rms_total_path_residual_m"] = np.asarray([o["rms_total_path_residual_m"] for o in ok], dtype=np.float64)
         h["median_abs_total_path_residual_m"] = np.asarray([o["median_abs_total_path_residual_m"] for o in ok], dtype=np.float64)
@@ -494,18 +611,23 @@ def write_results(path, outputs, sigma_model):
             g = points.create_group(o["event_id"])
             for key in [
                 "time_ns",
+                "beijing_local_time_ns",
                 "t_rel_s",
                 "measured_total_paths_m",
                 "predicted_total_paths_m",
                 "residuals_m",
                 "normalized_residuals",
+                "x_gcrs_m",
+                "v_gcrs_mps",
                 "x_itrs_m",
                 "v_itrs_mps",
                 "lat_deg",
                 "lon_deg",
                 "alt_km",
                 "speed_km_s",
+                "itrs_speed_km_s",
                 "snr_db",
+                "source_indices",
                 "params",
                 "parameter_std",
                 "parameter_covariance",
@@ -562,6 +684,10 @@ def main():
             "script": os.path.basename(__file__),
             "script_version": SCRIPT_VERSION,
             "upsample_factor": UPSAMPLE_FACTOR,
+            "sanya_first_sample_delay_us": sc.SANYA_FIRST_SAMPLE_DELAY_US,
+            "sanya_range_correction_km": sc.SANYA_RANGE_CORRECTION_KM,
+            "danzhou_first_sample_delay_us": sc.DANZHOU_FIRST_SAMPLE_DELAY_US,
+            "wenchang_first_sample_delay_us": sc.WENCHANG_FIRST_SAMPLE_DELAY_US,
             "n_triplets": len(triplets),
             "status_counts": status_counts,
             "sigma_model": sigma_model,

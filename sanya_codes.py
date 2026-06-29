@@ -2,7 +2,9 @@ import numpy as n
 import scipy.constants as c
 import matplotlib.pyplot as plt
 
+import sanya_opts as sc
 
+REFERENCE_CHIRP_RATE_SCALE = 0.994938967
 
 def save_sanya_waveform_file(code,fname="sanya.bin",plot=True):
     """
@@ -28,7 +30,7 @@ def save_sanya_waveform_file(code,fname="sanya.bin",plot=True):
     f.close()
     print("wrote %s"%(fname))
 
-def lfm(l=199,sr=4,bw=4e6):
+def lfm(l=199,sr=4,bw=4e6,chirp_rate_scale=REFERENCE_CHIRP_RATE_SCALE):
     tidx=n.arange(l*sr)/(sr*1e6)
     #phi = o*t**2.0
     #f = 2*o*t
@@ -41,11 +43,11 @@ def lfm(l=199,sr=4,bw=4e6):
     om = bw / (2.0*(l/1e6))
 
     #2*om*199/1e6 = bw
-    om=bw*1e6/l/2.0
+    om=bw*1e6/l/2.0*float(chirp_rate_scale)
     # positive to negative LFM
     return(n.array(n.exp(1j*2*n.pi*(tidx*bw/2-om*tidx**2.0)),dtype=n.complex64))
 
-def range_doppler_ambiguity(code,dops=n.linspace(-100e3,100e3,num=300),ranges=100,sr=4e6,freq=440e6,nint=1):
+def range_doppler_ambiguity(code,dops=n.linspace(-100e3,100e3,num=300),ranges=100,sr=4e6,freq=sc.RADAR_FREQUENCY_HZ,nint=1):
     padded=n.concatenate((n.repeat(n.zeros(ranges,dtype=n.complex64),nint),n.repeat(code,nint),n.repeat(n.zeros(ranges,dtype=n.complex64),nint)))
     rgs=c.c*(n.arange(2*nint*ranges)-nint*ranges)/(nint*sr)/2
 
@@ -65,7 +67,7 @@ def range_doppler_ambiguity(code,dops=n.linspace(-100e3,100e3,num=300),ranges=10
     dB=10.0*n.log10(S)
     mdb=n.max(dB)
     plt.pcolormesh(dops/1e3,rgs,dB,vmin=mdb-6,vmax=mdb)
-    plt.title("Range-Doppler ambiguity function")#\n N=199 samples sr=4 MHz B=4 MHz radar_freq=440 MHz")
+    plt.title("Range-Doppler ambiguity function")
     cb=plt.colorbar()
     cb.set_label("dB")
     plt.xlabel("Doppler (km/s)")
@@ -110,4 +112,3 @@ if __name__ == "__main__":
  #   range_doppler_ambiguity(code2,sr=10, dops=n.linspace(-1e3,1e3,num=300),ranges=100)
 
   #  range_doppler_ambiguity(code2 )
-

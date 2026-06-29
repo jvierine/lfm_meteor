@@ -105,24 +105,22 @@ def main() -> None:
     alt_hi = float(np.nanmax(alt_km) + 7.0)
 
     fig, axes = plt.subplots(1, 2, figsize=(11.2, 5.4), sharey=True, constrained_layout=True)
-    sca = axes[0].scatter(
+    scatter_kwargs = {
+        "s": 8,
+        "alpha": 0.46,
+        "linewidths": 0,
+        "color": "#1f77b4",
+    }
+    axes[0].scatter(
         lat_deg,
         alt_km,
-        c=alt_km,
-        s=8,
-        alpha=0.46,
-        linewidths=0,
-        cmap="viridis",
         label="Tri-static meteor positions",
+        **scatter_kwargs,
     )
     axes[1].scatter(
         lon_deg,
         alt_km,
-        c=alt_km,
-        s=8,
-        alpha=0.46,
-        linewidths=0,
-        cmap="viridis",
+        **scatter_kwargs,
     )
 
     for label, (site_idx, az_deg, el_deg, color, linestyle) in pointings.items():
@@ -154,8 +152,6 @@ def main() -> None:
         ax.set_ylim(alt_lo, alt_hi)
     axes[0].legend(loc="best", fontsize=8)
     axes[1].legend(loc="best", fontsize=8)
-    cb = fig.colorbar(sca, ax=axes, pad=0.01)
-    cb.set_label("Height (km)")
     fig.suptitle(
         "Tri-static meteor head-echo positions and radar beam lines\n"
         f"Sanya correction {sc.SANYA_RANGE_CORRECTION_KM:+.4f} km; "

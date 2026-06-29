@@ -230,7 +230,15 @@ def constant_velocity_size_lower_bound(measured_total_paths_m, times_ns, sigma_m
     }
 
 
-def fit_linear_paths(measured_total_paths_m, times_ns, sigma_m, keep_rows, p0, initial_points_itrs_m=None):
+def fit_linear_paths(
+    measured_total_paths_m,
+    times_ns,
+    sigma_m,
+    keep_rows,
+    p0,
+    initial_points_itrs_m=None,
+    estimate_lower_bound=True,
+):
     measured = np.asarray(measured_total_paths_m, dtype=np.float64)
     times = np.asarray(times_ns, dtype=np.int64)
     sigma = np.asarray(sigma_m, dtype=np.float64)
@@ -282,7 +290,7 @@ def fit_linear_paths(measured_total_paths_m, times_ns, sigma_m, keep_rows, p0, i
         "lower_bound_status": "not estimated",
         "delta_chi2_threshold": RADIUS_LOWER_BOUND_DELTA_CHI2,
     }
-    if initial_points_itrs_m is not None and np.count_nonzero(keep) >= MIN_CONSTANT_VELOCITY_POINTS:
+    if estimate_lower_bound and initial_points_itrs_m is not None and np.count_nonzero(keep) >= MIN_CONSTANT_VELOCITY_POINTS:
         try:
             lower_bound = constant_velocity_size_lower_bound(
                 measured,

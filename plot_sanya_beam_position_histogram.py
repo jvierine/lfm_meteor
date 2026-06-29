@@ -13,7 +13,7 @@ import fit_gcrs_trajectories_lfm_ambiguity as gfit
 import plot_memo09_antenna_gain_patterns as gain_model
 
 
-INPUT_H5 = "results/all_tristatic_ballistic_snr_weighted_v20260613b.h5"
+INPUT_H5 = "results/all_tristatic_ceplecha_snr_weighted_v20260616d.h5"
 OUTPUT_BASE = "results/sanya_beam_position_histogram"
 ARTICLE_FIGURE_DIR = "/Users/jvi019/src/sanya_tristatic_paper/figures"
 GRID_LIMIT_DEG = 2.6

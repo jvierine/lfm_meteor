@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import plot_pygdsm_station_sky_noise as sky_model
+import sanya_opts as sc
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         default="/Users/jvi019/src/lfm_meteor/results/sanya_4mhz_system_noise_power_100pulse.h5",
         help="Reduced low-rate 100-pulse system-noise HDF5 product.",
     )
-    p.add_argument("--frequency-mhz", type=float, default=450.0)
+    p.add_argument("--frequency-mhz", type=float, default=sc.RADAR_FREQUENCY_MHZ)
     p.add_argument("--cadence-min", type=float, default=2.5)
     p.add_argument("--beam-radius-deg", type=float, default=5.0)
     p.add_argument("--beam-grid-step-deg", type=float, default=0.1)
@@ -49,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--basename",
-        default="memo20_system_noise_floor_gdsm_trec_fit_450mhz",
+        default=f"memo20_system_noise_floor_gdsm_trec_fit_{int(round(sc.RADAR_FREQUENCY_MHZ))}mhz",
     )
     return p.parse_args()
 

@@ -114,6 +114,8 @@ def run_audit(output_base):
     with h5py.File(f"{output_base}.h5", "w") as h:
         h.attrs["script"] = os.path.basename(__file__)
         h.attrs["script_version"] = SCRIPT_VERSION
+        h.attrs["nominal_chirp_rate_hz_per_s"] = gfit.NOMINAL_CHIRP_RATE_HZ_PER_S
+        h.attrs["reference_chirp_rate_scale"] = gfit.REFERENCE_CHIRP_RATE_SCALE
         h.attrs["chirp_rate_hz_per_s"] = gfit.CHIRP_RATE_HZ_PER_S
         h.attrs["sr_mhz"] = sr_mhz
         h.attrs["bw_mhz"] = bw_mhz

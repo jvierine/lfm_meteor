@@ -19,6 +19,7 @@ from astropy.utils import iers
 
 import plot_memo09_antenna_gain_patterns as gain_model
 import rangedelay
+import sanya_opts as sc
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,7 +29,7 @@ def parse_args() -> argparse.Namespace:
         default="/Users/jvi019/src/lfm_meteor/results/sanya_4mhz_system_noise_power_100pulse.h5",
         help="Reduced low-rate system-noise HDF5 product used only to define the time interval.",
     )
-    p.add_argument("--frequency-mhz", type=float, default=450.0, help="Frequency for the pygdsm model.")
+    p.add_argument("--frequency-mhz", type=float, default=sc.RADAR_FREQUENCY_MHZ, help="Frequency for the pygdsm model.")
     p.add_argument("--cadence-min", type=float, default=2.5, help="Time cadence for the sky-noise model.")
     p.add_argument("--beam-radius-deg", type=float, default=5.0, help="Angular radius around beam axis for gain-weighted averaging.")
     p.add_argument("--beam-grid-step-deg", type=float, default=0.1, help="Grid step for beam-pattern integration.")
@@ -45,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--basename",
-        default="memo20_pygdsm_station_sky_noise_gain_weighted_450mhz",
+        default=f"memo20_pygdsm_station_sky_noise_gain_weighted_{int(round(sc.RADAR_FREQUENCY_MHZ))}mhz",
         help="Output filename stem.",
     )
     p.add_argument("--include-cmb", action="store_true", help="Add the 2.725 K CMB contribution.")

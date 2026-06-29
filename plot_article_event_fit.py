@@ -13,6 +13,20 @@ from astropy.time import Time
 import fit_gcrs_trajectories_lfm_ambiguity as gfit
 import plot_memo09_antenna_gain_patterns as gain_model
 
+try:
+    from mpi4py import MPI
+except ImportError:
+    MPI = None
+
+if MPI is None:
+    COMM = None
+    RANK = 0
+    SIZE = 1
+else:
+    COMM = MPI.COMM_WORLD
+    RANK = COMM.Get_rank()
+    SIZE = COMM.Get_size()
+
 
 INPUT_H5 = "results/all_tristatic_ballistic_snr_weighted_v20260613b.h5"
 DEFAULT_EVENT_ID = "tri_0134_1713850083054349899"
@@ -222,6 +236,37 @@ def b_uncertainty(b_drag, log10_b_std):
     return np.log(10.0) * float(b_drag) * float(log10_b_std)
 
 
+def fit_annotation_text(h, group, idx):
+    model = str(h.attrs.get("trajectory_model_package", ""))
+    if "initial_radius_m" in h and "initial_mass_kg" in h:
+        radius_um = float(h["initial_radius_m"][idx]) * 1e6
+        mass_kg = float(h["initial_mass_kg"][idx])
+        log10_radius_std = np.nan
+        if "log10_radius_std" in h:
+            log10_radius_std = float(h["log10_radius_std"][idx])
+        sigma_radius_um = np.nan
+        if np.isfinite(log10_radius_std):
+            sigma_radius_um = np.log(10.0) * radius_um * log10_radius_std
+        if np.isfinite(sigma_radius_um):
+            return f"$r_0 = {radius_um:.2g} \\pm {sigma_radius_um:.1g}$ $\\mu$m\n$m_0 = {mass_kg:.2g}$ kg"
+        return f"$r_0 = {radius_um:.2g}$ $\\mu$m\n$m_0 = {mass_kg:.2g}$ kg"
+    if "radius_m" in group and "mass_kg" in group:
+        radius_um = float(group["radius_m"][0]) * 1e6
+        mass_kg = float(group["mass_kg"][0])
+        return f"$r_0 = {radius_um:.2g}$ $\\mu$m\n$m_0 = {mass_kg:.2g}$ kg"
+    if "b_drag_m2_per_kg" in h:
+        b_drag = float(h["b_drag_m2_per_kg"][idx])
+        log10_b_std = float(h["log10_b_std"][idx]) if "log10_b_std" in h else np.nan
+        sigma_b = b_uncertainty(b_drag, log10_b_std)
+        b_text = f"{b_drag:.2g}"
+        if np.isfinite(sigma_b):
+            b_text = f"{b_drag:.2g} \\pm {sigma_b:.1g}"
+        return f"$B = {b_text}$ m$^2$ kg$^{{-1}}$"
+    if "ceplecha" in model.lower():
+        return "Ceplecha drag--ablation fit"
+    return "weighted trajectory fit"
+
+
 def retained_sigma_m(group, residuals_m):
     sigma_m = group["sigma_m"][:]
     if sigma_m.shape == residuals_m.shape:
@@ -250,11 +295,46 @@ def plot_event(h, idx, event_id, output_base):
     fit_itrs_m = g["x_itrs_m"][:]
     fit_alt_km = g["alt_km"][:]
     param_covariance = g["parameter_covariance"][:]
+    has_all_pulses = "all_time_ns" in g and "all_keep_rows" in g and "all_x_itrs_m" in g
+    if has_all_pulses:
+        all_time_ns = g["all_time_ns"][:]
+        all_t_rel_s = g["all_t_rel_s"][:]
+        all_measured_total_paths_m = g["all_measured_total_paths_m"][:]
+        all_keep_rows = np.asarray(g["all_keep_rows"][:], dtype=bool)
+        all_sigma_m = g["all_sigma_m"][:] if "all_sigma_m" in g else np.full_like(all_measured_total_paths_m, np.nan)
+        all_fit_gcrs_m = g["all_x_gcrs_m"][:]
+        all_fit_v_gcrs_mps = g["all_v_gcrs_mps"][:]
+        all_fit_itrs_m = g["all_x_itrs_m"][:]
+        all_fit_v_itrs_mps = g["all_v_itrs_mps"][:]
+        all_fit_alt_km = g["all_alt_km"][:]
+        all_sanya_snr_db = np.asarray(g["all_snr_db"][:], dtype=np.float64)
+        if all_sanya_snr_db.ndim == 2:
+            all_sanya_snr_db = all_sanya_snr_db[:, 0]
+    else:
+        all_time_ns = time_ns
+        all_t_rel_s = t_rel_s
+        all_measured_total_paths_m = measured_total_paths_m
+        all_keep_rows = np.ones(len(time_ns), dtype=bool)
+        all_sigma_m = sigma_m
+        all_fit_gcrs_m = fit_gcrs_m
+        all_fit_v_gcrs_mps = fit_v_gcrs_mps
+        all_fit_itrs_m = fit_itrs_m
+        all_fit_v_itrs_mps = g["v_itrs_mps"][:]
+        all_fit_alt_km = fit_alt_km
+        all_sanya_snr_db = sanya_snr_db
 
     measured_itrs_m = lfm_corrected_point_solutions(measured_total_paths_m, fit_itrs_m, g["v_itrs_mps"][:])
     measured_gcrs_m = ecef_to_gcrs(measured_itrs_m, time_ns)
     measured_alt_km = np.asarray([jcoord.ecef2geodetic(*p)[2] / 1e3 for p in measured_itrs_m], dtype=np.float64)
     pos_cov_gcrs = position_covariances_gcrs(measured_itrs_m, time_ns, sigma_m)
+    all_measured_itrs_m = lfm_corrected_point_solutions(
+        all_measured_total_paths_m,
+        all_fit_itrs_m,
+        all_fit_v_itrs_mps,
+    )
+    all_measured_gcrs_m = ecef_to_gcrs(all_measured_itrs_m, all_time_ns)
+    all_measured_alt_km = np.asarray([jcoord.ecef2geodetic(*p)[2] / 1e3 for p in all_measured_itrs_m], dtype=np.float64)
+    all_pos_cov_gcrs = position_covariances_gcrs(all_measured_itrs_m, all_time_ns, all_sigma_m)
 
     along_axis, cross_axis = event_axes(fit_gcrs_m, fit_v_gcrs_mps)
     origin = fit_gcrs_m[0]
@@ -280,6 +360,21 @@ def plot_event(h, idx, event_id, output_base):
 
     along_residual_m = (meas_along_km - fit_along_km) * 1e3
     along_sigma_m = meas_along_sigma_km * 1e3
+    all_fit_along_km = ((all_fit_gcrs_m - origin) @ along_axis) / 1e3
+    all_fit_cross_km = ((all_fit_gcrs_m - origin) @ cross_axis) / 1e3
+    all_meas_along_km = ((all_measured_gcrs_m - origin) @ along_axis) / 1e3
+    all_meas_cross_km = ((all_measured_gcrs_m - origin) @ cross_axis) / 1e3
+    all_meas_along_sigma_km = projected_sigma(all_pos_cov_gcrs, along_axis) / 1e3
+    all_meas_cross_sigma_km = projected_sigma(all_pos_cov_gcrs, cross_axis) / 1e3
+    all_radial_axes = np.asarray([unit_vector(p) for p in all_measured_gcrs_m])
+    all_meas_alt_sigma_km = np.asarray(
+        [np.sqrt(max(float(a @ c @ a), 0.0)) / 1e3 for a, c in zip(all_radial_axes, all_pos_cov_gcrs)],
+        dtype=np.float64,
+    )
+    all_along_residual_m = (all_meas_along_km - all_fit_along_km) * 1e3
+    all_along_sigma_m = all_meas_along_sigma_km * 1e3
+    all_cross_residual_m = (all_meas_cross_km - all_fit_cross_km) * 1e3
+    all_cross_sigma_m = all_meas_cross_sigma_km * 1e3
     along_fit_95_m = fit_along_95_km * 1e3
     along_speed_km_s = (fit_v_gcrs_mps @ along_axis) / 1e3
     along_speed_95_km_s = 1.96 * velocity_band_sigma(param_covariance, along_axis, len(t_rel_s)) / 1e3
@@ -289,6 +384,12 @@ def plot_event(h, idx, event_id, output_base):
     )
     measured_east_km, measured_north_km = horizontal_offsets_km(
         measured_itrs_m,
+        beam_center_ecef_m,
+        COMMON_VOLUME_LAT_DEG,
+        COMMON_VOLUME_LON_DEG,
+    )
+    all_measured_east_km, all_measured_north_km = horizontal_offsets_km(
+        all_measured_itrs_m,
         beam_center_ecef_m,
         COMMON_VOLUME_LAT_DEG,
         COMMON_VOLUME_LON_DEG,
@@ -307,12 +408,6 @@ def plot_event(h, idx, event_id, output_base):
 
     rms = float(h["rms_total_path_residual_m"][idx])
     weighted_rms = float(h["weighted_rms"][idx])
-    b_drag = float(h["b_drag_m2_per_kg"][idx])
-    log10_b_std = float(h["log10_b_std"][idx])
-    sigma_b = b_uncertainty(b_drag, log10_b_std)
-    b_text = f"{b_drag:.2g}"
-    if np.isfinite(sigma_b):
-        b_text = f"{b_drag:.2g} \\pm {sigma_b:.1g}"
     start_speed = float(h["start_speed_km_s"][idx])
     end_speed = float(h["end_speed_km_s"][idx])
     start_alt = float(h["start_alt_km"][idx])
@@ -341,10 +436,22 @@ def plot_event(h, idx, event_id, output_base):
     expected_color = "#b2182b"
 
     ax_map = axes[0, 0]
+    rejected = ~all_keep_rows
+    if np.any(rejected):
+        ax_map.scatter(
+            all_measured_east_km[rejected],
+            all_measured_north_km[rejected],
+            c="0.72",
+            s=22,
+            edgecolors="none",
+            linewidths=0.0,
+            label="rejected measurement",
+            zorder=2.5,
+        )
     snr_scatter = ax_map.scatter(
-        measured_east_km,
-        measured_north_km,
-        c=sanya_snr_db,
+        all_measured_east_km[all_keep_rows],
+        all_measured_north_km[all_keep_rows],
+        c=all_sanya_snr_db[all_keep_rows],
         s=22,
         cmap="viridis",
         edgecolors="none",
@@ -352,7 +459,6 @@ def plot_event(h, idx, event_id, output_base):
         zorder=3,
     )
     ax_map.plot(fit_east_km, fit_north_km, color=fit_color, lw=1.8, label="_nolegend_", zorder=2)
-    ax_map.set_aspect("equal", adjustable="box")
     padding_km = 0.15
     all_east = np.concatenate([measured_east_km, fit_east_km, [-beam_radius_km, beam_radius_km]])
     all_north = np.concatenate([measured_north_km, fit_north_km, [-beam_radius_km, beam_radius_km]])
@@ -407,6 +513,27 @@ def plot_event(h, idx, event_id, output_base):
     for ax, measured_y, measured_sigma, fit_y, fit_95, ylabel, point_color, point_label in panels:
         ax.fill_between(t_rel_s, fit_y - fit_95, fit_y + fit_95, color=band_color, alpha=0.55, lw=0, label="95% fit band")
         ax.plot(t_rel_s, fit_y, color=fit_color, lw=1.8, label="weighted fit")
+        if np.any(rejected):
+            if ylabel == "Cross-track displacement (m)":
+                rejected_y = all_meas_cross_km[rejected] * 1e3
+                rejected_sigma = all_cross_sigma_m[rejected]
+            else:
+                rejected_y = all_measured_alt_km[rejected]
+                rejected_sigma = all_meas_alt_sigma_km[rejected]
+            ax.errorbar(
+                all_t_rel_s[rejected],
+                rejected_y,
+                yerr=rejected_sigma,
+                fmt="o",
+                ms=3.0,
+                lw=0.7,
+                capsize=1.3,
+                color="0.65",
+                ecolor="0.72",
+                alpha=0.85,
+                label="rejected measurement",
+                zorder=2,
+            )
         ax.errorbar(
             t_rel_s,
             measured_y,
@@ -426,7 +553,7 @@ def plot_event(h, idx, event_id, output_base):
     axes[1, 0].text(
         0.04,
         0.05,
-        f"$B = {b_text}$ m$^2$ kg$^{{-1}}$",
+        fit_annotation_text(h, g, idx),
         transform=axes[1, 0].transAxes,
         ha="left",
         va="bottom",
@@ -449,7 +576,7 @@ def plot_event(h, idx, event_id, output_base):
     top_right_items = [
         (handle, label)
         for handle, label in zip(top_right_handles, top_right_labels)
-        if label == "position minus fit ±1σ"
+        if label in {"position minus fit ±1σ", "rejected measurement"}
     ]
     axes[0, 1].legend(
         [handle for handle, _label in top_right_items],
@@ -460,6 +587,21 @@ def plot_event(h, idx, event_id, output_base):
 
     ax = axes[1, 1]
     ax.fill_between(t_rel_s, -along_fit_95_m, along_fit_95_m, color=band_color, alpha=0.55, lw=0, label="95% fit band")
+    if np.any(rejected):
+        ax.errorbar(
+            all_t_rel_s[rejected],
+            all_along_residual_m[rejected],
+            yerr=all_along_sigma_m[rejected],
+            fmt="o",
+            ms=3.0,
+            lw=0.7,
+            capsize=1.3,
+            color="0.65",
+            ecolor="0.72",
+            alpha=0.85,
+            label="rejected measurement",
+            zorder=2,
+        )
     ax.errorbar(
         t_rel_s,
         along_residual_m,
@@ -528,11 +670,21 @@ def main():
             if args.limit is not None:
                 event_ids = event_ids[: args.limit]
             written = []
-            for idx, event_id in enumerate(event_ids):
+            indexed_event_ids = list(enumerate(event_ids))
+            local_indexed_event_ids = indexed_event_ids[RANK::SIZE]
+            if RANK == 0:
+                print(f"plotting {len(event_ids)} events with MPI ranks={SIZE}", flush=True)
+            for local_count, (idx, event_id) in enumerate(local_indexed_event_ids, start=1):
                 png, pdf = plot_event(h, idx, event_id, args.output_base)
                 written.append((png, pdf))
-                print(f"{idx + 1:04d}/{len(event_ids):04d} {event_id} -> {png}", flush=True)
+                print(
+                    f"[rank {RANK}] {local_count:04d}/{len(local_indexed_event_ids):04d} "
+                    f"global={idx + 1:04d}/{len(event_ids):04d} {event_id} -> {png}",
+                    flush=True,
+                )
         else:
+            if RANK != 0:
+                return
             idx, event_id = choose_event(h, args.event_id)
             png, pdf = plot_event(h, idx, event_id, args.output_base)
             written = [(png, pdf)]

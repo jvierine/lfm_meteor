@@ -33,11 +33,13 @@ MIN_POINTS = 3
 MATCH_TOLERANCE_MS = 7.5
 SOURCE_TIMEZONE_OFFSET_HOURS = 8.0
 SOURCE_TIMEZONE_OFFSET_NS = int(SOURCE_TIMEZONE_OFFSET_HOURS * 3600.0 * 1e9)
-RADAR_FREQUENCY_HZ = 440e6
+RADAR_FREQUENCY_HZ = sc.RADAR_FREQUENCY_HZ
 BANDWIDTH_HZ = 4e6
 LFM_DURATION_S = 199e-6
-CHIRP_RATE_HZ_PER_S = BANDWIDTH_HZ / LFM_DURATION_S
-RADAR_WAVELENGTH_M = C / RADAR_FREQUENCY_HZ
+NOMINAL_CHIRP_RATE_HZ_PER_S = BANDWIDTH_HZ / LFM_DURATION_S
+REFERENCE_CHIRP_RATE_SCALE = 0.994938967
+CHIRP_RATE_HZ_PER_S = NOMINAL_CHIRP_RATE_HZ_PER_S * REFERENCE_CHIRP_RATE_SCALE
+RADAR_WAVELENGTH_M = sc.RADAR_WAVELENGTH_M
 
 LINK_NAMES = np.array(["sanya", "danzhou", "wenchang"])
 LINK_TX_POSITIONS_M = np.asarray([sc.p_san, sc.p_san, sc.p_san], dtype=np.float64)
@@ -337,6 +339,8 @@ def write_h5(path, fits):
         h.attrs["radar_wavelength_m"] = RADAR_WAVELENGTH_M
         h.attrs["bandwidth_hz"] = BANDWIDTH_HZ
         h.attrs["lfm_duration_s"] = LFM_DURATION_S
+        h.attrs["nominal_chirp_rate_hz_per_s"] = NOMINAL_CHIRP_RATE_HZ_PER_S
+        h.attrs["reference_chirp_rate_scale"] = REFERENCE_CHIRP_RATE_SCALE
         h.attrs["chirp_rate_hz_per_s"] = CHIRP_RATE_HZ_PER_S
         h.attrs["danzhou_first_sample_delay_us"] = DAN_CENTER_US
         h.attrs["wenchang_first_sample_delay_us"] = WEN_CENTER_US

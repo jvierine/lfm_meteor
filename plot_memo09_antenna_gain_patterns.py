@@ -10,14 +10,15 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import numpy as np
 
+import sanya_opts as sc
 
 PAPER_FIGURE_PDF = "/Users/jvi019/src/sanya_tristatic_paper/figures/memo09_antenna_gain_patterns.pdf"
 PAPER_FIGURE_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/memo09_antenna_gain_patterns.png"
 SUMMARY_CSV = "/Users/jvi019/src/sanya_tristatic_paper/figures/memo09_antenna_gain_pattern_summary.csv"
 
-FREQUENCY_HZ = 450.0e6
-LIGHT_SPEED_M_S = 299_792_458.0
-WAVELENGTH_M = LIGHT_SPEED_M_S / FREQUENCY_HZ
+FREQUENCY_HZ = sc.RADAR_FREQUENCY_HZ
+LIGHT_SPEED_M_S = sc.C
+WAVELENGTH_M = sc.RADAR_WAVELENGTH_M
 HALF_POWER_DB = -10.0 * math.log10(2.0)
 
 
@@ -143,7 +144,11 @@ def hpbw_along_axis(
     return float(2.0 * one_sided)
 
 
-def ideal_normal_gain_dbi(site: SitePattern) -> float:
+def adopted_boresight_gain_dbi(site: SitePattern) -> float:
+    if site.name == "Sanya":
+        return 46.0
+    if site.name in {"Danzhou", "Wenchang"}:
+        return 43.0
     aperture_area_m2 = site.dim_tilt_plane_m * site.dim_cross_tilt_m
     gain_linear = 4.0 * math.pi * aperture_area_m2 / WAVELENGTH_M**2
     return 10.0 * math.log10(gain_linear)
@@ -155,9 +160,9 @@ def site_summary(site: SitePattern) -> dict[str, float | str]:
     scan_axis, plot_cross_axis = offset_basis(pointing, tilt_axis, cross_axis)
     scan_angle = angular_separation_deg(normal, pointing)
     cos_scan = max(float(np.dot(normal, pointing)), 1e-6)
-    projected_area_loss_db = -10.0 * math.log10(cos_scan)
-    normal_gain = ideal_normal_gain_dbi(site)
-    peak_gain = normal_gain - projected_area_loss_db
+    boresight_gain = adopted_boresight_gain_dbi(site)
+    scan_loss_db = -25.0 * math.log10(cos_scan)
+    peak_gain = boresight_gain - scan_loss_db
     return {
         "site": site.name,
         "pointing_az_deg": site.pointing_az_deg,
@@ -169,8 +174,8 @@ def site_summary(site: SitePattern) -> dict[str, float | str]:
         "dim_tilt_plane_m": site.dim_tilt_plane_m,
         "dim_cross_tilt_m": site.dim_cross_tilt_m,
         "aperture_area_m2": site.dim_tilt_plane_m * site.dim_cross_tilt_m,
-        "normal_gain_dbi": normal_gain,
-        "projected_area_loss_db": projected_area_loss_db,
+        "boresight_gain_dbi": boresight_gain,
+        "scan_loss_db": scan_loss_db,
         "steered_peak_gain_dbi": peak_gain,
         "scan_hpbw_deg": hpbw_along_axis(
             pointing, scan_axis, plot_cross_axis, tilt_axis, cross_axis, site, "scan"
@@ -245,7 +250,7 @@ def main() -> None:
         ax.set_aspect("equal", adjustable="box")
         ax.set_title(
             f"{summary['site']}\n"
-            f"boresight={float(summary['normal_gain_dbi']):.1f} dBi, steered={peak_gain:.2f} dBi"
+            f"boresight={float(summary['boresight_gain_dbi']):.1f} dBi, steered={peak_gain:.2f} dBi"
         )
         ax.xaxis.set_major_locator(plt.MultipleLocator(1.0))
         ax.yaxis.set_major_locator(plt.MultipleLocator(1.0))
@@ -265,8 +270,9 @@ def main() -> None:
     for row in summaries:
         print(
             f"{row['site']}: scan={float(row['scan_angle_deg']):.3f} deg, "
-            f"ideal-normal={float(row['normal_gain_dbi']):.3f} dBi, "
-            f"projected-peak={float(row['steered_peak_gain_dbi']):.3f} dBi, "
+            f"boresight={float(row['boresight_gain_dbi']):.3f} dBi, "
+            f"scan-loss={float(row['scan_loss_db']):.3f} dB, "
+            f"steered-peak={float(row['steered_peak_gain_dbi']):.3f} dBi, "
             f"HPBW={float(row['scan_hpbw_deg']):.3f}/"
             f"{float(row['cross_hpbw_deg']):.3f} deg"
         )

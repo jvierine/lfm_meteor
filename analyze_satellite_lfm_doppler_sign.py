@@ -20,11 +20,14 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 
+import sanya_opts as sc
 
-RADAR_FREQUENCY_HZ = 440e6
+RADAR_FREQUENCY_HZ = sc.RADAR_FREQUENCY_HZ
 BANDWIDTH_HZ = 4e6
 LFM_DURATION_S = 199e-6
-CHIRP_RATE_HZ_PER_S = BANDWIDTH_HZ / LFM_DURATION_S
+NOMINAL_CHIRP_RATE_HZ_PER_S = BANDWIDTH_HZ / LFM_DURATION_S
+REFERENCE_CHIRP_RATE_SCALE = 0.994938967
+CHIRP_RATE_HZ_PER_S = NOMINAL_CHIRP_RATE_HZ_PER_S * REFERENCE_CHIRP_RATE_SCALE
 
 
 def parse_args() -> argparse.Namespace:
@@ -270,6 +273,8 @@ def main() -> None:
             "radar_frequency_hz": RADAR_FREQUENCY_HZ,
             "bandwidth_hz": BANDWIDTH_HZ,
             "duration_s": LFM_DURATION_S,
+            "nominal_chirp_rate_hz_per_s": NOMINAL_CHIRP_RATE_HZ_PER_S,
+            "reference_chirp_rate_scale": REFERENCE_CHIRP_RATE_SCALE,
             "chirp_rate_hz_per_s": CHIRP_RATE_HZ_PER_S,
             "range_shift_from_rate_km": "-(f0/gamma) * polynomial_range_rate_km_s",
         },
