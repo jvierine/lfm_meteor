@@ -1,5 +1,6 @@
 import argparse
 import concurrent.futures
+import hashlib
 import os
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from fit_whipple_jacchia_catalog_from_h5 import load_group
 
 DEFAULT_SOURCE_DIR = Path("results/tristatic_student_t_bootstrap_orbit100_20260630")
 DEFAULT_WHIPPLE_DIR = Path("results/tristatic_whipple_jacchia_bootstrap_orbit100_20260701")
-DEFAULT_OUTPUT_DIR = Path("results/tristatic_segmented_radius_from_whipple_20260701")
+DEFAULT_OUTPUT_DIR = Path("results/tristatic_segmented_radius_monotonic_bootstrap_20260701")
 RADIUS_GRID_UM = np.asarray([10.0, 50.0, 200.0], dtype=np.float64)
 
 
@@ -30,6 +31,11 @@ def event_id_from_path(path):
 
 def mass_from_radius(radius_m):
     return (4.0 * np.pi / 3.0) * cepl.METEOROID_DENSITY_KG_M3 * np.asarray(radius_m, dtype=np.float64) ** 3.0
+
+
+def deterministic_seed(event_id, offset=0):
+    digest = hashlib.sha256(str(event_id).encode("utf-8")).digest()
+    return (int.from_bytes(digest[:8], "little", signed=False) + int(offset)) % (2**32)
 
 
 def segment_start_indices(t_rel_s, n_segments):
@@ -82,22 +88,27 @@ def segmented_radius_model(params, t_rel_s, times_ns, rho_of_alt_m, x0_ref_gcrs_
     along_offset_m = float(params[0])
     speed0_mps = float(params[1])
     log_radius = np.asarray(params[2 : 2 + len(starts)], dtype=np.float64)
-    radius0_m = 10.0 ** log_radius
+    radius_cap_m = 10.0 ** log_radius
 
-    state = np.asarray([along_offset_m, speed0_mps, radius0_m[0]], dtype=np.float64)
+    state = np.asarray([along_offset_m, speed0_mps, radius_cap_m[0]], dtype=np.float64)
     x_gcrs = np.zeros((len(t_rel_s), 3), dtype=np.float64)
     v_gcrs = np.zeros((len(t_rel_s), 3), dtype=np.float64)
     radius_m = np.zeros(len(t_rel_s), dtype=np.float64)
+    radius_step_m = np.zeros(len(starts), dtype=np.float64)
     last_t = float(t_rel_s[0])
     for i, t_s in enumerate(np.asarray(t_rel_s, dtype=np.float64)):
         seg = int(segment_idx[i])
         if i in starts:
-            state[2] = radius0_m[seg]
+            old_radius = float(state[2])
+            state[2] = min(old_radius, float(radius_cap_m[seg]))
+            radius_step_m[seg] = state[2] - old_radius
         if i > 0:
             dt = float(t_s - last_t)
             state = rk4_step(state, dt, x0_ref_gcrs_m, direction, rho_of_alt_m)
             if i in starts:
-                state[2] = radius0_m[seg]
+                old_radius = float(state[2])
+                state[2] = min(old_radius, float(radius_cap_m[seg]))
+                radius_step_m[seg] = state[2] - old_radius
         x_gcrs[i] = x0_ref_gcrs_m + state[0] * direction
         v_gcrs[i] = state[1] * direction
         radius_m[i] = state[2]
@@ -122,7 +133,10 @@ def segmented_radius_model(params, t_rel_s, times_ns, rho_of_alt_m, x0_ref_gcrs_
         "mass_kg": mass_kg,
         "segment_index": segment_idx,
         "segment_start_indices": starts,
-        "segment_initial_radius_m": radius0_m,
+        "segment_initial_radius_m": radius_cap_m,
+        "segment_radius_cap_m": radius_cap_m,
+        "segment_radius_step_m": radius_step_m,
+        "radius_monotonic_nonincreasing": bool(np.all(np.diff(radius_m) <= 1e-15)),
         "apparent_path_length_m": apparent_path_length_m,
         "path_length_m": path_length_m,
         "path_rate_mps": path_rate_mps,
@@ -130,13 +144,30 @@ def segmented_radius_model(params, t_rel_s, times_ns, rho_of_alt_m, x0_ref_gcrs_
     }
 
 
-def fit_segment_count(source_joint, source_fft, whipple_joint, n_segments):
-    measured = np.asarray(source_joint["measured_total_paths_m"], dtype=np.float64)
+def fit_segment_count(
+    source_joint,
+    source_fft,
+    whipple_joint,
+    n_segments,
+    measured_override=None,
+    fft_obs_override=None,
+    initial_params=None,
+    max_nfev=100,
+):
+    measured = (
+        np.asarray(measured_override, dtype=np.float64)
+        if measured_override is not None
+        else np.asarray(source_joint["measured_total_paths_m"], dtype=np.float64)
+    )
     times_ns = np.asarray(source_joint["time_ns"], dtype=np.int64)
     t_rel_s = np.asarray(source_joint["t_rel_s"], dtype=np.float64)
     path_keep = np.asarray(source_joint["path_keep"], dtype=bool)
     fft_keep = np.asarray(source_joint["fft_keep"], dtype=bool)
-    fft_obs = np.asarray(source_joint["observed_fft_beat_hz"], dtype=np.float64)
+    fft_obs = (
+        np.asarray(fft_obs_override, dtype=np.float64)
+        if fft_obs_override is not None
+        else np.asarray(source_joint["observed_fft_beat_hz"], dtype=np.float64)
+    )
     path_sigma = np.asarray(whipple_joint.get("path_fit_sigma_m", source_joint.get("path_sigma_m")), dtype=np.float64)
     fft_sigma = np.asarray(whipple_joint.get("fft_event_sigma_hz", source_joint.get("fft_sigma_hz")), dtype=np.float64)
     if fft_sigma.ndim == 0:
@@ -168,13 +199,25 @@ def fit_segment_count(source_joint, source_fft, whipple_joint, n_segments):
         return np.concatenate([path_resid, beat_resid])
 
     best = None
+    start_vectors = []
+    if initial_params is not None:
+        initial_params = np.asarray(initial_params, dtype=np.float64)
+        if initial_params.size == 2 + n_radius + 3:
+            start_vectors.append(initial_params.copy())
     for radius_um in RADIUS_GRID_UM:
         log_r = np.full(n_radius, np.log10(radius_um * 1e-6), dtype=np.float64)
-        x0 = np.concatenate([[0.0, speed_ref], log_r, np.zeros(3, dtype=np.float64)])
+        start_vectors.append(np.concatenate([[0.0, speed_ref], log_r, np.zeros(3, dtype=np.float64)]))
+    for x0 in start_vectors:
         lower = np.concatenate([[-5000.0, 5e3], np.full(n_radius, np.log10(cepl.MIN_RADIUS_M)), np.full(3, -500e3)])
         upper = np.concatenate([[5000.0, 90e3], np.full(n_radius, np.log10(cepl.MAX_RADIUS_M)), np.full(3, 500e3)])
         scale = np.concatenate([[500.0, 1e4], np.ones(n_radius), np.full(3, 5e4)])
-        result = so.least_squares(residual, np.clip(x0, lower, upper), bounds=(lower, upper), x_scale=scale, max_nfev=100)
+        result = so.least_squares(
+            residual,
+            np.clip(x0, lower, upper),
+            bounds=(lower, upper),
+            x_scale=scale,
+            max_nfev=int(max_nfev),
+        )
         value = float(np.sum(residual(result.x) ** 2.0))
         if best is None or value < best["objective"]:
             best = {"result": result, "objective": value}
@@ -214,6 +257,109 @@ def fit_segment_count(source_joint, source_fft, whipple_joint, n_segments):
     }
 
 
+def sample_residuals_like(residuals, keep, rng, fallback_sigma, nu):
+    residuals = np.asarray(residuals, dtype=np.float64)
+    keep = np.asarray(keep, dtype=bool)
+    out = np.zeros_like(residuals, dtype=np.float64)
+    for col in range(residuals.shape[1]):
+        finite = keep[:, col] & np.isfinite(residuals[:, col])
+        values = residuals[finite, col]
+        target = keep[:, col]
+        if values.size >= 4:
+            values = values - np.nanmedian(values)
+            out[target, col] = rng.choice(values, size=int(np.count_nonzero(target)), replace=True)
+        else:
+            sigma_col = np.asarray(fallback_sigma, dtype=np.float64)
+            if sigma_col.ndim == 0:
+                scale = float(sigma_col)
+            elif sigma_col.shape == residuals.shape:
+                scale = float(np.nanmedian(sigma_col[target, col]))
+            else:
+                scale = float(np.nanmedian(sigma_col))
+            if not np.isfinite(scale) or scale <= 0.0:
+                scale = 1.0
+            out[target, col] = rng.standard_t(max(float(nu), 1.1), size=int(np.count_nonzero(target))) * scale
+    return out
+
+
+def bootstrap_radius_uncertainty(source_joint, source_fft, whipple_joint, best_fit, n_samples, seed):
+    if n_samples <= 0:
+        return {}
+    rng = np.random.default_rng(seed)
+    measured0 = np.asarray(source_joint["measured_total_paths_m"], dtype=np.float64)
+    fft0 = np.asarray(source_joint["observed_fft_beat_hz"], dtype=np.float64)
+    path_keep = np.asarray(source_joint["path_keep"], dtype=bool)
+    fft_keep = np.asarray(source_joint["fft_keep"], dtype=bool)
+    path_sigma = np.asarray(whipple_joint.get("path_fit_sigma_m", source_joint.get("path_sigma_m")), dtype=np.float64)
+    fft_sigma = np.asarray(whipple_joint.get("fft_event_sigma_hz", source_joint.get("fft_sigma_hz")), dtype=np.float64)
+    if fft_sigma.ndim == 0:
+        fft_sigma = np.full_like(fft0, float(fft_sigma), dtype=np.float64)
+    nu_delay = float(whipple_joint.get("student_t_nu_delay", 1.5))
+    nu_fft = float(whipple_joint.get("student_t_nu_fft", 3.0))
+    n_segments = int(best_fit["n_segments"])
+    path_residuals = np.asarray(best_fit["path_residuals_m"], dtype=np.float64)
+    fft_residuals = np.asarray(best_fit["fft_residuals_hz"], dtype=np.float64)
+    path_model = np.asarray(best_fit["apparent_path_length_m"], dtype=np.float64)
+    fft_model = fft0 + fft_residuals
+    radius_samples = []
+    mass_samples = []
+    status = []
+    for _idx in range(int(n_samples)):
+        path_noise = sample_residuals_like(path_residuals, path_keep, rng, path_sigma, nu_delay)
+        fft_noise = sample_residuals_like(fft_residuals, fft_keep, rng, fft_sigma, nu_fft)
+        measured_sample = np.array(measured0, copy=True)
+        fft_sample = np.array(fft0, copy=True)
+        measured_sample[path_keep] = (path_model + path_noise)[path_keep]
+        fft_sample[fft_keep] = (fft_model + fft_noise)[fft_keep]
+        try:
+            row = fit_segment_count(
+                source_joint,
+                source_fft,
+                whipple_joint,
+                n_segments,
+                measured_override=measured_sample,
+                fft_obs_override=fft_sample,
+                initial_params=np.asarray(best_fit["params"], dtype=np.float64),
+                max_nfev=80,
+            )
+        except Exception:
+            status.append(False)
+            continue
+        radius = np.asarray(row["radius_m"], dtype=np.float64)
+        mass = np.asarray(row["mass_kg"], dtype=np.float64)
+        if row["optimizer_success"] and np.all(np.isfinite(radius)) and np.all(np.diff(radius) <= 1e-15):
+            radius_samples.append(radius)
+            mass_samples.append(mass)
+            status.append(True)
+        else:
+            status.append(False)
+    if len(radius_samples) == 0:
+        return {
+            "bootstrap_samples_requested": int(n_samples),
+            "bootstrap_samples_successful": 0,
+            "bootstrap_radius_success": False,
+        }
+    radius_samples = np.asarray(radius_samples, dtype=np.float64)
+    mass_samples = np.asarray(mass_samples, dtype=np.float64)
+    radius0 = radius_samples[:, 0]
+    mass0 = mass_samples[:, 0]
+    return {
+        "bootstrap_samples_requested": int(n_samples),
+        "bootstrap_samples_successful": int(len(radius_samples)),
+        "bootstrap_radius_success": True,
+        "bootstrap_radius_samples_m": radius_samples,
+        "bootstrap_mass_samples_kg": mass_samples,
+        "bootstrap_initial_radius_samples_m": radius0,
+        "bootstrap_initial_mass_samples_kg": mass0,
+        "bootstrap_initial_radius_median_m": float(np.nanmedian(radius0)),
+        "bootstrap_initial_radius_lo95_m": float(np.nanpercentile(radius0, 2.5)),
+        "bootstrap_initial_radius_hi95_m": float(np.nanpercentile(radius0, 97.5)),
+        "bootstrap_initial_mass_median_kg": float(np.nanmedian(mass0)),
+        "bootstrap_initial_mass_lo95_kg": float(np.nanpercentile(mass0, 2.5)),
+        "bootstrap_initial_mass_hi95_kg": float(np.nanpercentile(mass0, 97.5)),
+    }
+
+
 def write_event(output_path, event_id, fits, best_idx, source_h5, whipple_h5):
     string_dtype = h5py.string_dtype(encoding="utf-8")
     with h5py.File(output_path, "w") as h:
@@ -221,8 +367,24 @@ def write_event(output_path, event_id, fits, best_idx, source_h5, whipple_h5):
         h.attrs["source_h5"] = str(source_h5)
         h.attrs["whipple_h5"] = str(whipple_h5)
         h.attrs["selection_criterion"] = "BIC = student-t transformed weighted residual sum of squares + k ln N"
+        h.attrs["radius_constraint"] = "effective radius is non-increasing; segment parameters are upper caps applied as downward steps only"
         h.attrs["best_n_segments"] = int(fits[best_idx]["n_segments"])
         h.attrs["best_bic"] = float(fits[best_idx]["bic"])
+        h.attrs["initial_radius_m"] = float(np.asarray(fits[best_idx]["radius_m"], dtype=np.float64)[0])
+        h.attrs["initial_mass_kg"] = float(np.asarray(fits[best_idx]["mass_kg"], dtype=np.float64)[0])
+        for key in (
+            "bootstrap_samples_requested",
+            "bootstrap_samples_successful",
+            "bootstrap_radius_success",
+            "bootstrap_initial_radius_median_m",
+            "bootstrap_initial_radius_lo95_m",
+            "bootstrap_initial_radius_hi95_m",
+            "bootstrap_initial_mass_median_kg",
+            "bootstrap_initial_mass_lo95_kg",
+            "bootstrap_initial_mass_hi95_kg",
+        ):
+            if key in fits[best_idx]:
+                h.attrs[key] = fits[best_idx][key]
         for fit_idx, row in enumerate(fits):
             g = h.create_group(f"segments_{row['n_segments']}")
             for key, value in row.items():
@@ -239,14 +401,20 @@ def write_event(output_path, event_id, fits, best_idx, source_h5, whipple_h5):
         h.create_dataset("candidate_optimizer_message", data=np.asarray([r["optimizer_message"] for r in fits], dtype=object), dtype=string_dtype)
 
 
-def fit_one(source_h5, whipple_dir, output_dir, max_segments, overwrite):
+def fit_one(source_h5, whipple_dir, output_dir, max_segments, overwrite, bootstrap_samples, bootstrap_seed):
     source_h5 = Path(source_h5)
     event_id = event_id_from_path(source_h5)
     whipple_h5 = Path(whipple_dir) / source_h5.name
     output_path = Path(output_dir) / f"segmented_radius_{event_id}.h5"
     if output_path.exists() and not overwrite:
         with h5py.File(output_path, "r") as h:
-            return event_id, "exists", float(h.attrs.get("best_bic", np.nan)), int(h.attrs.get("best_n_segments", -1))
+            return (
+                event_id,
+                "exists",
+                float(h.attrs.get("best_bic", np.nan)),
+                int(h.attrs.get("best_n_segments", -1)),
+                int(h.attrs.get("bootstrap_samples_successful", 0)),
+            )
     with h5py.File(source_h5, "r") as h:
         source_joint = load_group(h["joint_fit"])
         source_fft = load_group(h["fft_observations"])
@@ -256,9 +424,27 @@ def fit_one(source_h5, whipple_dir, output_dir, max_segments, overwrite):
     for n_segments in range(1, int(max_segments) + 1):
         fits.append(fit_segment_count(source_joint, source_fft, whipple_joint, n_segments))
     best_idx = int(np.nanargmin([row["bic"] for row in fits]))
+    if int(bootstrap_samples) > 0:
+        seed = deterministic_seed(event_id, bootstrap_seed)
+        fits[best_idx].update(
+            bootstrap_radius_uncertainty(
+                source_joint,
+                source_fft,
+                whipple_joint,
+                fits[best_idx],
+                int(bootstrap_samples),
+                seed,
+            )
+        )
     os.makedirs(output_dir, exist_ok=True)
     write_event(output_path, event_id, fits, best_idx, source_h5, whipple_h5)
-    return event_id, "ok", float(fits[best_idx]["bic"]), int(fits[best_idx]["n_segments"])
+    return (
+        event_id,
+        "ok",
+        float(fits[best_idx]["bic"]),
+        int(fits[best_idx]["n_segments"]),
+        int(fits[best_idx].get("bootstrap_samples_successful", 0)),
+    )
 
 
 def write_summary(output_dir, rows):
@@ -270,6 +456,7 @@ def write_summary(output_dir, rows):
         h.create_dataset("status", data=np.asarray([r[1] for r in rows], dtype=object), dtype=string_dtype)
         h["best_bic"] = np.asarray([r[2] for r in rows], dtype=np.float64)
         h["best_n_segments"] = np.asarray([r[3] for r in rows], dtype=np.int64)
+        h["bootstrap_samples_successful"] = np.asarray([r[4] if len(r) > 4 else 0 for r in rows], dtype=np.int64)
 
 
 def main():
@@ -278,27 +465,60 @@ def main():
     parser.add_argument("--whipple-dir", default=DEFAULT_WHIPPLE_DIR)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--max-segments", type=int, default=4)
+    parser.add_argument("--bootstrap-samples", type=int, default=0)
+    parser.add_argument("--bootstrap-seed", type=int, default=1000)
+    parser.add_argument("--event-id", action="append", default=[])
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     paths = sorted(Path(args.source_dir).glob("joint_delay_doppler_fft_tri_*.h5"))
+    if args.event_id:
+        wanted = set(args.event_id)
+        paths = [path for path in paths if event_id_from_path(path) in wanted]
+    if not paths:
+        raise SystemExit("No source event HDF5 files matched.")
     rows = []
     if args.jobs <= 1:
         for idx, path in enumerate(paths, 1):
-            row = fit_one(path, args.whipple_dir, args.output_dir, args.max_segments, args.overwrite)
+            row = fit_one(
+                path,
+                args.whipple_dir,
+                args.output_dir,
+                args.max_segments,
+                args.overwrite,
+                args.bootstrap_samples,
+                args.bootstrap_seed,
+            )
             rows.append(row)
-            print(f"[{idx}/{len(paths)}] {row[1]} {row[0]} best_segments={row[3]} bic={row[2]:.2f}", flush=True)
+            print(
+                f"[{idx}/{len(paths)}] {row[1]} {row[0]} best_segments={row[3]} "
+                f"bic={row[2]:.2f} boot={row[4]}",
+                flush=True,
+            )
     else:
         with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
             futures = [
-                pool.submit(fit_one, path, args.whipple_dir, args.output_dir, args.max_segments, args.overwrite)
+                pool.submit(
+                    fit_one,
+                    path,
+                    args.whipple_dir,
+                    args.output_dir,
+                    args.max_segments,
+                    args.overwrite,
+                    args.bootstrap_samples,
+                    args.bootstrap_seed,
+                )
                 for path in paths
             ]
             for idx, fut in enumerate(concurrent.futures.as_completed(futures), 1):
                 row = fut.result()
                 rows.append(row)
-                print(f"[{idx}/{len(paths)}] {row[1]} {row[0]} best_segments={row[3]} bic={row[2]:.2f}", flush=True)
+                print(
+                    f"[{idx}/{len(paths)}] {row[1]} {row[0]} best_segments={row[3]} "
+                    f"bic={row[2]:.2f} boot={row[4]}",
+                    flush=True,
+                )
     write_summary(args.output_dir, rows)
 
 

@@ -16,8 +16,8 @@ from fit_whipple_jacchia_catalog_from_h5 import load_group
 
 DEFAULT_SOURCE_DIR = Path("results/tristatic_student_t_bootstrap_orbit100_20260630")
 DEFAULT_WHIPPLE_DIR = Path("results/tristatic_whipple_jacchia_bootstrap_orbit100_20260701")
-DEFAULT_SEGMENTED_DIR = Path("results/tristatic_segmented_radius_from_whipple_20260701")
-DEFAULT_OUTPUT_DIR = Path("results/tristatic_whipple_jacchia_segmented_radius_event_plots_20260701")
+DEFAULT_SEGMENTED_DIR = Path("results/tristatic_segmented_radius_monotonic_bootstrap_20260701")
+DEFAULT_OUTPUT_DIR = Path("results/tristatic_whipple_jacchia_monotonic_radius_event_plots_20260701")
 EVENT_PREFIX = "joint_delay_doppler_fft_"
 
 
@@ -32,6 +32,19 @@ def inject_segmented_radius(joint_fit, segmented_h5):
         joint_fit["segmented_radius_available"] = True
         joint_fit["segmented_radius_best_n_segments"] = n_segments
         joint_fit["segmented_radius_best_bic"] = float(h.attrs.get("best_bic", np.nan))
+        joint_fit["segmented_radius_initial_radius_m"] = float(h.attrs.get("initial_radius_m", np.nan))
+        joint_fit["segmented_radius_initial_mass_kg"] = float(h.attrs.get("initial_mass_kg", np.nan))
+        joint_fit["segmented_radius_bootstrap_samples_successful"] = int(
+            h.attrs.get("bootstrap_samples_successful", 0)
+        )
+        interval_map = {
+            "bootstrap_initial_radius_lo95_m": "segmented_radius_initial_radius_lo95_m",
+            "bootstrap_initial_radius_hi95_m": "segmented_radius_initial_radius_hi95_m",
+            "bootstrap_initial_mass_lo95_kg": "segmented_radius_initial_mass_lo95_kg",
+            "bootstrap_initial_mass_hi95_kg": "segmented_radius_initial_mass_hi95_kg",
+        }
+        for h5_key, plot_key in interval_map.items():
+            joint_fit[plot_key] = float(h.attrs.get(h5_key, np.nan))
         joint_fit["segmented_radius_segment_start_indices"] = np.asarray(
             group["segment_start_indices"][()],
             dtype=np.int64,
@@ -40,6 +53,9 @@ def inject_segmented_radius(joint_fit, segmented_h5):
             group["segment_initial_radius_m"][()],
             dtype=np.float64,
         )
+        joint_fit["segmented_radius_v_gcrs_mps"] = np.asarray(group["v_gcrs_mps"][()], dtype=np.float64)
+        joint_fit["segmented_radius_radius_m"] = np.asarray(group["radius_m"][()], dtype=np.float64)
+        joint_fit["segmented_radius_mass_kg"] = np.asarray(group["mass_kg"][()], dtype=np.float64)
     return joint_fit
 
 
@@ -102,7 +118,7 @@ def plot_one(whipple_h5, source_dir, segmented_dir, output_dir, overwrite):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Regenerate Whipple-Jacchia event plots with BIC-selected segmented-radius r0 annotations."
+        description="Regenerate Whipple-Jacchia event plots with BIC-selected monotonic shrinking-radius overlays."
     )
     parser.add_argument("--source-dir", default=DEFAULT_SOURCE_DIR)
     parser.add_argument("--whipple-dir", default=DEFAULT_WHIPPLE_DIR)

@@ -1949,61 +1949,56 @@ def fit_quality_annotation(joint_fit):
     )
 
 
-def add_segmented_radius_velocity_annotations(ax, t_rel_s, along_velocity_km_s, joint_fit):
-    starts = np.asarray(joint_fit.get("segmented_radius_segment_start_indices", []), dtype=np.int64)
-    radii_m = np.asarray(joint_fit.get("segmented_radius_segment_initial_radius_m", []), dtype=np.float64)
-    if starts.size == 0 or radii_m.size == 0:
+def segmented_radius_interval_text(joint_fit):
+    radius_m = float(joint_fit.get("segmented_radius_initial_radius_m", np.nan))
+    mass_kg = float(joint_fit.get("segmented_radius_initial_mass_kg", np.nan))
+    radius_lo_m = float(joint_fit.get("segmented_radius_initial_radius_lo95_m", np.nan))
+    radius_hi_m = float(joint_fit.get("segmented_radius_initial_radius_hi95_m", np.nan))
+    mass_lo_kg = float(joint_fit.get("segmented_radius_initial_mass_lo95_kg", np.nan))
+    mass_hi_kg = float(joint_fit.get("segmented_radius_initial_mass_hi95_kg", np.nan))
+    n_boot = int(joint_fit.get("segmented_radius_bootstrap_samples_successful", 0))
+    lines = []
+    if np.isfinite(radius_m):
+        lines.append(rf"$r_0 = {radius_m * 1e6:.2g}\,\mu$m")
+    if np.all(np.isfinite([radius_lo_m, radius_hi_m])):
+        lines.append(rf"95% $r_0$: {radius_lo_m * 1e6:.2g}--{radius_hi_m * 1e6:.2g} $\mu$m")
+    if np.isfinite(mass_kg):
+        lines.append(rf"$m_0 = {compact_sci(mass_kg)}$ kg")
+    if np.all(np.isfinite([mass_lo_kg, mass_hi_kg])):
+        lines.append(rf"95% $m_0$: {compact_sci(mass_lo_kg)}--{compact_sci(mass_hi_kg)} kg")
+    if n_boot > 0:
+        lines.append(f"radius bootstrap n = {n_boot}")
+    return "\n".join(lines)
+
+
+def add_segmented_radius_velocity_fit(ax, t_rel_s, along_axis, joint_fit):
+    v_gcrs = np.asarray(joint_fit.get("segmented_radius_v_gcrs_mps", []), dtype=np.float64)
+    if v_gcrs.ndim != 2 or v_gcrs.shape[1] != 3 or v_gcrs.shape[0] != len(t_rel_s):
         return
-    t_rel_s = np.asarray(t_rel_s, dtype=np.float64)
-    along_velocity_km_s = np.asarray(along_velocity_km_s, dtype=np.float64)
-    n = min(starts.size, radii_m.size)
-    starts = starts[:n]
-    radii_m = radii_m[:n]
-    valid = (
-        (starts >= 0)
-        & (starts < t_rel_s.size)
-        & np.isfinite(radii_m)
-        & np.isfinite(t_rel_s[np.clip(starts, 0, max(t_rel_s.size - 1, 0))])
-        & np.isfinite(along_velocity_km_s[np.clip(starts, 0, max(along_velocity_km_s.size - 1, 0))])
-    )
-    starts = starts[valid]
-    radii_m = radii_m[valid]
-    if starts.size == 0:
+    segmented_velocity_km_s = (v_gcrs @ along_axis) / 1e3
+    if not np.any(np.isfinite(segmented_velocity_km_s)):
         return
-    ax.scatter(
-        t_rel_s[starts],
-        along_velocity_km_s[starts],
-        s=34,
-        marker="o",
-        facecolor="#d95f02",
-        edgecolor="white",
-        linewidth=0.7,
-        zorder=6,
-        label="segmented r0",
+    ax.plot(
+        t_rel_s,
+        segmented_velocity_km_s,
+        color="0.25",
+        lw=1.7,
+        ls="--",
+        label="shrinking-radius fit",
+        zorder=5,
     )
-    ymin, ymax = ax.get_ylim()
-    ymid = 0.5 * (ymin + ymax)
-    for idx, (start, radius_m) in enumerate(zip(starts, radii_m)):
-        if starts.size == 1:
-            label = rf"$r_0={radius_m * 1e6:.1f}\,\mu$m"
-        else:
-            label = rf"$r_{{0,{idx + 1}}}={radius_m * 1e6:.1f}\,\mu$m"
-        if along_velocity_km_s[start] > ymid:
-            dy = -14 - 6 * (idx % 2)
-        else:
-            dy = 10 + 6 * (idx % 2)
-        va = "bottom" if dy > 0 else "top"
-        ax.annotate(
-            label,
-            xy=(t_rel_s[start], along_velocity_km_s[start]),
-            xytext=(7, dy),
-            textcoords="offset points",
+    text = segmented_radius_interval_text(joint_fit)
+    if text:
+        ax.text(
+            0.04,
+            0.93,
+            text,
+            transform=ax.transAxes,
             ha="left",
-            va=va,
+            va="top",
             fontsize=7.6,
-            color="#7f2704",
-            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.5},
-            arrowprops={"arrowstyle": "-", "color": "#d95f02", "lw": 0.7, "alpha": 0.8},
+            color="black",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.0},
             zorder=7,
         )
 
@@ -2276,18 +2271,18 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             t,
             bands["along_velocity_lo_km_s"],
             bands["along_velocity_hi_km_s"],
-            color="#a6dba0",
-            alpha=0.55,
+            color="0.72",
+            alpha=0.42,
             lw=0,
-            label="95% fit band",
+            label="Whipple-Jacchia 95%",
         )
-    ax.plot(t, along_velocity_km_s, color="#1b7837", lw=1.9, label="joint fit")
-    add_segmented_radius_velocity_annotations(ax, t, along_velocity_km_s, joint_fit)
+    ax.plot(t, along_velocity_km_s, color="black", lw=1.9, label="Whipple-Jacchia")
+    add_segmented_radius_velocity_fit(ax, t, along_axis, joint_fit)
     ax.set_ylabel("Along-track velocity (km/s)")
     ax.set_title("Model along-track velocity")
     ax.ticklabel_format(axis="y", style="plain", useOffset=False)
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="upper right", fontsize=8)
+    ax.legend(loc="upper right", fontsize=7.4, framealpha=0.78, borderpad=0.35, labelspacing=0.35)
     ax.text(
         0.04,
         0.05,
