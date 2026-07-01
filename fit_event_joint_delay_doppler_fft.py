@@ -1949,6 +1949,64 @@ def fit_quality_annotation(joint_fit):
     )
 
 
+def add_segmented_radius_velocity_annotations(ax, t_rel_s, along_velocity_km_s, joint_fit):
+    starts = np.asarray(joint_fit.get("segmented_radius_segment_start_indices", []), dtype=np.int64)
+    radii_m = np.asarray(joint_fit.get("segmented_radius_segment_initial_radius_m", []), dtype=np.float64)
+    if starts.size == 0 or radii_m.size == 0:
+        return
+    t_rel_s = np.asarray(t_rel_s, dtype=np.float64)
+    along_velocity_km_s = np.asarray(along_velocity_km_s, dtype=np.float64)
+    n = min(starts.size, radii_m.size)
+    starts = starts[:n]
+    radii_m = radii_m[:n]
+    valid = (
+        (starts >= 0)
+        & (starts < t_rel_s.size)
+        & np.isfinite(radii_m)
+        & np.isfinite(t_rel_s[np.clip(starts, 0, max(t_rel_s.size - 1, 0))])
+        & np.isfinite(along_velocity_km_s[np.clip(starts, 0, max(along_velocity_km_s.size - 1, 0))])
+    )
+    starts = starts[valid]
+    radii_m = radii_m[valid]
+    if starts.size == 0:
+        return
+    ax.scatter(
+        t_rel_s[starts],
+        along_velocity_km_s[starts],
+        s=34,
+        marker="o",
+        facecolor="#d95f02",
+        edgecolor="white",
+        linewidth=0.7,
+        zorder=6,
+        label="segmented r0",
+    )
+    ymin, ymax = ax.get_ylim()
+    ymid = 0.5 * (ymin + ymax)
+    for idx, (start, radius_m) in enumerate(zip(starts, radii_m)):
+        if starts.size == 1:
+            label = rf"$r_0={radius_m * 1e6:.1f}\,\mu$m"
+        else:
+            label = rf"$r_{{0,{idx + 1}}}={radius_m * 1e6:.1f}\,\mu$m"
+        dy = -15 if along_velocity_km_s[start] > ymid else 10
+        if idx % 2:
+            dy *= -1
+        va = "bottom" if dy > 0 else "top"
+        ax.annotate(
+            label,
+            xy=(t_rel_s[start], along_velocity_km_s[start]),
+            xytext=(7, dy),
+            textcoords="offset points",
+            ha="left",
+            va=va,
+            fontsize=7.6,
+            color="#7f2704",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.5},
+            arrowprops={"arrowstyle": "-", "color": "#d95f02", "lw": 0.7, "alpha": 0.8},
+            zorder=7,
+        )
+
+
 def deterministic_rng(event_id):
     digest = hashlib.sha256(event_id.encode("utf-8")).digest()
     seed = int.from_bytes(digest[:8], "little", signed=False) % (2**32)
@@ -2223,6 +2281,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             label="95% fit band",
         )
     ax.plot(t, along_velocity_km_s, color="#1b7837", lw=1.9, label="joint fit")
+    add_segmented_radius_velocity_annotations(ax, t, along_velocity_km_s, joint_fit)
     ax.set_ylabel("Along-track velocity (km/s)")
     ax.set_title("Model along-track velocity")
     ax.ticklabel_format(axis="y", style="plain", useOffset=False)
