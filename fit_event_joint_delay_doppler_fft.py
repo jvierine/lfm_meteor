@@ -1987,6 +1987,12 @@ def add_segmented_radius_velocity_fit(ax, t_rel_s, along_axis, joint_fit):
         label="shrinking-radius fit",
         zorder=5,
     )
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    dx = max(float(x1 - x0), 1e-6)
+    dy = max(float(y1 - y0), 1e-6)
+    ax.set_xlim(x0 - 0.01 * dx, x1 + 0.08 * dx)
+    ax.set_ylim(y0 - 0.03 * dy, y1 + 0.32 * dy)
     text = segmented_radius_interval_text(joint_fit)
     if text:
         ax.text(
