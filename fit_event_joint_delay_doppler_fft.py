@@ -1988,9 +1988,10 @@ def add_segmented_radius_velocity_annotations(ax, t_rel_s, along_velocity_km_s, 
             label = rf"$r_0={radius_m * 1e6:.1f}\,\mu$m"
         else:
             label = rf"$r_{{0,{idx + 1}}}={radius_m * 1e6:.1f}\,\mu$m"
-        dy = -15 if along_velocity_km_s[start] > ymid else 10
-        if idx % 2:
-            dy *= -1
+        if along_velocity_km_s[start] > ymid:
+            dy = -14 - 6 * (idx % 2)
+        else:
+            dy = 10 + 6 * (idx % 2)
         va = "bottom" if dy > 0 else "top"
         ax.annotate(
             label,
