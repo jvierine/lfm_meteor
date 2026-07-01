@@ -2110,17 +2110,25 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
     if bands is not None:
         step = max(1, len(fit_east_deg) // 12)
         idx = np.arange(0, len(fit_east_deg), step)
-        ax.errorbar(
-            fit_east_deg[idx],
-            fit_north_deg[idx],
-            xerr=np.vstack([
+        xerr = np.maximum(
+            np.vstack([
                 fit_east_deg[idx] - bands["beam_east_lo_deg"][idx],
                 bands["beam_east_hi_deg"][idx] - fit_east_deg[idx],
             ]),
-            yerr=np.vstack([
+            0.0,
+        )
+        yerr = np.maximum(
+            np.vstack([
                 fit_north_deg[idx] - bands["beam_north_lo_deg"][idx],
                 bands["beam_north_hi_deg"][idx] - fit_north_deg[idx],
             ]),
+            0.0,
+        )
+        ax.errorbar(
+            fit_east_deg[idx],
+            fit_north_deg[idx],
+            xerr=xerr,
+            yerr=yerr,
             fmt="none",
             ecolor="#1b7837",
             elinewidth=0.9,
