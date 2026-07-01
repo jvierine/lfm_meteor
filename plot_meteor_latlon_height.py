@@ -23,7 +23,7 @@ from grid_search_delays_beam_axis import (
 
 OUTPUT_PNG = os.path.join("results", "meteor_positions_latlon_height.png")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_positions_latlon_height.png"
-INPUT_H5 = os.path.join("results", "all_tristatic_ceplecha_snr_weighted_v20260616d.h5")
+INPUT_CATALOG_DIR = os.path.join("results", "tristatic")
 BEAM_AZ_DEG = 15.0
 BEAM_EL_DEG = 75.0
 MAX_LAT_DEG = 18.7
@@ -76,14 +76,18 @@ def beam_line_llh(site_idx: int, az_deg: float, el_deg: float, max_range_km: flo
     )
 
 
-def solve_all_positions(dan_delay0_us=DAN_CENTER_US, wen_delay0_us=WEN_CENTER_US):
-    if os.path.exists(INPUT_H5):
+def joint_fit_paths(catalog_dir):
+    return sorted(glob.glob(os.path.join(catalog_dir, "joint_delay_doppler_fft_tri_*.h5")))
+
+
+def solve_all_positions(catalog_dir=INPUT_CATALOG_DIR, dan_delay0_us=DAN_CENTER_US, wen_delay0_us=WEN_CENTER_US):
+    paths = joint_fit_paths(catalog_dir)
+    if paths:
         llh_chunks = []
         speed_chunks = []
-        with h5py.File(INPUT_H5, "r") as h:
-            for event_id in h["event_id"][:]:
-                name = event_id.decode("utf-8") if isinstance(event_id, bytes) else str(event_id)
-                group = h["points"][name]
+        for path in paths:
+            with h5py.File(path, "r") as h:
+                group = h["joint_fit"]
                 n_rows = min(
                     group["lat_deg"].shape[0],
                     group["lon_deg"].shape[0],
@@ -101,8 +105,8 @@ def solve_all_positions(dan_delay0_us=DAN_CENTER_US, wen_delay0_us=WEN_CENTER_US
                 )
                 speed_chunks.append(np.asarray(group["speed_km_s"][:n_rows], dtype=np.float64))
         if not llh_chunks:
-            raise RuntimeError(f"No fitted trajectory samples found in {INPUT_H5}")
-        return np.vstack(llh_chunks), np.concatenate(speed_chunks), len(llh_chunks)
+            raise RuntimeError(f"No fitted trajectory samples found in {catalog_dir}")
+        return np.vstack(llh_chunks), np.concatenate(speed_chunks), len(paths)
 
     trajectories = build_trajectories()
     llh_chunks = []
@@ -115,8 +119,22 @@ def solve_all_positions(dan_delay0_us=DAN_CENTER_US, wen_delay0_us=WEN_CENTER_US
     return llh, np.full(llh.shape[0], np.nan), len(trajectories)
 
 
-def beam_panel_data(input_h5):
-    positions_ecef_m, n_events = beam_hist.collect_positions(input_h5)
+def collect_joint_positions(catalog_dir):
+    chunks = []
+    paths = joint_fit_paths(catalog_dir)
+    for path in paths:
+        with h5py.File(path, "r") as h:
+            x_itrs_m = np.asarray(h["joint_fit"]["x_itrs_m"][:], dtype=np.float64)
+            finite = np.all(np.isfinite(x_itrs_m), axis=1)
+            if np.any(finite):
+                chunks.append(x_itrs_m[finite])
+    if not chunks:
+        raise RuntimeError(f"No finite joint-fit x_itrs_m positions found in {catalog_dir}")
+    return np.vstack(chunks), len(paths)
+
+
+def beam_panel_data(catalog_dir):
+    positions_ecef_m, n_events = collect_joint_positions(catalog_dir)
     sanya_lat_deg, sanya_lon_deg, _sanya_alt_m = jcoord.ecef2geodetic(*beam_hist.gfit.LINK_TX_POSITIONS_M[0])
     los_ecef = beam_hist.unit(positions_ecef_m - beam_hist.gfit.LINK_TX_POSITIONS_M[0][None, :])
     los_enu = beam_hist.ecef_to_enu_vectors(los_ecef, sanya_lat_deg, sanya_lon_deg)
@@ -170,7 +188,7 @@ def main():
     }
     alt_lo = float(np.nanmin(alt_km) - 7.0)
     alt_hi = float(np.nanmax(alt_km) + 7.0)
-    beam = beam_panel_data(INPUT_H5)
+    beam = beam_panel_data(INPUT_CATALOG_DIR)
 
     fig = plt.figure(figsize=(12.2, 4.8), constrained_layout=True)
     grid = fig.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 0.95])
@@ -272,7 +290,7 @@ def main():
     print(f"fitted geocentric speed range: {np.nanmin(speed_km_s):.3f} to {np.nanmax(speed_km_s):.3f} km/s")
     for label, (_site_idx, az_deg, el_deg, _color, _linestyle) in pointings.items():
         print(f"{label}: az={az_deg:.6f} deg el={el_deg:.6f} deg")
-    print(INPUT_H5 if os.path.exists(INPUT_H5) else "legacy point solver")
+    print(INPUT_CATALOG_DIR if joint_fit_paths(INPUT_CATALOG_DIR) else "legacy point solver")
     print(OUTPUT_PNG)
     print(PAPER_OUTPUT_PNG)
 

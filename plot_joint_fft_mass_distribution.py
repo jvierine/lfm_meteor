@@ -56,6 +56,11 @@ def radius_mass_95_bounds(radius_m, log10_radius_std):
     )
 
 
+def finite_attr(group, name):
+    value = float(group.attrs.get(name, np.nan))
+    return value if np.isfinite(value) else np.nan
+
+
 def load_rows(catalog_dir):
     rows = []
     for path in sorted(glob.glob(os.path.join(catalog_dir, "joint_delay_doppler_fft_tri_*.h5"))):
@@ -67,6 +72,23 @@ def load_rows(catalog_dir):
                 radius_m,
                 log10_radius_std,
             )
+            bootstrap_radius_95_lo_m = finite_attr(j, "bootstrap_radius0_lo95_m")
+            bootstrap_radius_95_hi_m = finite_attr(j, "bootstrap_radius0_hi95_m")
+            bootstrap_mass_95_lo_kg = finite_attr(j, "bootstrap_mass0_lo95_kg")
+            bootstrap_mass_95_hi_kg = finite_attr(j, "bootstrap_mass0_hi95_kg")
+            if (
+                np.isfinite(bootstrap_mass_95_lo_kg)
+                and np.isfinite(bootstrap_mass_95_hi_kg)
+                and bootstrap_mass_95_lo_kg > 0.0
+                and bootstrap_mass_95_hi_kg > bootstrap_mass_95_lo_kg
+            ):
+                mass_95_lo_kg = bootstrap_mass_95_lo_kg
+                mass_95_hi_kg = bootstrap_mass_95_hi_kg
+                radius_95_lo_m = bootstrap_radius_95_lo_m
+                radius_95_hi_m = bootstrap_radius_95_hi_m
+                uncertainty_source = 1
+            else:
+                uncertainty_source = 0
             rows.append(
                 {
                     "event_id": decode(h.attrs["event_id"]),
@@ -77,6 +99,7 @@ def load_rows(catalog_dir):
                     "mass_95_lo_kg": mass_95_lo_kg,
                     "mass_95_hi_kg": mass_95_hi_kg,
                     "log10_radius_std": log10_radius_std,
+                    "uncertainty_source": uncertainty_source,
                     "n_points": int(j.attrs["n_points"]),
                     "n_fft_observations": int(j.attrs["n_fft_observations"]),
                     "rms_fft_residual_hz": float(j.attrs["rms_fft_residual_hz"]),
@@ -90,6 +113,7 @@ def load_rows(catalog_dir):
 def selected_mask(rows, args):
     radius = np.asarray([r["initial_radius_m"] for r in rows], dtype=np.float64)
     log10_std = np.asarray([r["log10_radius_std"] for r in rows], dtype=np.float64)
+    uncertainty_source = np.asarray([r["uncertainty_source"] for r in rows], dtype=np.float64)
     n_fft = np.asarray([r["n_fft_observations"] for r in rows], dtype=np.float64)
     beat = np.asarray([r["rms_fft_residual_hz"] for r in rows], dtype=np.float64)
     path = np.asarray([r["rms_total_path_residual_m"] for r in rows], dtype=np.float64)
@@ -98,27 +122,30 @@ def selected_mask(rows, args):
     mass = np.asarray([r["initial_mass_kg"] for r in rows], dtype=np.float64)
     radius_lo = np.asarray([r["radius_95_lo_m"] for r in rows], dtype=np.float64)
     radius_hi = np.asarray([r["radius_95_hi_m"] for r in rows], dtype=np.float64)
-    return (
+    mass_95_width_dex = np.log10(mass_hi) - np.log10(mass_lo)
+    mask = (
         np.isfinite(radius)
-        & np.isfinite(radius_lo)
-        & np.isfinite(radius_hi)
-        & np.isfinite(log10_std)
         & np.isfinite(mass_lo)
         & np.isfinite(mass_hi)
         & np.isfinite(mass)
+        & np.isfinite(mass_95_width_dex)
         & (mass_lo > 0.0)
         & (mass_hi > 0.0)
         & (mass_lo < mass)
         & (mass_hi > mass)
         & (radius > 1.01 * cepl.MIN_RADIUS_M)
         & (radius < 0.99 * cepl.MAX_RADIUS_M)
-        & (radius_lo > 1.01 * cepl.MIN_RADIUS_M)
-        & (radius_hi < 0.99 * cepl.MAX_RADIUS_M)
-        & (log10_std <= args.max_log10_radius_std)
-        & (n_fft >= args.min_fft_observations)
-        & (beat <= args.max_fft_rms_hz)
-        & (path <= args.max_path_rms_m)
+        & (mass_95_width_dex <= args.max_mass_95_width_dex)
     )
+    if np.isfinite(args.max_log10_radius_std):
+        mask &= (uncertainty_source == 1.0) | (np.isfinite(log10_std) & (log10_std <= args.max_log10_radius_std))
+    if args.min_fft_observations > 0:
+        mask &= n_fft >= args.min_fft_observations
+    if np.isfinite(args.max_fft_rms_hz):
+        mask &= beat <= args.max_fft_rms_hz
+    if np.isfinite(args.max_path_rms_m):
+        mask &= path <= args.max_path_rms_m
+    return mask
 
 
 def write_h5(output_base, rows, mask, args):
@@ -131,6 +158,7 @@ def write_h5(output_base, rows, mask, args):
         h.attrs["max_fft_rms_hz"] = float(args.max_fft_rms_hz)
         h.attrs["max_path_rms_m"] = float(args.max_path_rms_m)
         h.attrs["max_log10_radius_std"] = float(args.max_log10_radius_std)
+        h.attrs["max_mass_95_width_dex"] = float(args.max_mass_95_width_dex)
         h.attrs["n_catalog_events"] = int(len(rows))
         h.attrs["n_selected"] = int(np.count_nonzero(mask))
         h.create_dataset("event_id", data=np.asarray([r["event_id"] for r in rows], dtype=object), dtype=string_dtype)
@@ -164,7 +192,10 @@ def plot(output_base, rows, mask, args):
         }
     )
     fig, ax = plt.subplots(figsize=(7.2, 4.5), constrained_layout=True)
-    bins = np.linspace(np.nanpercentile(log_mass, 1.0), np.nanpercentile(log_mass, 99.0), 25)
+    log_mass_min = float(np.nanmin(log_mass))
+    log_mass_max = float(np.nanmax(log_mass))
+    log_mass_pad = max(0.05, 0.02 * (log_mass_max - log_mass_min))
+    bins = np.linspace(log_mass_min - log_mass_pad, log_mass_max + log_mass_pad, 25)
     n_mass, _bins, mass_patches = ax.hist(
         log_mass,
         bins=bins,
@@ -262,10 +293,11 @@ def main():
     parser = argparse.ArgumentParser(description="Plot joint delay--FFT initial-mass distribution with 95% error bars.")
     parser.add_argument("--catalog-dir", default=DEFAULT_CATALOG_DIR)
     parser.add_argument("--output-base", default=DEFAULT_OUTPUT_BASE)
-    parser.add_argument("--min-fft-observations", type=int, default=20)
-    parser.add_argument("--max-fft-rms-hz", type=float, default=1500.0)
-    parser.add_argument("--max-path-rms-m", type=float, default=150.0)
+    parser.add_argument("--min-fft-observations", type=int, default=0)
+    parser.add_argument("--max-fft-rms-hz", type=float, default=np.inf)
+    parser.add_argument("--max-path-rms-m", type=float, default=np.inf)
     parser.add_argument("--max-log10-radius-std", type=float, default=0.5)
+    parser.add_argument("--max-mass-95-width-dex", type=float, default=1.0)
     parser.add_argument("--copy-to-paper", action="store_true")
     args = parser.parse_args()
 

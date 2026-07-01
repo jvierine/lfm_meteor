@@ -63,6 +63,23 @@ def load_existing_result_summary(output_h5):
                 "n_coincident_delay_constraint_rows",
                 "min_geometric_points",
                 "default_min_geometric_points",
+                "bootstrap_samples_requested",
+                "bootstrap_samples_successful",
+                "bootstrap_n_failures",
+                "bootstrap_speed0_median_km_s",
+                "bootstrap_speed0_lo95_km_s",
+                "bootstrap_speed0_hi95_km_s",
+                "bootstrap_radius0_median_m",
+                "bootstrap_radius0_lo95_m",
+                "bootstrap_radius0_hi95_m",
+                "bootstrap_mass0_median_kg",
+                "bootstrap_mass0_lo95_kg",
+                "bootstrap_mass0_hi95_kg",
+                "heliocentric_eccentricity",
+                "bootstrap_eccentricity_median",
+                "bootstrap_eccentricity_lo95",
+                "bootstrap_eccentricity_hi95",
+                "bootstrap_interstellar_fraction_e_gt_1",
             ):
                 if key in jg.attrs:
                     out[key] = float(jg.attrs[key])
@@ -78,12 +95,23 @@ def load_existing_result_summary(output_h5):
             out["joint_path_rate_mean_abs_mps"] = out.get("mean_abs_path_rate_residual_mps", np.nan)
             out["joint_radius_um"] = out.get("initial_radius_m", np.nan) * 1e6
             out["joint_initial_mass_kg"] = out.get("initial_mass_kg", np.nan)
-            for key in ("dynamical_model", "fallback_reason", "bad_fit_reasons", "bad_fit_recovery_step", "pre_recovery_bad_fit_reasons"):
+            for key in (
+                "dynamical_model",
+                "fallback_reason",
+                "bad_fit_reasons",
+                "bad_fit_recovery_step",
+                "pre_recovery_bad_fit_reasons",
+                "residual_scale_model",
+                "residual_likelihood",
+                "bootstrap_method",
+            ):
                 if key in jg.attrs:
                     value = jg.attrs[key]
                     out[key] = value.decode("utf-8") if isinstance(value, bytes) else str(value)
             if "bad_fit_detected" in jg.attrs:
                 out["bad_fit_detected"] = bool(jg.attrs["bad_fit_detected"])
+            if "bootstrap_enabled" in jg.attrs:
+                out["bootstrap_enabled"] = bool(jg.attrs["bootstrap_enabled"])
     except Exception:
         return out
     return out
@@ -125,9 +153,16 @@ def write_summary(path, results, args_dict):
         h.create_dataset("bad_fit_reasons", data=np.asarray([r.get("bad_fit_reasons", "") for r in results], dtype=object), dtype=string_dtype)
         h.create_dataset("bad_fit_recovery_step", data=np.asarray([r.get("bad_fit_recovery_step", "") for r in results], dtype=object), dtype=string_dtype)
         h.create_dataset("pre_recovery_bad_fit_reasons", data=np.asarray([r.get("pre_recovery_bad_fit_reasons", "") for r in results], dtype=object), dtype=string_dtype)
+        h.create_dataset("residual_scale_model", data=np.asarray([r.get("residual_scale_model", "") for r in results], dtype=object), dtype=string_dtype)
+        h.create_dataset("residual_likelihood", data=np.asarray([r.get("residual_likelihood", "") for r in results], dtype=object), dtype=string_dtype)
+        h.create_dataset("bootstrap_method", data=np.asarray([r.get("bootstrap_method", "") for r in results], dtype=object), dtype=string_dtype)
         h.create_dataset(
             "bad_fit_detected",
             data=np.asarray([str(r.get("bad_fit_detected", "False")).lower() in {"true", "1"} for r in results], dtype=bool),
+        )
+        h.create_dataset(
+            "bootstrap_enabled",
+            data=np.asarray([str(r.get("bootstrap_enabled", "False")).lower() in {"true", "1"} for r in results], dtype=bool),
         )
         for key in (
             "n_points",
@@ -152,6 +187,23 @@ def write_summary(path, results, args_dict):
             "n_coincident_delay_constraint_rows",
             "min_geometric_points",
             "default_min_geometric_points",
+            "bootstrap_samples_requested",
+            "bootstrap_samples_successful",
+            "bootstrap_n_failures",
+            "bootstrap_speed0_median_km_s",
+            "bootstrap_speed0_lo95_km_s",
+            "bootstrap_speed0_hi95_km_s",
+            "bootstrap_radius0_median_m",
+            "bootstrap_radius0_lo95_m",
+            "bootstrap_radius0_hi95_m",
+            "bootstrap_mass0_median_kg",
+            "bootstrap_mass0_lo95_kg",
+            "bootstrap_mass0_hi95_kg",
+            "heliocentric_eccentricity",
+            "bootstrap_eccentricity_median",
+            "bootstrap_eccentricity_lo95",
+            "bootstrap_eccentricity_hi95",
+            "bootstrap_interstellar_fraction_e_gt_1",
             "returncode",
         ):
             h.create_dataset(key, data=np.asarray([numeric_or_nan(r, key) for r in results], dtype=np.float64))
@@ -188,6 +240,26 @@ def main():
     parser.add_argument("--random-seed", type=int, default=None)
     parser.add_argument("--force-model-reevaluation", action="store_true")
     parser.add_argument("--coincident-delay-weight", type=float, default=joint.DEFAULT_COINCIDENT_DELAY_WEIGHT)
+    parser.add_argument("--min-geometric-points", type=int, default=base.MIN_POINTS)
+    parser.add_argument(
+        "--residual-scale-model",
+        choices=("legacy_snr", "empirical_snr_beam"),
+        default="legacy_snr",
+    )
+    parser.add_argument(
+        "--residual-likelihood",
+        choices=("scipy_robust_lsq", "student_t"),
+        default="scipy_robust_lsq",
+    )
+    parser.add_argument("--student-t-nu-delay", type=float, default=joint.DEFAULT_STUDENT_T_NU_DELAY)
+    parser.add_argument("--student-t-nu-fft", type=float, default=joint.DEFAULT_STUDENT_T_NU_FFT)
+    parser.add_argument("--bootstrap-samples", type=int, default=0)
+    parser.add_argument("--bootstrap-seed", type=int, default=None)
+    parser.add_argument(
+        "--bootstrap-method",
+        choices=("parametric_student_t", "parametric_gaussian"),
+        default="parametric_student_t",
+    )
     parser.add_argument("--jobs", type=int, default=1)
     args = parser.parse_args()
 
@@ -245,9 +317,25 @@ def main():
             str(args.random_initial_guesses),
             "--coincident-delay-weight",
             str(args.coincident_delay_weight),
+            "--min-geometric-points",
+            str(args.min_geometric_points),
+            "--residual-scale-model",
+            str(args.residual_scale_model),
+            "--residual-likelihood",
+            str(args.residual_likelihood),
+            "--student-t-nu-delay",
+            str(args.student_t_nu_delay),
+            "--student-t-nu-fft",
+            str(args.student_t_nu_fft),
+            "--bootstrap-samples",
+            str(args.bootstrap_samples),
+            "--bootstrap-method",
+            str(args.bootstrap_method),
         ]
         if args.random_seed is not None:
             cmd.extend(["--random-seed", str(args.random_seed + idx)])
+        if args.bootstrap_seed is not None:
+            cmd.extend(["--bootstrap-seed", str(args.bootstrap_seed + idx)])
         if args.manual_outlier_h5:
             cmd.extend(["--manual-outlier-h5", args.manual_outlier_h5])
         if args.force_model_reevaluation:
@@ -262,6 +350,7 @@ def main():
         result["stderr"] = proc.stderr.strip()
         result["status"] = "ok" if proc.returncode == 0 else "error"
         if proc.returncode == 0:
+            result.update(load_existing_result_summary(output_h5))
             message = (
                 f"  ok n={result.get('n_points', '?')} fft={result.get('n_fft_observations', '?')} "
                 f"path={result.get('joint_path_rms_m', '?')} m beat={result.get('joint_fft_rms_hz', '?')} Hz"

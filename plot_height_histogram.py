@@ -5,15 +5,20 @@ import h5py
 import jcoord
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
 
 from grid_search_delays_beam_axis import DAN_CENTER_US, MAX_LAT_DEG, WEN_CENTER_US, build_trajectories, solve_trajectory_points
 import plot_memo09_antenna_gain_patterns as gain_model
+import plot_sanya_beam_position_histogram as beam_hist
 import sanya_opts as sc
 
 
 OUTPUT_PNG = os.path.join("results", "meteor_height_histogram.png")
+OUTPUT_PDF = os.path.join("results", "meteor_height_histogram.pdf")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_height_histogram.png"
+PAPER_OUTPUT_PDF = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_height_histogram.pdf"
 INPUT_H5 = os.path.join("results", "all_tristatic_ceplecha_snr_weighted_v20260616d.h5")
+INPUT_CATALOG_DIR = os.path.join("results", "tristatic")
 BIN_SIZE_KM = 1.0
 COMMON_VOLUME_ALT_KM = 94.988
 MONOSTATIC_SANYA_H5 = os.path.join("results", "sanya_monostatic_ranges_v20260613b.h5")
@@ -26,6 +31,25 @@ HEIGHT_MAX_KM = 120.0
 SANYA_MONOSTATIC_LOW_HEIGHT_KM = 80.0
 SANYA_MONOSTATIC_HIGH_HEIGHT_KM = 120.0
 SANYA_MONOSTATIC_OUTSIDE_VELOCITY_MAX_KM_S = -10.0
+
+
+def add_panel_label(ax, label):
+    ax.text(
+        0.03,
+        0.96,
+        label,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontweight="bold",
+        color="black",
+        bbox={
+            "facecolor": "white",
+            "edgecolor": "none",
+            "alpha": 0.4,
+            "boxstyle": "square,pad=0.18",
+        },
+    )
 
 
 def sanya_slant_ranges_to_heights_km(ranges_km, az_deg=SANYA_AZ_DEG, el_deg=SANYA_EL_DEG):
@@ -124,7 +148,29 @@ def receiver_gain_profiles(height_grid_km):
     }
 
 
+def joint_fit_paths(catalog_dir):
+    return sorted(glob.glob(os.path.join(catalog_dir, "joint_delay_doppler_fft_tri_*.h5")))
+
+
+def collect_joint_heights(catalog_dir):
+    chunks = []
+    for path in joint_fit_paths(catalog_dir):
+        with h5py.File(path, "r") as h:
+            if "joint_fit" not in h or "alt_km" not in h["joint_fit"]:
+                continue
+            alt_km = np.asarray(h["joint_fit"]["alt_km"][:], dtype=np.float64)
+            chunks.append(alt_km[np.isfinite(alt_km)])
+    if not chunks:
+        return None
+    altitudes_km = np.concatenate(chunks)
+    return altitudes_km[np.isfinite(altitudes_km)], 0
+
+
 def collect_heights():
+    joint = collect_joint_heights(INPUT_CATALOG_DIR)
+    if joint is not None:
+        return joint
+
     if os.path.exists(INPUT_H5):
         chunks = []
         with h5py.File(INPUT_H5, "r") as h:
@@ -147,6 +193,64 @@ def collect_heights():
         n_rejected += int((~keep).sum())
         altitudes_km.extend(alt_km[keep].tolist())
     return np.asarray(altitudes_km, dtype=np.float64), n_rejected
+
+
+def collect_joint_positions(catalog_dir):
+    chunks = []
+    paths = joint_fit_paths(catalog_dir)
+    for path in paths:
+        with h5py.File(path, "r") as h:
+            if "joint_fit" not in h or "x_itrs_m" not in h["joint_fit"]:
+                continue
+            x_itrs_m = np.asarray(h["joint_fit"]["x_itrs_m"][:], dtype=np.float64)
+            finite = np.all(np.isfinite(x_itrs_m), axis=1)
+            if np.any(finite):
+                chunks.append(x_itrs_m[finite])
+    if not chunks:
+        raise RuntimeError(f"No finite joint-fit x_itrs_m positions found in {catalog_dir}")
+    return np.vstack(chunks), len(paths)
+
+
+def beam_panel_data(catalog_dir):
+    positions_ecef_m, n_events = collect_joint_positions(catalog_dir)
+    sanya_lat_deg, sanya_lon_deg, _sanya_alt_m = jcoord.ecef2geodetic(*beam_hist.gfit.LINK_TX_POSITIONS_M[0])
+    los_ecef = beam_hist.unit(positions_ecef_m - beam_hist.gfit.LINK_TX_POSITIONS_M[0][None, :])
+    los_enu = beam_hist.ecef_to_enu_vectors(los_ecef, sanya_lat_deg, sanya_lon_deg)
+
+    site = gain_model.SITES[0]
+    pointing = gain_model.unit(gain_model.azel_to_enu(site.pointing_az_deg, site.pointing_el_deg))
+    east_axis, north_axis = beam_hist.local_sky_axes(pointing)
+    east_deg, north_deg = beam_hist.angular_offsets_deg(los_enu, pointing, east_axis, north_axis)
+    finite = np.isfinite(east_deg) & np.isfinite(north_deg)
+    east_deg = east_deg[finite]
+    north_deg = north_deg[finite]
+
+    grid = np.linspace(-beam_hist.GRID_LIMIT_DEG, beam_hist.GRID_LIMIT_DEG, beam_hist.GRID_N)
+    east_grid, north_grid = np.meshgrid(grid, grid)
+    gain_db = beam_hist.sanya_beam_relative_gain_db(east_grid, north_grid)
+    hist_range = [
+        [-beam_hist.GRID_LIMIT_DEG, beam_hist.GRID_LIMIT_DEG],
+        [-beam_hist.GRID_LIMIT_DEG, beam_hist.GRID_LIMIT_DEG],
+    ]
+    counts, east_edges, north_edges = np.histogram2d(
+        east_deg,
+        north_deg,
+        bins=beam_hist.HIST_BINS,
+        range=hist_range,
+    )
+    counts = np.ma.masked_less_equal(counts.T, 0.0)
+    max_count = float(np.nanmax(counts)) if np.any(counts > 0.0) else 1.0
+    return {
+        "east_edges": east_edges,
+        "north_edges": north_edges,
+        "counts": counts,
+        "max_count": max_count,
+        "east_grid": east_grid,
+        "north_grid": north_grid,
+        "gain_db": gain_db,
+        "n_events": n_events,
+        "n_positions": len(east_deg),
+    }
 
 
 def collect_sanya_monostatic_heights():
@@ -211,13 +315,13 @@ def main():
     bins = np.arange(bin_start, bin_stop + BIN_SIZE_KM, BIN_SIZE_KM)
     gain_height_km = np.linspace(HEIGHT_MIN_KM, HEIGHT_MAX_KM, 401)
     receiver_gain_dbi = receiver_gain_profiles(gain_height_km)
+    beam = beam_panel_data(INPUT_CATALOG_DIR)
 
-    fig, (ax, ax_gain) = plt.subplots(
+    fig, (ax, ax_gain, ax_beam) = plt.subplots(
         1,
-        2,
-        figsize=(6.7, 3.25),
-        sharey=True,
-        gridspec_kw={"width_ratios": [1.35, 1.0], "wspace": 0.08},
+        3,
+        figsize=(9.2, 3.35),
+        gridspec_kw={"width_ratios": [1.18, 0.92, 1.08], "wspace": 0.22},
     )
 
     tri_weights = np.ones_like(alt_km_for_plot, dtype=np.float64)
@@ -256,13 +360,17 @@ def main():
     ax.set_ylabel("Height (km)")
     ax.grid(True, axis="x", alpha=0.25)
     ax.set_ylim(HEIGHT_MIN_KM, HEIGHT_MAX_KM)
+    add_panel_label(ax, "(a)")
 
     ax_gain.plot(receiver_gain_dbi["Danzhou"], gain_height_km, color="#b34a2e", lw=1.8, label="Danzhou")
     ax_gain.plot(receiver_gain_dbi["Wenchang"], gain_height_km, color="#2f7d4b", lw=1.8, label="Wenchang")
     ax_gain.set_xlabel("Receiver gain on Sanya beam (dBi)")
+    ax_gain.set_ylim(HEIGHT_MIN_KM, HEIGHT_MAX_KM)
+    ax_gain.set_yticklabels([])
     ax_gain.set_xlim(-5.0, 43.0)
     ax_gain.grid(True, alpha=0.25)
     ax_gain.legend(loc="lower right", frameon=False)
+    add_panel_label(ax_gain, "(b)")
 
     handles, labels = ax.get_legend_handles_labels()
     if ax_mono is not None:
@@ -270,11 +378,44 @@ def main():
         handles.extend(mono_handles)
         labels.extend(mono_labels)
     ax.legend(handles, labels, loc="upper right", frameon=False)
-    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.18, top=0.86, wspace=0.08)
+
+    hist = ax_beam.pcolormesh(
+        beam["east_edges"],
+        beam["north_edges"],
+        beam["counts"],
+        cmap="magma",
+        norm=LogNorm(vmin=1.0, vmax=max(beam["max_count"], 1.0)),
+        shading="auto",
+        alpha=0.82,
+        rasterized=True,
+    )
+    ax_beam.contour(
+        beam["east_grid"],
+        beam["north_grid"],
+        beam["gain_db"],
+        levels=[-30.0, -20.0, -13.3, -10.0, -3.0],
+        colors=["0.55", "0.35", "0.20", "0.10", "0.0"],
+        linewidths=[0.7, 0.8, 0.9, 1.0, 1.25],
+        linestyles=[":", "--", "-.", "-", "-"],
+    )
+    ax_beam.axhline(0.0, color="0.2", lw=0.7, alpha=0.6)
+    ax_beam.axvline(0.0, color="0.2", lw=0.7, alpha=0.6)
+    ax_beam.set_aspect("equal", adjustable="box")
+    ax_beam.set_xlim(-beam_hist.GRID_LIMIT_DEG, beam_hist.GRID_LIMIT_DEG)
+    ax_beam.set_ylim(-beam_hist.GRID_LIMIT_DEG, beam_hist.GRID_LIMIT_DEG)
+    ax_beam.set_xlabel("Sanya beam east offset (deg)")
+    ax_beam.set_ylabel("Sanya beam north offset (deg)")
+    add_panel_label(ax_beam, "(c)")
+    cb_beam = fig.colorbar(hist, ax=ax_beam, fraction=0.046, pad=0.03)
+    cb_beam.set_label("Pulse count")
+
+    fig.subplots_adjust(left=0.075, right=0.985, bottom=0.18, top=0.93, wspace=0.24)
 
     fig.savefig(OUTPUT_PNG, dpi=220, bbox_inches="tight")
+    fig.savefig(OUTPUT_PDF, bbox_inches="tight")
     os.makedirs(os.path.dirname(PAPER_OUTPUT_PNG), exist_ok=True)
     fig.savefig(PAPER_OUTPUT_PNG, dpi=220, bbox_inches="tight")
+    fig.savefig(PAPER_OUTPUT_PDF, bbox_inches="tight")
     plt.close(fig)
 
     print(f"points: {alt_km.size}")
@@ -298,9 +439,12 @@ def main():
             f"radial velocity < {SANYA_MONOSTATIC_OUTSIDE_VELOCITY_MAX_KM_S:g} km/s"
         )
     print(f"bins: {bin_start:.0f} to {bin_stop:.0f} km in {BIN_SIZE_KM:.0f} km steps")
-    print(INPUT_H5 if os.path.exists(INPUT_H5) else "legacy point solver")
+    print(INPUT_CATALOG_DIR if joint_fit_paths(INPUT_CATALOG_DIR) else (INPUT_H5 if os.path.exists(INPUT_H5) else "legacy point solver"))
+    print(f"beam positions: {beam['n_positions']} from {beam['n_events']} events")
     print(OUTPUT_PNG)
+    print(OUTPUT_PDF)
     print(PAPER_OUTPUT_PNG)
+    print(PAPER_OUTPUT_PDF)
 
 
 if __name__ == "__main__":

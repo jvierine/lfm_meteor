@@ -1,3 +1,4 @@
+import argparse
 import glob
 import os
 
@@ -98,15 +99,22 @@ def load_fits(catalog_dir):
             event_id = h.attrs.get("event_id", os.path.splitext(os.path.basename(path))[0].replace("joint_delay_doppler_fft_", ""))
             event_id = event_id.decode("utf-8") if isinstance(event_id, bytes) else str(event_id)
             params = np.asarray(joint["params"], dtype=np.float64)
-            if params.shape[0] < 6:
+            if "v_gcrs_mps" in joint:
+                velocity_mps = np.asarray(joint["v_gcrs_mps"], dtype=np.float64)[0]
+            elif params.shape[0] >= 6:
+                velocity_mps = params[3:6]
+            else:
                 continue
-            velocity_mps = params[3:6]
+            if "speed_km_s" in joint:
+                speed_km_s = float(np.asarray(joint["speed_km_s"], dtype=np.float64)[0])
+            else:
+                speed_km_s = float(np.linalg.norm(velocity_mps) / 1e3)
             rows.append(
                 {
                     "event_id": event_id,
                     "t0_ns": int(joint["time_ns"][0]),
                     "velocity_mps": velocity_mps,
-                    "speed_km_s": float(np.linalg.norm(velocity_mps) / 1e3),
+                    "speed_km_s": speed_km_s,
                     "rms_total_path_residual_m": float(joint.attrs["rms_total_path_residual_m"]),
                     "n_points": int(joint.attrs["n_points"]),
                 }
@@ -169,12 +177,12 @@ def calculate_radiants(t0_ns, position_m, velocity_mps, state_frame):
     return lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg, fixed_equinox.isot
 
 
-def write_h5(path, event_id, t0_ns, speed_km_s, rms_total_path_residual_m, n_points, lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg, fixed_equinox_iso, state_frame):
+def write_h5(path, catalog_dir, event_id, t0_ns, speed_km_s, rms_total_path_residual_m, n_points, lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg, fixed_equinox_iso, state_frame):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     string_dtype = h5py.string_dtype(encoding="utf-8")
     with h5py.File(path, "w") as h:
         h.attrs["script"] = os.path.basename(__file__)
-        h.attrs["input_catalog_dir"] = INPUT_CATALOG_DIR
+        h.attrs["input_catalog_dir"] = catalog_dir
         h.attrs["coordinate_frame"] = "GeocentricTrueEcliptic"
         h.attrs["input_state_frame"] = state_frame
         h.attrs["fixed_ecliptic_equinox_utc"] = fixed_equinox_iso
@@ -284,7 +292,7 @@ def add_visibility_overlay(ax, plot_lon_mesh, beta_mesh, visibility_hours, effec
         ax.clabel(contours, fmt=lambda value: f"{value:.0f} eff. h", fontsize=7, inline=True)
 
 
-def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s, visibility):
+def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s, visibility, output_png=OUTPUT_PNG, paper_output_png=PAPER_OUTPUT_PNG, paper_output_pdf=PAPER_OUTPUT_PDF):
     plt.rcParams.update(
         {
             "font.size": 12,
@@ -321,15 +329,15 @@ def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s, visibility):
     cb.ax.xaxis.labelpad = 8
     fig.tight_layout()
 
-    os.makedirs(os.path.dirname(OUTPUT_PNG), exist_ok=True)
-    fig.savefig(OUTPUT_PNG, dpi=240, bbox_inches="tight")
-    os.makedirs(os.path.dirname(PAPER_OUTPUT_PNG), exist_ok=True)
-    fig.savefig(PAPER_OUTPUT_PNG, dpi=240, bbox_inches="tight")
-    fig.savefig(PAPER_OUTPUT_PDF, bbox_inches="tight")
+    os.makedirs(os.path.dirname(output_png), exist_ok=True)
+    fig.savefig(output_png, dpi=240, bbox_inches="tight")
+    os.makedirs(os.path.dirname(paper_output_png), exist_ok=True)
+    fig.savefig(paper_output_png, dpi=240, bbox_inches="tight")
+    fig.savefig(paper_output_pdf, bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_radiant_diagnostic(lambda_minus_sun_deg, beta_deg, speed_km_s):
+def plot_radiant_diagnostic(lambda_minus_sun_deg, beta_deg, speed_km_s, output_png=DIAGNOSTIC_OUTPUT_PNG):
     plt.rcParams.update(
         {
             "font.size": 12,
@@ -367,18 +375,29 @@ def plot_radiant_diagnostic(lambda_minus_sun_deg, beta_deg, speed_km_s):
     cb.ax.xaxis.labelpad = 8
     ax.legend(loc="lower left", bbox_to_anchor=(0.02, 0.03), ncol=1, frameon=False)
     fig.tight_layout()
-    fig.savefig(DIAGNOSTIC_OUTPUT_PNG, dpi=240, bbox_inches="tight")
+    fig.savefig(output_png, dpi=240, bbox_inches="tight")
     plt.close(fig)
 
 
 def main():
-    event_id, t0_ns, position_m, velocity_mps, speed_km_s, rms_total_path_residual_m, n_points, state_frame = load_fits(INPUT_CATALOG_DIR)
+    parser = argparse.ArgumentParser(description="Plot Sun-centered ecliptic radiants from a joint-fit catalog.")
+    parser.add_argument("--catalog-dir", default=INPUT_CATALOG_DIR)
+    parser.add_argument("--output-h5", default=OUTPUT_H5)
+    parser.add_argument("--output-png", default=OUTPUT_PNG)
+    parser.add_argument("--diagnostic-output-png", default=DIAGNOSTIC_OUTPUT_PNG)
+    parser.add_argument("--paper-output-png", default=PAPER_OUTPUT_PNG)
+    parser.add_argument("--paper-output-pdf", default=PAPER_OUTPUT_PDF)
+    parser.add_argument("--paper-interval-tex", default=PAPER_INTERVAL_TEX)
+    args = parser.parse_args()
+
+    event_id, t0_ns, position_m, velocity_mps, speed_km_s, rms_total_path_residual_m, n_points, state_frame = load_fits(args.catalog_dir)
     lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg, fixed_equinox_iso = calculate_radiants(t0_ns, position_m, velocity_mps, state_frame)
     t0, t1, sample_times = observation_times(t0_ns)
     visibility = radiant_visibility_grid(sample_times, fixed_equinox_iso)
-    write_interval_tex(PAPER_INTERVAL_TEX, t0, t1)
+    write_interval_tex(args.paper_interval_tex, t0, t1)
     write_h5(
-        OUTPUT_H5,
+        args.output_h5,
+        args.catalog_dir,
         event_id,
         t0_ns,
         speed_km_s,
@@ -391,20 +410,28 @@ def main():
         fixed_equinox_iso,
         state_frame,
     )
-    plot_radiants(sun_centered_lambda_deg, beta_deg, speed_km_s, visibility)
-    plot_radiant_diagnostic(sun_centered_lambda_deg, beta_deg, speed_km_s)
+    plot_radiants(
+        sun_centered_lambda_deg,
+        beta_deg,
+        speed_km_s,
+        visibility,
+        output_png=args.output_png,
+        paper_output_png=args.paper_output_png,
+        paper_output_pdf=args.paper_output_pdf,
+    )
+    plot_radiant_diagnostic(sun_centered_lambda_deg, beta_deg, speed_km_s, output_png=args.diagnostic_output_png)
     print(f"radiants: {len(event_id)}")
     print(f"fixed ecliptic equinox UTC: {fixed_equinox_iso}")
     print(f"measurement interval UTC: {format_time_interval(t0, t1)[0]} to {format_time_interval(t0, t1)[1]}")
     print(f"measurement interval local solar: {format_time_interval(t0, t1)[2]} to {format_time_interval(t0, t1)[3]}")
     print(f"lambda-lambda_sun deg [0,360) median/range: {np.nanmedian(sun_centered_lambda_deg):.2f} / {np.nanmin(sun_centered_lambda_deg):.2f} to {np.nanmax(sun_centered_lambda_deg):.2f}")
     print(f"beta deg median/range: {np.nanmedian(beta_deg):.2f} / {np.nanmin(beta_deg):.2f} to {np.nanmax(beta_deg):.2f}")
-    print(OUTPUT_H5)
-    print(OUTPUT_PNG)
-    print(DIAGNOSTIC_OUTPUT_PNG)
-    print(PAPER_OUTPUT_PNG)
-    print(PAPER_OUTPUT_PDF)
-    print(PAPER_INTERVAL_TEX)
+    print(args.output_h5)
+    print(args.output_png)
+    print(args.diagnostic_output_png)
+    print(args.paper_output_png)
+    print(args.paper_output_pdf)
+    print(args.paper_interval_tex)
 
 
 if __name__ == "__main__":

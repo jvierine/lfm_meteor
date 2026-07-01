@@ -8,6 +8,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.optimize as so
 import scipy.signal as sig
+import scipy.stats as stats
+from astropy import units as u
+from astropy.constants import GM_sun
+from astropy.coordinates import get_body_barycentric_posvel
+from astropy.time import Time
 from matplotlib.lines import Line2D
 
 import fit_all_ballistic_snr_weighted as base
@@ -34,6 +39,35 @@ DEFAULT_BAD_FIT_RETAINED_PATH_RMS_M = 100.0
 DEFAULT_BAD_FIT_RETAINED_FFT_RMS_HZ = 1500.0
 DEFAULT_BAD_FIT_MAX_RETRY = 3
 DEFAULT_COINCIDENT_DELAY_WEIGHT = 5.0
+EMPIRICAL_DELAY_SCALE = {
+    "floor_m": 2.05,
+    "snr_coeff_m": 29.5,
+    "beam_coeff_m_per_deg": 3.28,
+}
+EMPIRICAL_PATH_RATE_SCALE = {
+    "floor_mps": 159.0,
+    "snr_coeff_mps": 1.11e3,
+    "beam_coeff_mps_per_deg": 139.0,
+}
+DEFAULT_STUDENT_T_NU_DELAY = 1.5
+DEFAULT_STUDENT_T_NU_FFT = 3.0
+BOOTSTRAP_PARAM_NAMES = (
+    "x0_gcrs_m",
+    "y0_gcrs_m",
+    "z0_gcrs_m",
+    "vx0_gcrs_mps",
+    "vy0_gcrs_mps",
+    "vz0_gcrs_mps",
+    "log10_radius_m",
+)
+MU_SUN_M3_S2 = GM_sun.to_value(u.m**3 / u.s**2)
+MODEL_PARAMETER_COUNT = {
+    "ceplecha": 7,
+    "ceplecha_ablation_sigma": 8,
+    "constant_velocity": 6,
+    "exponential_speed": 7,
+    "whipple_speed": 8,
+}
 
 
 def choose_triplet(event_id, triplets, ref_fits):
@@ -204,6 +238,91 @@ def finite_sigma_from_snr_db(snr_db, sigma_floor_m, sigma_0_m, fallback_snr_db=0
     safe_snr = np.where(np.isfinite(snr), snr, float(fallback_snr_db))
     sigma = base.sigma_from_snr_db(safe_snr, sigma_floor_m, sigma_0_m)
     return np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, float(sigma_0_m))
+
+
+def empirical_delay_sigma_m(snr_db, beam_offset_deg, fallback_snr_db=0.0):
+    snr = np.asarray(snr_db, dtype=np.float64)
+    theta = np.asarray(beam_offset_deg, dtype=np.float64)
+    safe_snr = np.where(np.isfinite(snr), snr, float(fallback_snr_db))
+    safe_theta = np.where(np.isfinite(theta), theta, 0.0)
+    sigma = np.sqrt(
+        EMPIRICAL_DELAY_SCALE["floor_m"] ** 2.0
+        + (EMPIRICAL_DELAY_SCALE["snr_coeff_m"] * 10.0 ** (-safe_snr / 20.0)) ** 2.0
+        + (EMPIRICAL_DELAY_SCALE["beam_coeff_m_per_deg"] * safe_theta) ** 2.0
+    )
+    return np.where(np.isfinite(sigma) & (sigma > 0.0), sigma, EMPIRICAL_DELAY_SCALE["floor_m"])
+
+
+def empirical_fft_sigma_hz(snr_db, beam_offset_deg, fallback_snr_db=0.0):
+    snr = np.asarray(snr_db, dtype=np.float64)
+    theta = np.asarray(beam_offset_deg, dtype=np.float64)
+    safe_snr = np.where(np.isfinite(snr), snr, float(fallback_snr_db))
+    safe_theta = np.where(np.isfinite(theta), theta, 0.0)
+    sigma_mps = np.sqrt(
+        EMPIRICAL_PATH_RATE_SCALE["floor_mps"] ** 2.0
+        + (EMPIRICAL_PATH_RATE_SCALE["snr_coeff_mps"] * 10.0 ** (-safe_snr / 20.0)) ** 2.0
+        + (EMPIRICAL_PATH_RATE_SCALE["beam_coeff_mps_per_deg"] * safe_theta) ** 2.0
+    )
+    sigma_hz = sigma_mps / gfit.RADAR_WAVELENGTH_M
+    return np.where(np.isfinite(sigma_hz) & (sigma_hz > 0.0), sigma_hz, EMPIRICAL_PATH_RATE_SCALE["floor_mps"] / gfit.RADAR_WAVELENGTH_M)
+
+
+def fixed_beam_offset_matrix_deg(reference_positions_itrs_m, snr_db):
+    beam_east_deg, beam_north_deg = sanya_beam_offsets_deg(np.asarray(reference_positions_itrs_m, dtype=np.float64))
+    beam_offset_rows = np.sqrt(beam_east_deg**2.0 + beam_north_deg**2.0)
+    return np.broadcast_to(beam_offset_rows[:, None], np.asarray(snr_db, dtype=np.float64).shape)
+
+
+def student_t_least_squares_residual(z, nu):
+    z = np.asarray(z, dtype=np.float64)
+    nu = max(float(nu), 1e-6)
+    return np.sign(z) * np.sqrt((nu + 1.0) * np.log1p((z**2.0) / nu))
+
+
+def finite_percentile(values, q, axis=0):
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return np.asarray([], dtype=np.float64)
+    return np.nanpercentile(arr, q, axis=axis)
+
+
+def heliocentric_eccentricity_from_gcrs_state(params, epoch_time_ns):
+    params = np.asarray(params, dtype=np.float64)
+    if params.ndim == 1:
+        params = params[None, :]
+    eccentricity = np.full(params.shape[0], np.nan, dtype=np.float64)
+    good = np.all(np.isfinite(params[:, :6]), axis=1)
+    if not np.any(good):
+        return eccentricity
+    epoch = Time(float(epoch_time_ns) / 1e9, format="unix", scale="utc")
+    earth_pos, earth_vel = get_body_barycentric_posvel("earth", epoch)
+    sun_pos, sun_vel = get_body_barycentric_posvel("sun", epoch)
+    earth_r_m = earth_pos.xyz.to_value(u.m)
+    earth_v_mps = earth_vel.xyz.to_value(u.m / u.s)
+    sun_r_m = sun_pos.xyz.to_value(u.m)
+    sun_v_mps = sun_vel.xyz.to_value(u.m / u.s)
+    r_helio = params[good, :3] + earth_r_m[None, :] - sun_r_m[None, :]
+    v_helio = params[good, 3:6] + earth_v_mps[None, :] - sun_v_mps[None, :]
+    r_norm = np.linalg.norm(r_helio, axis=1)
+    h_vec = np.cross(r_helio, v_helio)
+    e_vec = np.cross(v_helio, h_vec) / MU_SUN_M3_S2 - r_helio / np.maximum(r_norm[:, None], 1e-30)
+    eccentricity[good] = np.linalg.norm(e_vec, axis=1)
+    return eccentricity
+
+
+def event_residual_scale_multiplier(residual, sigma, keep, nu, min_multiplier=1.0):
+    residual = np.asarray(residual, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    keep = np.asarray(keep, dtype=bool)
+    good = keep & np.isfinite(residual) & np.isfinite(sigma) & (sigma > 0.0)
+    if np.count_nonzero(good) < 5:
+        return float(min_multiplier)
+    z = residual[good] / sigma[good]
+    median_abs_z = float(np.nanmedian(np.abs(z)))
+    reference_median_abs = float(stats.t.ppf(0.75, df=max(float(nu), 1e-6)))
+    if not np.isfinite(median_abs_z) or not np.isfinite(reference_median_abs) or reference_median_abs <= 0.0:
+        return float(min_multiplier)
+    return float(max(float(min_multiplier), median_abs_z / reference_median_abs))
 
 
 def load_manual_outlier_masks(path, event_id, times_ns, n_sites=3):
@@ -535,6 +654,58 @@ def forward_model_link_observables(params, t_rel_s, times_ns, rho_of_alt_m):
     }
 
 
+def forward_model_ceplecha_ablation_sigma_link_observables(params, t_rel_s, times_ns, rho_of_alt_m):
+    """Evaluate a Ceplecha state with fitted ablation mass-loss coefficient."""
+
+    params = np.asarray(params, dtype=np.float64)
+    t_rel = np.asarray(t_rel_s, dtype=np.float64)
+    radius0_m = 10.0 ** float(params[6])
+    ablation_sigma_kg_j = 10.0 ** float(params[7])
+    t1 = float(np.max(t_rel)) if len(t_rel) else 0.0
+    t1 = max(t1, cepl.CEPLECHA_SAMPLE_DT_S)
+    result = cepl.integrate_ceplecha(
+        params[:3],
+        params[3:6],
+        radius0_m,
+        rho_of_alt_m,
+        meteoroid_density_kg_m3=cepl.METEOROID_DENSITY_KG_M3,
+        ablation_sigma_kg_j=ablation_sigma_kg_j,
+        t_span_s=(0.0, t1),
+        sample_dt_s=min(cepl.CEPLECHA_SAMPLE_DT_S, max(t1 / 5.0, 1e-6)),
+        height_function=lambda r: float(np.linalg.norm(r) - cepl.SPHERICAL_EARTH_RADIUS_M),
+    )
+    if result.time_s.size < 2:
+        raise RuntimeError(f"Ceplecha integration returned too few samples: {result.message}")
+    x_gcrs = np.column_stack([np.interp(t_rel, result.time_s, result.position_m[:, dim]) for dim in range(3)])
+    v_gcrs = np.column_stack([np.interp(t_rel, result.time_s, result.velocity_mps[:, dim]) for dim in range(3)])
+    radius_m = np.interp(t_rel, result.time_s, result.radius_m)
+    mass_kg = np.interp(t_rel, result.time_s, result.mass_kg)
+    x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
+    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
+        x_itrs,
+        v_itrs,
+        gfit.LINK_TX_POSITIONS_M,
+        gfit.LINK_RX_POSITIONS_M,
+    )
+    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
+    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    return {
+        "apparent_path_length_m": apparent_path_length_m,
+        "path_length_m": path_length_m,
+        "path_rate_mps": path_rate_mps,
+        "doppler_hz": doppler_hz,
+        "x_gcrs_m": x_gcrs,
+        "v_gcrs_mps": v_gcrs,
+        "x_itrs_m": x_itrs,
+        "v_itrs_mps": v_itrs,
+        "radius_m": radius_m,
+        "mass_kg": mass_kg,
+        "ablation_sigma_kg_j": ablation_sigma_kg_j,
+        "ceplecha_success": result.success,
+        "ceplecha_message": result.message,
+    }
+
+
 def forward_model_constant_velocity_link_observables(params, t_rel_s, times_ns, rho_of_alt_m=None):
     """Evaluate per-link observables for a constant-GCRS-velocity trajectory."""
 
@@ -567,15 +738,119 @@ def forward_model_constant_velocity_link_observables(params, t_rel_s, times_ns, 
     }
 
 
+def forward_model_exponential_speed_link_observables(params, t_rel_s, times_ns, rho_of_alt_m=None):
+    """Evaluate a fixed-direction exponential-speed trajectory.
+
+    The GCRS velocity direction is fixed by v0.  The speed follows
+    |v(t)| = |v0| exp[-a (t - t0)], with a = 10**log10_a.
+    """
+
+    params = np.asarray(params, dtype=np.float64)
+    t_rel_s = np.asarray(t_rel_s, dtype=np.float64)
+    x0 = params[:3]
+    v0 = params[3:6]
+    speed0 = float(np.linalg.norm(v0))
+    if not np.isfinite(speed0) or speed0 <= 0.0:
+        x_gcrs = np.full((len(t_rel_s), 3), np.nan, dtype=np.float64)
+        v_gcrs = np.full((len(t_rel_s), 3), np.nan, dtype=np.float64)
+    else:
+        direction = v0 / speed0
+        a_s_inv = float(10.0 ** params[6])
+        exp_term = np.exp(-a_s_inv * t_rel_s)
+        distance_m = speed0 * (1.0 - exp_term) / a_s_inv
+        x_gcrs = x0[None, :] + distance_m[:, None] * direction[None, :]
+        v_gcrs = speed0 * exp_term[:, None] * direction[None, :]
+    x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
+    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
+        x_itrs,
+        v_itrs,
+        gfit.LINK_TX_POSITIONS_M,
+        gfit.LINK_RX_POSITIONS_M,
+    )
+    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
+    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    return {
+        "apparent_path_length_m": apparent_path_length_m,
+        "path_length_m": path_length_m,
+        "path_rate_mps": path_rate_mps,
+        "doppler_hz": doppler_hz,
+        "x_gcrs_m": x_gcrs,
+        "v_gcrs_mps": v_gcrs,
+        "x_itrs_m": x_itrs,
+        "v_itrs_mps": v_itrs,
+        "radius_m": np.full(len(t_rel_s), np.nan, dtype=np.float64),
+        "mass_kg": np.full(len(t_rel_s), np.nan, dtype=np.float64),
+        "ceplecha_success": True,
+        "ceplecha_message": "exponential_speed",
+    }
+
+
+def forward_model_whipple_speed_link_observables(params, t_rel_s, times_ns, rho_of_alt_m=None):
+    """Evaluate a fixed-direction Whipple-style exponential speed model.
+
+    The GCRS direction is fixed by the fitted velocity vector.  With time
+    measured from the start of the event, the scalar speed is
+    v(t) = v0 - a exp(b t), where v0=|v0_vec|, a=10**log10_a, and
+    b=10**log10_b.  The position is the analytic integral of that speed.
+    """
+
+    params = np.asarray(params, dtype=np.float64)
+    t_rel_s = np.asarray(t_rel_s, dtype=np.float64)
+    x0 = params[:3]
+    v0_vec = params[3:6]
+    speed0_const = float(np.linalg.norm(v0_vec))
+    if not np.isfinite(speed0_const) or speed0_const <= 0.0:
+        x_gcrs = np.full((len(t_rel_s), 3), np.nan, dtype=np.float64)
+        v_gcrs = np.full((len(t_rel_s), 3), np.nan, dtype=np.float64)
+    else:
+        direction = v0_vec / speed0_const
+        a_mps = float(10.0 ** params[6])
+        b_s_inv = float(10.0 ** params[7])
+        exp_term = np.exp(np.clip(b_s_inv * t_rel_s, -80.0, 80.0))
+        speed_mps = speed0_const - a_mps * exp_term
+        distance_m = speed0_const * t_rel_s - (a_mps / b_s_inv) * (exp_term - 1.0)
+        x_gcrs = x0[None, :] + distance_m[:, None] * direction[None, :]
+        v_gcrs = speed_mps[:, None] * direction[None, :]
+    x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
+    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
+        x_itrs,
+        v_itrs,
+        gfit.LINK_TX_POSITIONS_M,
+        gfit.LINK_RX_POSITIONS_M,
+    )
+    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
+    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    return {
+        "apparent_path_length_m": apparent_path_length_m,
+        "path_length_m": path_length_m,
+        "path_rate_mps": path_rate_mps,
+        "doppler_hz": doppler_hz,
+        "x_gcrs_m": x_gcrs,
+        "v_gcrs_mps": v_gcrs,
+        "x_itrs_m": x_itrs,
+        "v_itrs_mps": v_itrs,
+        "radius_m": np.full(len(t_rel_s), np.nan, dtype=np.float64),
+        "mass_kg": np.full(len(t_rel_s), np.nan, dtype=np.float64),
+        "ceplecha_success": True,
+        "ceplecha_message": "whipple_speed",
+    }
+
+
 def forward_model_for_kind(params, t_rel_s, times_ns, rho_of_alt_m, model_kind):
     if model_kind == "ceplecha":
         return forward_model_link_observables(params, t_rel_s, times_ns, rho_of_alt_m)
+    if model_kind == "ceplecha_ablation_sigma":
+        return forward_model_ceplecha_ablation_sigma_link_observables(params, t_rel_s, times_ns, rho_of_alt_m)
     if model_kind == "constant_velocity":
         return forward_model_constant_velocity_link_observables(params, t_rel_s, times_ns, rho_of_alt_m)
+    if model_kind == "exponential_speed":
+        return forward_model_exponential_speed_link_observables(params, t_rel_s, times_ns, rho_of_alt_m)
+    if model_kind == "whipple_speed":
+        return forward_model_whipple_speed_link_observables(params, t_rel_s, times_ns, rho_of_alt_m)
     raise ValueError(f"unknown model_kind={model_kind!r}")
 
 
-def covariance_from_least_squares(result, n_residuals):
+def covariance_from_least_squares(result, n_residuals, covariance_scale="residual_variance"):
     n_params = int(result.x.size)
     dof = int(max(0, n_residuals - n_params))
     if dof <= 0 or result.jac is None:
@@ -585,11 +860,13 @@ def covariance_from_least_squares(result, n_residuals):
             "covariance_available": False,
             "covariance_degrees_of_freedom": dof,
             "covariance_residual_variance": np.nan,
+            "covariance_method": str(covariance_scale),
         }
     jac = np.asarray(result.jac, dtype=np.float64)
     residual_variance = float(2.0 * result.cost / dof)
+    covariance_multiplier = 1.0 if str(covariance_scale) == "fixed_scale_mle" else residual_variance
     try:
-        cov = np.linalg.pinv(jac.T @ jac) * residual_variance
+        cov = np.linalg.pinv(jac.T @ jac) * covariance_multiplier
         cov = 0.5 * (cov + cov.T)
         std = np.sqrt(np.maximum(np.diag(cov), 0.0))
         available = bool(np.all(np.isfinite(cov)))
@@ -603,6 +880,7 @@ def covariance_from_least_squares(result, n_residuals):
         "covariance_available": available,
         "covariance_degrees_of_freedom": dof,
         "covariance_residual_variance": residual_variance,
+        "covariance_method": str(covariance_scale),
     }
 
 
@@ -622,6 +900,9 @@ def fit_joint_delay_doppler(
     reference_chirp_rate_scale=DEFAULT_REFERENCE_CHIRP_RATE_SCALE,
     path_keep=None,
     model_kind="ceplecha",
+    residual_likelihood="scipy_robust_lsq",
+    student_t_nu_delay=DEFAULT_STUDENT_T_NU_DELAY,
+    student_t_nu_fft=DEFAULT_STUDENT_T_NU_FFT,
 ):
     chirp_rate_hz_per_s = gfit.NOMINAL_CHIRP_RATE_HZ_PER_S * float(reference_chirp_rate_scale)
     measured = np.asarray(measured_paths_m, dtype=np.float64)
@@ -640,8 +921,14 @@ def fit_joint_delay_doppler(
         path_keep_fit = np.asarray(path_keep, dtype=bool)[row_keep] & np.isfinite(measured_fit)
     fft_fit = np.asarray(fft_offset_hz, dtype=np.float64)[row_keep]
     fft_keep_fit = np.asarray(fft_keep, dtype=bool)[row_keep] & np.isfinite(fft_fit)
+    sigma_fft = np.asarray(sigma_fft_hz, dtype=np.float64)
+    if sigma_fft.ndim == 0:
+        sigma_fft_fit = np.full_like(fft_fit, float(sigma_fft), dtype=np.float64)
+    else:
+        sigma_fft_fit = sigma_fft[row_keep]
+    sigma_fft_fit = np.where(np.isfinite(sigma_fft_fit) & (sigma_fft_fit > 0.0), sigma_fft_fit, np.nan)
     t_rel_s = (times_fit.astype(np.float64) - float(epoch_time_ns)) / 1e9
-    n_dyn = 7 if model_kind == "ceplecha" else 6
+    n_dyn = MODEL_PARAMETER_COUNT[str(model_kind)]
 
     def split_params(x):
         if fit_station_bias:
@@ -664,7 +951,12 @@ def fit_joint_delay_doppler(
             beat_model_hz = doppler - (chirp_rate_hz_per_s / gfit.C) * (measured_fit - geo) + station_bias_hz[None, :]
         else:
             raise ValueError(f"unknown fft_model={fft_model!r}")
-        beat_resid = ((beat_model_hz - fft_fit) / float(sigma_fft_hz))[fft_keep_fit]
+        beat_resid = ((beat_model_hz - fft_fit) / sigma_fft_fit)[fft_keep_fit]
+        if residual_likelihood == "student_t":
+            path_resid = student_t_least_squares_residual(path_resid, student_t_nu_delay)
+            beat_resid = student_t_least_squares_residual(beat_resid, student_t_nu_fft)
+        elif residual_likelihood != "scipy_robust_lsq":
+            raise ValueError(f"unknown residual_likelihood={residual_likelihood!r}")
         return np.concatenate([path_resid, beat_resid])
 
     if fit_station_bias:
@@ -688,6 +980,18 @@ def fit_joint_delay_doppler(
             dyn_lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, np.log10(cepl.MIN_RADIUS_M)])
             dyn_upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, np.log10(cepl.MAX_RADIUS_M)])
             dyn_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 1.0])
+        elif model_kind == "ceplecha_ablation_sigma":
+            dyn_lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, np.log10(cepl.MIN_RADIUS_M), -11.0])
+            dyn_upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, np.log10(cepl.MAX_RADIUS_M), -6.0])
+            dyn_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 1.0, 1.0])
+        elif model_kind == "exponential_speed":
+            dyn_lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, -6.0])
+            dyn_upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, 2.0])
+            dyn_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 1.0])
+        elif model_kind == "whipple_speed":
+            dyn_lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, -3.0, -4.0])
+            dyn_upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, 5.0, 3.0])
+            dyn_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 2.0, 1.0])
         else:
             dyn_lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4])
             dyn_upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4])
@@ -701,23 +1005,49 @@ def fit_joint_delay_doppler(
             lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, np.log10(cepl.MIN_RADIUS_M)])
             upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, np.log10(cepl.MAX_RADIUS_M)])
             x_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 1.0])
+        elif model_kind == "ceplecha_ablation_sigma":
+            lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, np.log10(cepl.MIN_RADIUS_M), -11.0])
+            upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, np.log10(cepl.MAX_RADIUS_M), -6.0])
+            x_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 1.0, 1.0])
+        elif model_kind == "exponential_speed":
+            lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, -6.0])
+            upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, 2.0])
+            x_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 1.0])
+        elif model_kind == "whipple_speed":
+            lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, -3.0, -4.0])
+            upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, 5.0, 3.0])
+            x_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 2.0, 1.0])
         else:
             lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4])
             upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4])
             x_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4])
 
     x0 = np.minimum(np.maximum(x0, lower), upper)
+    if residual_likelihood == "student_t":
+        scipy_loss = "linear"
+        scipy_f_scale = 1.0
+        covariance_scale = "fixed_scale_mle"
+    else:
+        scipy_loss = cepl.ROBUST_LOSS
+        scipy_f_scale = cepl.ROBUST_F_SCALE
+        covariance_scale = "residual_variance"
+    if model_kind == "whipple_speed":
+        max_nfev = 120
+    elif model_kind == "ceplecha_ablation_sigma":
+        max_nfev = 110
+    else:
+        max_nfev = 360
     result = so.least_squares(
         residual,
         x0,
         bounds=(lower, upper),
         x_scale=x_scale,
-        loss=cepl.ROBUST_LOSS,
-        f_scale=cepl.ROBUST_F_SCALE,
-        max_nfev=360,
+        loss=scipy_loss,
+        f_scale=scipy_f_scale,
+        max_nfev=max_nfev,
     )
     fit_residual = residual(result.x)
-    covariance = covariance_from_least_squares(result, len(fit_residual))
+    covariance = covariance_from_least_squares(result, len(fit_residual), covariance_scale=covariance_scale)
     dyn_params, station_bias_hz = split_params(result.x)
     model = forward_model_for_kind(
         dyn_params,
@@ -749,7 +1079,7 @@ def fit_joint_delay_doppler(
     path_rate_resid_mps = path_rate - fft_path_rate_mps
     normalized_path = path_resid_m / sigma_fit
     normalized_beat = np.full_like(beat_resid_hz, np.nan)
-    normalized_beat[fft_keep_fit] = beat_resid_hz[fft_keep_fit] / float(sigma_fft_hz)
+    normalized_beat[fft_keep_fit] = beat_resid_hz[fft_keep_fit] / sigma_fft_fit[fft_keep_fit]
     retained_path_resid_m = path_resid_m[path_keep_fit]
     all_finite_path_resid_m = path_resid_m[np.isfinite(path_resid_m)]
     retained_fft_resid_hz = beat_resid_hz[fft_keep_fit]
@@ -782,6 +1112,8 @@ def fit_joint_delay_doppler(
         "path_rate_residuals_mps": path_rate_resid_mps,
         "normalized_path_residuals": normalized_path,
         "normalized_fft_residuals": normalized_beat,
+        "path_sigma_m": sigma_fit,
+        "fft_sigma_hz": sigma_fft_fit,
         "x_gcrs_m": model["x_gcrs_m"],
         "v_gcrs_mps": model["v_gcrs_mps"],
         "x_itrs_m": model["x_itrs_m"],
@@ -794,6 +1126,7 @@ def fit_joint_delay_doppler(
         "mass_kg": model["mass_kg"],
         "initial_radius_m": float(model["radius_m"][0]),
         "initial_mass_kg": float(model["mass_kg"][0]),
+        "ablation_sigma_kg_j": float(model.get("ablation_sigma_kg_j", cepl.ABLATION_SIGMA_KG_J)),
         "rms_total_path_residual_m": float(np.sqrt(np.nanmean(retained_path_resid_m**2.0))) if retained_path_resid_m.size else np.nan,
         "all_finite_path_residual_rms_m": float(np.sqrt(np.nanmean(all_finite_path_resid_m**2.0))) if all_finite_path_resid_m.size else np.nan,
         "rms_fft_residual_hz": float(np.sqrt(np.nanmean(retained_fft_resid_hz**2.0))) if retained_fft_resid_hz.size else np.nan,
@@ -808,12 +1141,18 @@ def fit_joint_delay_doppler(
         "covariance_available": bool(covariance["covariance_available"]),
         "covariance_degrees_of_freedom": int(covariance["covariance_degrees_of_freedom"]),
         "covariance_residual_variance": float(covariance["covariance_residual_variance"]),
+        "covariance_method": str(covariance["covariance_method"]),
         "n_points": int(len(times_fit)),
         "n_path_observations": int(np.count_nonzero(path_keep_fit)),
         "n_fft_observations": int(np.count_nonzero(fft_keep_fit)),
         "dynamical_model": str(model_kind),
         "fit_station_bias": bool(fit_station_bias),
         "fft_model": "zero_beat" if fft_model == "signed_doppler" else str(fft_model),
+        "residual_likelihood": str(residual_likelihood),
+        "student_t_nu_delay": float(student_t_nu_delay),
+        "student_t_nu_fft": float(student_t_nu_fft),
+        "scipy_loss": str(scipy_loss),
+        "scipy_f_scale": float(scipy_f_scale),
         "reference_chirp_rate_scale": float(reference_chirp_rate_scale),
         "reference_chirp_rate_hz_per_s": float(chirp_rate_hz_per_s),
         "nominal_chirp_rate_hz_per_s": float(gfit.NOMINAL_CHIRP_RATE_HZ_PER_S),
@@ -823,6 +1162,182 @@ def fit_joint_delay_doppler(
         "ceplecha_success": bool(model["ceplecha_success"]),
         "ceplecha_message": str(model["ceplecha_message"]),
     }
+
+
+def add_bootstrap_uncertainty(
+    joint_fit,
+    measured,
+    times_ns,
+    rho_of_alt_m,
+    sigma_m,
+    noise_sigma_m,
+    fft_obs,
+    sigma_fft_hz,
+    epoch_time_ns,
+    fit_station_bias,
+    fft_model,
+    reference_chirp_rate_scale,
+    residual_likelihood,
+    student_t_nu_delay,
+    student_t_nu_fft,
+    n_samples,
+    seed=None,
+    method="parametric_student_t",
+):
+    n_samples = int(n_samples)
+    if n_samples <= 0:
+        joint_fit["bootstrap_enabled"] = False
+        joint_fit["bootstrap_samples_requested"] = 0
+        return joint_fit
+    rng = np.random.default_rng(seed)
+    model_kind = str(joint_fit.get("dynamical_model", "ceplecha"))
+    path_keep = np.asarray(joint_fit["path_keep"], dtype=bool)
+    fft_keep = np.asarray(joint_fit["fft_keep"], dtype=bool)
+    if not delay_clip_is_fit_usable(path_keep, fft_keep, n_dyn=MODEL_PARAMETER_COUNT[str(model_kind)], fit_station_bias=fit_station_bias):
+        joint_fit["bootstrap_enabled"] = False
+        joint_fit["bootstrap_samples_requested"] = n_samples
+        joint_fit["bootstrap_failure_reason"] = "retained_masks_not_fit_usable"
+        return joint_fit
+
+    measured = np.asarray(measured, dtype=np.float64)
+    sigma_path = np.asarray(noise_sigma_m, dtype=np.float64)
+    sigma_fft = np.asarray(sigma_fft_hz, dtype=np.float64)
+    if sigma_fft.ndim == 0:
+        sigma_fft_matrix = np.full_like(np.asarray(fft_obs["fft_offset_hz"], dtype=np.float64), float(sigma_fft))
+    else:
+        sigma_fft_matrix = sigma_fft
+
+    model_path = np.asarray(joint_fit["predicted_total_paths_m"], dtype=np.float64)
+    model_fft = np.asarray(joint_fit["model_fft_peak_hz"], dtype=np.float64)
+    measured_template = measured.copy()
+    fft_template = np.asarray(fft_obs["fft_offset_hz"], dtype=np.float64).copy()
+
+    params_samples = []
+    full_params_samples = []
+    speed0_samples = []
+    radius0_samples = []
+    mass0_samples = []
+    path_residual_measurement_samples = []
+    fft_residual_measurement_samples = []
+    optimizer_success = []
+    failures = []
+
+    for idx in range(n_samples):
+        synthetic_measured = measured_template.copy()
+        synthetic_fft = fft_template.copy()
+        if method == "parametric_student_t":
+            delay_noise = rng.standard_t(max(float(student_t_nu_delay), 1e-6), size=synthetic_measured.shape) * sigma_path
+            fft_noise = rng.standard_t(max(float(student_t_nu_fft), 1e-6), size=synthetic_fft.shape) * sigma_fft_matrix
+        elif method == "parametric_gaussian":
+            delay_noise = rng.normal(0.0, sigma_path, size=synthetic_measured.shape)
+            fft_noise = rng.normal(0.0, sigma_fft_matrix, size=synthetic_fft.shape)
+        else:
+            raise ValueError(f"unknown bootstrap method={method!r}")
+        synthetic_measured[path_keep] = model_path[path_keep] - delay_noise[path_keep]
+        synthetic_fft[fft_keep] = model_fft[fft_keep] - fft_noise[fft_keep]
+        synthetic_fft_obs = dict(fft_obs)
+        synthetic_fft_obs["fft_offset_hz"] = synthetic_fft
+        try:
+            sample_fit = fit_joint_delay_doppler(
+                synthetic_measured,
+                times_ns,
+                rho_of_alt_m,
+                joint_fit["params"],
+                sigma_m,
+                synthetic_fft,
+                fft_keep,
+                sigma_fft_hz,
+                keep_rows=np.ones(len(times_ns), dtype=bool),
+                epoch_time_ns=epoch_time_ns,
+                fit_station_bias=fit_station_bias,
+                fft_model=fft_model,
+                reference_chirp_rate_scale=reference_chirp_rate_scale,
+                path_keep=path_keep,
+                model_kind=model_kind,
+                residual_likelihood=residual_likelihood,
+                student_t_nu_delay=student_t_nu_delay,
+                student_t_nu_fft=student_t_nu_fft,
+            )
+            params = np.asarray(sample_fit["params"], dtype=np.float64)
+            params_samples.append(params)
+            full_params_samples.append(np.asarray(sample_fit["full_params"], dtype=np.float64))
+            speed0_samples.append(float(np.linalg.norm(params[3:6]) / 1e3) if params.size >= 6 else np.nan)
+            radius0_samples.append(float(sample_fit.get("initial_radius_m", np.nan)))
+            mass0_samples.append(float(sample_fit.get("initial_mass_kg", np.nan)))
+            path_resid_sample = np.full_like(model_path, np.nan, dtype=np.float64)
+            fft_resid_sample = np.full_like(model_fft, np.nan, dtype=np.float64)
+            path_resid_sample[path_keep] = model_path[path_keep] - synthetic_measured[path_keep]
+            fft_resid_sample[fft_keep] = model_fft[fft_keep] - synthetic_fft[fft_keep]
+            path_residual_measurement_samples.append(path_resid_sample)
+            fft_residual_measurement_samples.append(fft_resid_sample)
+            optimizer_success.append(bool(sample_fit.get("optimizer_success", False)))
+        except Exception as exc:
+            failures.append(f"{idx}:{exc}")
+
+    if params_samples:
+        params_arr = np.asarray(params_samples, dtype=np.float64)
+        full_params_arr = np.asarray(full_params_samples, dtype=np.float64)
+        speed_arr = np.asarray(speed0_samples, dtype=np.float64)
+        radius_arr = np.asarray(radius0_samples, dtype=np.float64)
+        mass_arr = np.asarray(mass0_samples, dtype=np.float64)
+        path_residual_measurement_arr = np.asarray(path_residual_measurement_samples, dtype=np.float64)
+        fft_residual_measurement_arr = np.asarray(fft_residual_measurement_samples, dtype=np.float64)
+        eccentricity_arr = heliocentric_eccentricity_from_gcrs_state(
+            params_arr[:, :6],
+            int(joint_fit["fit_epoch_time_ns"]),
+        )
+        nominal_eccentricity = heliocentric_eccentricity_from_gcrs_state(
+            np.asarray(joint_fit["params"], dtype=np.float64)[:6],
+            int(joint_fit["fit_epoch_time_ns"]),
+        )[0]
+        joint_fit["bootstrap_enabled"] = True
+        joint_fit["bootstrap_method"] = str(method)
+        joint_fit["bootstrap_samples_requested"] = n_samples
+        joint_fit["bootstrap_samples_successful"] = int(params_arr.shape[0])
+        joint_fit["bootstrap_seed"] = -1 if seed is None else int(seed)
+        joint_fit["bootstrap_params"] = params_arr
+        joint_fit["bootstrap_full_params"] = full_params_arr
+        joint_fit["bootstrap_param_names"] = np.asarray(BOOTSTRAP_PARAM_NAMES[: params_arr.shape[1]], dtype=object)
+        joint_fit["bootstrap_parameter_std"] = np.nanstd(params_arr, axis=0, ddof=1) if params_arr.shape[0] > 1 else np.full(params_arr.shape[1], np.nan)
+        joint_fit["bootstrap_parameter_median"] = np.nanmedian(params_arr, axis=0)
+        joint_fit["bootstrap_parameter_lo95"] = finite_percentile(params_arr, 2.5, axis=0)
+        joint_fit["bootstrap_parameter_hi95"] = finite_percentile(params_arr, 97.5, axis=0)
+        joint_fit["bootstrap_speed0_km_s"] = speed_arr
+        joint_fit["bootstrap_speed0_median_km_s"] = float(np.nanmedian(speed_arr))
+        joint_fit["bootstrap_speed0_lo95_km_s"] = float(np.nanpercentile(speed_arr, 2.5))
+        joint_fit["bootstrap_speed0_hi95_km_s"] = float(np.nanpercentile(speed_arr, 97.5))
+        joint_fit["bootstrap_radius0_m"] = radius_arr
+        joint_fit["bootstrap_radius0_median_m"] = float(np.nanmedian(radius_arr))
+        joint_fit["bootstrap_radius0_lo95_m"] = float(np.nanpercentile(radius_arr, 2.5))
+        joint_fit["bootstrap_radius0_hi95_m"] = float(np.nanpercentile(radius_arr, 97.5))
+        joint_fit["bootstrap_mass0_kg"] = mass_arr
+        joint_fit["bootstrap_mass0_median_kg"] = float(np.nanmedian(mass_arr))
+        joint_fit["bootstrap_mass0_lo95_kg"] = float(np.nanpercentile(mass_arr, 2.5))
+        joint_fit["bootstrap_mass0_hi95_kg"] = float(np.nanpercentile(mass_arr, 97.5))
+        joint_fit["bootstrap_path_residual_measurement_samples_m"] = path_residual_measurement_arr
+        joint_fit["bootstrap_fft_residual_measurement_samples_hz"] = fft_residual_measurement_arr
+        joint_fit["heliocentric_eccentricity"] = float(nominal_eccentricity)
+        joint_fit["bootstrap_eccentricity"] = eccentricity_arr
+        joint_fit["bootstrap_eccentricity_median"] = float(np.nanmedian(eccentricity_arr))
+        joint_fit["bootstrap_eccentricity_lo95"] = float(np.nanpercentile(eccentricity_arr, 2.5))
+        joint_fit["bootstrap_eccentricity_hi95"] = float(np.nanpercentile(eccentricity_arr, 97.5))
+        joint_fit["bootstrap_interstellar_fraction_e_gt_1"] = float(np.nanmean(eccentricity_arr > 1.0))
+        joint_fit["orbit_sampling_model"] = (
+            "Instantaneous osculating heliocentric eccentricity from fitted GCRS state at fit epoch, "
+            "using astropy builtin Earth/Sun barycentric states; no pre-atmosphere drag correction."
+        )
+        joint_fit["bootstrap_optimizer_success"] = np.asarray(optimizer_success, dtype=bool)
+    else:
+        joint_fit["bootstrap_enabled"] = False
+        joint_fit["bootstrap_samples_requested"] = n_samples
+        joint_fit["bootstrap_samples_successful"] = 0
+    if failures:
+        joint_fit["bootstrap_failures"] = ";".join(failures[:20])
+        joint_fit["bootstrap_n_failures"] = int(len(failures))
+    else:
+        joint_fit["bootstrap_failures"] = ""
+        joint_fit["bootstrap_n_failures"] = 0
+    return joint_fit
 
 
 def mass_from_radius(radius_m):
@@ -840,6 +1355,26 @@ def finite_mean_abs(values):
 def constant_velocity_initial_params(fit):
     params = np.asarray(fit["params"], dtype=np.float64)
     return params[:6].copy()
+
+
+def exponential_speed_initial_params(fit, default_log10_a=-1.0):
+    params = np.asarray(fit["params"], dtype=np.float64)
+    out = np.full(7, np.nan, dtype=np.float64)
+    out[:6] = params[:6]
+    out[6] = params[6] if params.size >= 7 and str(fit.get("dynamical_model", "")) == "exponential_speed" else float(default_log10_a)
+    return out
+
+
+def whipple_speed_initial_params(fit, default_log10_a=2.0, default_log10_b=0.0):
+    params = np.asarray(fit["params"], dtype=np.float64)
+    out = np.full(8, np.nan, dtype=np.float64)
+    out[:6] = params[:6]
+    if params.size >= 8 and str(fit.get("dynamical_model", "")) == "whipple_speed":
+        out[6:8] = params[6:8]
+    else:
+        out[6] = float(default_log10_a)
+        out[7] = float(default_log10_b)
+    return out
 
 
 def radius_uncertainty_is_large(joint_fit, max_log10_radius_std=DEFAULT_MAX_LOG10_RADIUS_STD):
@@ -861,10 +1396,23 @@ def radius_uncertainty_is_large(joint_fit, max_log10_radius_std=DEFAULT_MAX_LOG1
     )
 
 
-def delay_clip_mask_from_fit(joint_fit, clip_m):
+def delay_clip_mask_from_fit(joint_fit, clip_m, candidate_keep=None):
+    if candidate_keep is None:
+        candidate_keep = np.asarray(joint_fit["path_keep"], dtype=bool)
+    else:
+        candidate_keep = np.asarray(candidate_keep, dtype=bool)
     if not (np.isfinite(clip_m) and clip_m > 0.0):
-        return np.asarray(joint_fit["path_keep"], dtype=bool)
-    return np.asarray(joint_fit["path_keep"], dtype=bool) & (np.abs(joint_fit["path_residuals_m"]) <= float(clip_m))
+        return candidate_keep
+    residuals = np.asarray(joint_fit["path_residuals_m"], dtype=np.float64)
+    return candidate_keep & np.isfinite(residuals) & (np.abs(residuals) <= float(clip_m))
+
+
+def fft_clip_mask_from_fit(joint_fit, candidate_keep, clip_hz):
+    candidate_keep = np.asarray(candidate_keep, dtype=bool)
+    if not (np.isfinite(clip_hz) and clip_hz > 0.0):
+        return candidate_keep
+    residuals = np.asarray(joint_fit["fft_residuals_hz"], dtype=np.float64)
+    return candidate_keep & np.isfinite(residuals) & (np.abs(residuals) <= float(clip_hz))
 
 
 def delay_clip_is_fit_usable(path_keep, fft_keep, n_dyn, fit_station_bias):
@@ -913,6 +1461,9 @@ def refit_with_masks(
     reference_chirp_rate_scale,
     path_keep,
     model_kind,
+    residual_likelihood="scipy_robust_lsq",
+    student_t_nu_delay=DEFAULT_STUDENT_T_NU_DELAY,
+    student_t_nu_fft=DEFAULT_STUDENT_T_NU_FFT,
 ):
     return fit_joint_delay_doppler(
         measured,
@@ -930,7 +1481,78 @@ def refit_with_masks(
         reference_chirp_rate_scale=reference_chirp_rate_scale,
         path_keep=path_keep,
         model_kind=model_kind,
+        residual_likelihood=residual_likelihood,
+        student_t_nu_delay=student_t_nu_delay,
+        student_t_nu_fft=student_t_nu_fft,
     )
+
+
+def refit_with_auto_clipping(
+    joint_fit,
+    measured,
+    times_ns,
+    rho_of_alt_m,
+    sigma_m,
+    fft_obs,
+    fft_candidate_keep,
+    sigma_fft_hz,
+    epoch_time_ns,
+    fit_station_bias,
+    fft_model,
+    reference_chirp_rate_scale,
+    path_candidate_keep,
+    delay_clip_m,
+    fft_clip_hz,
+    model_kind=None,
+    max_retry=6,
+    residual_likelihood="scipy_robust_lsq",
+    student_t_nu_delay=DEFAULT_STUDENT_T_NU_DELAY,
+    student_t_nu_fft=DEFAULT_STUDENT_T_NU_FFT,
+):
+    current = joint_fit
+    path_candidate_keep = np.asarray(path_candidate_keep, dtype=bool)
+    fft_candidate_keep = np.asarray(fft_candidate_keep, dtype=bool)
+    for _idx in range(int(max_retry)):
+        next_path_keep = delay_clip_mask_from_fit(current, delay_clip_m, path_candidate_keep)
+        next_fft_keep = fft_clip_mask_from_fit(current, fft_candidate_keep, fft_clip_hz)
+        if (
+            np.array_equal(next_path_keep, np.asarray(current["path_keep"], dtype=bool))
+            and np.array_equal(next_fft_keep, np.asarray(current["fft_keep"], dtype=bool))
+        ):
+            break
+        kind = model_kind or str(current.get("dynamical_model", "ceplecha"))
+        n_dyn = MODEL_PARAMETER_COUNT[str(kind)]
+        if not delay_clip_is_fit_usable(next_path_keep, next_fft_keep, n_dyn=n_dyn, fit_station_bias=fit_station_bias):
+            break
+        current = refit_with_masks(
+            measured,
+            times_ns,
+            rho_of_alt_m,
+            current["params"],
+            sigma_m,
+            fft_obs,
+            next_fft_keep,
+            sigma_fft_hz,
+            epoch_time_ns,
+            fit_station_bias,
+            fft_model,
+            reference_chirp_rate_scale,
+            next_path_keep,
+            kind,
+            residual_likelihood=residual_likelihood,
+            student_t_nu_delay=student_t_nu_delay,
+            student_t_nu_fft=student_t_nu_fft,
+        )
+    current["delay_clip_limit_m"] = float(delay_clip_m)
+    current["fft_clip_limit_hz"] = float(fft_clip_hz) if np.isfinite(fft_clip_hz) else np.nan
+    current["n_delay_clipped_observations"] = int(
+        np.count_nonzero(path_candidate_keep) - np.count_nonzero(np.asarray(current["path_keep"], dtype=bool))
+    )
+    current["n_fft_clipped_observations"] = int(
+        np.count_nonzero(fft_candidate_keep) - np.count_nonzero(np.asarray(current["fft_keep"], dtype=bool))
+    )
+    current["auto_clip_from_candidate_set"] = True
+    return current
 
 
 def try_recover_bad_fit(
@@ -950,13 +1572,24 @@ def try_recover_bad_fit(
     fft_clip_hz,
     path_rms_limit_m,
     fft_rms_limit_hz,
+    path_candidate_keep=None,
+    fft_candidate_keep=None,
     max_retry=DEFAULT_BAD_FIT_MAX_RETRY,
+    residual_likelihood="scipy_robust_lsq",
+    student_t_nu_delay=DEFAULT_STUDENT_T_NU_DELAY,
+    student_t_nu_fft=DEFAULT_STUDENT_T_NU_FFT,
 ):
     best = joint_fit
     best_score = fit_quality_score(best)
     recovery_notes = []
-    seed_path_keep = np.isfinite(np.asarray(measured, dtype=np.float64))
-    seed_fft_keep = np.asarray(fft_obs["fft_keep"], dtype=bool)
+    if path_candidate_keep is None:
+        seed_path_keep = np.isfinite(np.asarray(measured, dtype=np.float64))
+    else:
+        seed_path_keep = np.asarray(path_candidate_keep, dtype=bool)
+    if fft_candidate_keep is None:
+        seed_fft_keep = np.asarray(fft_obs["fft_keep"], dtype=bool)
+    else:
+        seed_fft_keep = np.asarray(fft_candidate_keep, dtype=bool)
     if delay_clip_is_fit_usable(seed_path_keep, seed_fft_keep, n_dyn=7, fit_station_bias=fit_station_bias):
         try:
             seeded = refit_with_masks(
@@ -974,6 +1607,9 @@ def try_recover_bad_fit(
                 reference_chirp_rate_scale,
                 seed_path_keep,
                 "ceplecha",
+                residual_likelihood=residual_likelihood,
+                student_t_nu_delay=student_t_nu_delay,
+                student_t_nu_fft=student_t_nu_fft,
             )
             seeded["bad_fit_recovery_step"] = "delay_seed_ceplecha"
             score = fit_quality_score(seeded)
@@ -999,6 +1635,9 @@ def try_recover_bad_fit(
                 reference_chirp_rate_scale,
                 seed_path_keep,
                 "constant_velocity",
+                residual_likelihood=residual_likelihood,
+                student_t_nu_delay=student_t_nu_delay,
+                student_t_nu_fft=student_t_nu_fft,
             )
             seeded_constant["fallback_from_ceplecha"] = True
             seeded_constant["fallback_reason"] = "bad_retained_residual"
@@ -1011,16 +1650,14 @@ def try_recover_bad_fit(
             recovery_notes.append(f"delay_seed_constant_velocity_failed:{exc}")
     current = joint_fit
     for _idx in range(int(max_retry)):
-        next_path_keep = delay_clip_mask_from_fit(current, delay_clip_m)
-        next_fft_keep = np.asarray(current["fft_keep"], dtype=bool)
-        if np.isfinite(fft_clip_hz) and fft_clip_hz > 0.0:
-            next_fft_keep = next_fft_keep & (np.abs(current["fft_residuals_hz"]) <= float(fft_clip_hz))
+        next_path_keep = delay_clip_mask_from_fit(current, delay_clip_m, seed_path_keep)
+        next_fft_keep = fft_clip_mask_from_fit(current, seed_fft_keep, fft_clip_hz)
         if (
             np.array_equal(next_path_keep, np.asarray(current["path_keep"], dtype=bool))
             and np.array_equal(next_fft_keep, np.asarray(current["fft_keep"], dtype=bool))
         ):
             break
-        n_dyn = 7 if str(current.get("dynamical_model", "ceplecha")) == "ceplecha" else 6
+        n_dyn = MODEL_PARAMETER_COUNT[str(current.get("dynamical_model", "ceplecha"))]
         if not delay_clip_is_fit_usable(next_path_keep, next_fft_keep, n_dyn=n_dyn, fit_station_bias=fit_station_bias):
             break
         try:
@@ -1039,6 +1676,9 @@ def try_recover_bad_fit(
                 reference_chirp_rate_scale,
                 next_path_keep,
                 str(current.get("dynamical_model", "ceplecha")),
+                residual_likelihood=residual_likelihood,
+                student_t_nu_delay=student_t_nu_delay,
+                student_t_nu_fft=student_t_nu_fft,
             )
         except Exception as exc:
             recovery_notes.append(f"iterative_clip_failed:{exc}")
@@ -1051,10 +1691,8 @@ def try_recover_bad_fit(
 
     reasons = bad_fit_reasons(best, path_rms_limit_m, fft_rms_limit_hz)
     if reasons:
-        final_path_keep = delay_clip_mask_from_fit(best, delay_clip_m)
-        final_fft_keep = np.asarray(best["fft_keep"], dtype=bool)
-        if np.isfinite(fft_clip_hz) and fft_clip_hz > 0.0:
-            final_fft_keep = final_fft_keep & (np.abs(best["fft_residuals_hz"]) <= float(fft_clip_hz))
+        final_path_keep = delay_clip_mask_from_fit(best, delay_clip_m, seed_path_keep)
+        final_fft_keep = fft_clip_mask_from_fit(best, seed_fft_keep, fft_clip_hz)
         if delay_clip_is_fit_usable(final_path_keep, final_fft_keep, n_dyn=6, fit_station_bias=fit_station_bias):
             try:
                 constant_fit = refit_with_masks(
@@ -1072,6 +1710,9 @@ def try_recover_bad_fit(
                     reference_chirp_rate_scale,
                     final_path_keep,
                     "constant_velocity",
+                    residual_likelihood=residual_likelihood,
+                    student_t_nu_delay=student_t_nu_delay,
+                    student_t_nu_fft=student_t_nu_fft,
                 )
                 constant_fit["fallback_from_ceplecha"] = str(best.get("dynamical_model", "ceplecha")) == "ceplecha"
                 constant_fit["fallback_reason"] = "bad_retained_residual"
@@ -1107,16 +1748,59 @@ def compact_sci(value):
 
 
 def radius_mass_interval_text(joint_fit):
-    if str(joint_fit.get("dynamical_model", "ceplecha")) == "constant_velocity":
+    model_kind = str(joint_fit.get("dynamical_model", "ceplecha"))
+    if model_kind == "constant_velocity":
         return "constant velocity model\nr0, m0 not fitted"
+    if model_kind == "whipple_speed":
+        params = np.asarray(joint_fit["params"], dtype=np.float64)
+        v0_km_s = float(np.linalg.norm(params[3:6]) / 1e3)
+        a_mps = float(10.0 ** params[6])
+        b_s_inv = float(10.0 ** params[7])
+        speed = np.asarray(joint_fit.get("speed_km_s", []), dtype=np.float64)
+        if speed.size:
+            speed_text = f"v: {speed[0]:.2f} to {speed[-1]:.2f} km/s"
+        else:
+            speed_text = f"v0 = {v0_km_s:.2f} km/s"
+        return (
+            r"$v(t)=(v_0-ae^{bt})\hat{u}_0$" "\n"
+            f"v0 = {v0_km_s:.2f} km/s\n"
+            f"a = {a_mps:.1f} m/s, b = {b_s_inv:.3g} 1/s\n"
+            f"{speed_text}"
+        )
+    if model_kind == "exponential_speed":
+        params = np.asarray(joint_fit["params"], dtype=np.float64)
+        speed0_km_s = float(np.linalg.norm(params[3:6]) / 1e3)
+        a_s_inv = float(10.0 ** params[6])
+        return (
+            r"$v(t)=v_0e^{-at}$" "\n"
+            f"v0 = {speed0_km_s:.2f} km/s\n"
+            f"a = {a_s_inv:.2f} 1/s"
+        )
     radius_m = float(joint_fit["initial_radius_m"])
     mass_kg = float(joint_fit["initial_mass_kg"])
+    sigma_line = ""
+    if model_kind == "ceplecha_ablation_sigma":
+        sigma_line = f"\nsigma = {compact_sci(float(joint_fit.get('ablation_sigma_kg_j', np.nan)))} kg/J"
+    if bool(joint_fit.get("bootstrap_enabled", False)):
+        lo_r = float(joint_fit.get("bootstrap_radius0_lo95_m", np.nan))
+        hi_r = float(joint_fit.get("bootstrap_radius0_hi95_m", np.nan))
+        lo_m = float(joint_fit.get("bootstrap_mass0_lo95_kg", np.nan))
+        hi_m = float(joint_fit.get("bootstrap_mass0_hi95_kg", np.nan))
+        if np.all(np.isfinite([lo_r, hi_r, lo_m, hi_m])):
+            return (
+                f"r0 = {radius_m * 1e6:.3g} um\n"
+                f"95% boot r0: {lo_r * 1e6:.3g} - {hi_r * 1e6:.3g} um\n"
+                f"m0 = {compact_sci(mass_kg)} kg\n"
+                f"95% boot m0: {compact_sci(lo_m)} - {compact_sci(hi_m)} kg"
+                f"{sigma_line}"
+            )
     log10_radius = np.log10(radius_m)
     log10_radius_std = float(joint_fit.get("log10_radius_std", np.nan))
     if not np.isfinite(log10_radius_std):
         return (
             f"r0 = {radius_m * 1e6:.3g} um\n"
             f"m0 = {compact_sci(mass_kg)} kg"
+            f"{sigma_line}"
         )
     lo_r = 10.0 ** (log10_radius - 1.96 * log10_radius_std)
     hi_r = 10.0 ** (log10_radius + 1.96 * log10_radius_std)
@@ -1129,11 +1813,56 @@ def radius_mass_interval_text(joint_fit):
         f"95% r0: {lo_r * 1e6:.3g} - {hi_r * 1e6:.3g} um\n"
         f"m0 = {compact_sci(mass_kg)} kg\n"
         f"95% m0: {compact_sci(lo_m)} - {compact_sci(hi_m)} kg"
+        f"{sigma_line}"
     )
+
+
+def orbit_eccentricity_interval_text(joint_fit):
+    e0 = float(joint_fit.get("heliocentric_eccentricity", np.nan))
+    elo = float(joint_fit.get("bootstrap_eccentricity_lo95", np.nan))
+    ehi = float(joint_fit.get("bootstrap_eccentricity_hi95", np.nan))
+    frac = float(joint_fit.get("bootstrap_interstellar_fraction_e_gt_1", np.nan))
+    if np.all(np.isfinite([e0, elo, ehi, frac])):
+        return f"e = {e0:.3f}\n95% boot e: {elo:.3f} - {ehi:.3f}\nP(e > 1) = {frac:.2f}"
+    if np.isfinite(e0):
+        return f"e = {e0:.3f}"
+    return ""
+
+
+def radius_mass_orbit_interval_text(joint_fit):
+    parts = [radius_mass_interval_text(joint_fit)]
+    orbit_text = orbit_eccentricity_interval_text(joint_fit)
+    if orbit_text:
+        parts.append(orbit_text)
+    return "\n".join(parts)
+
+
+def bootstrap_residual_sample_indices(samples, max_samples=180):
+    samples = np.asarray(samples)
+    if samples.ndim < 3 or samples.shape[0] == 0:
+        return np.asarray([], dtype=np.int64)
+    if samples.shape[0] <= max_samples:
+        return np.arange(samples.shape[0], dtype=np.int64)
+    return np.linspace(0, samples.shape[0] - 1, int(max_samples), dtype=np.int64)
 
 
 def initial_speed_uncertainty_km_s(joint_fit):
     params = np.asarray(joint_fit.get("params", np.nan), dtype=np.float64)
+    if bool(joint_fit.get("bootstrap_enabled", False)):
+        if str(joint_fit.get("dynamical_model", "")) == "whipple_speed":
+            lo = float(joint_fit.get("bootstrap_start_speed_km_s_lo95", np.nan))
+            hi = float(joint_fit.get("bootstrap_start_speed_km_s_hi95", np.nan))
+            speed = np.asarray(joint_fit.get("speed_km_s", []), dtype=np.float64)
+            v0 = float(speed[0]) if speed.size else np.nan
+        else:
+            lo = float(joint_fit.get("bootstrap_speed0_lo95_km_s", np.nan))
+            hi = float(joint_fit.get("bootstrap_speed0_hi95_km_s", np.nan))
+            v0 = float(np.linalg.norm(params[3:6]) / 1e3) if params.shape[0] >= 6 else np.nan
+        if np.isfinite(lo) and np.isfinite(hi):
+            return v0, 0.5 * (hi - lo) / 1.96
+    if str(joint_fit.get("dynamical_model", "")) == "whipple_speed":
+        speed = np.asarray(joint_fit.get("speed_km_s", []), dtype=np.float64)
+        return (float(speed[0]), np.nan) if speed.size else (np.nan, np.nan)
     cov = np.asarray(joint_fit.get("parameter_covariance", np.nan), dtype=np.float64)
     if params.shape[0] < 6 or cov.shape[0] < 6 or cov.shape[1] < 6:
         return np.nan, np.nan
@@ -1206,10 +1935,17 @@ def fit_quality_annotation(joint_fit):
         if np.any(np.isfinite(doppler_abs_mps))
         else np.nan
     )
+    v0_label = "boot" if bool(joint_fit.get("bootstrap_enabled", False)) else "local"
+    if np.isfinite(v0_km_s) and np.isfinite(v0_sigma_km_s):
+        v0_text = f"v0 = {v0_km_s:.2f} +/- {v0_sigma_km_s:.2f} km/s ({v0_label})"
+    elif np.isfinite(v0_km_s):
+        v0_text = f"v0 = {v0_km_s:.2f} km/s"
+    else:
+        v0_text = "v0 unavailable"
     return (
         f"mean |delay residual| = {delay_mean_abs_m:.1f} m\n"
         f"mean |Doppler residual| = {doppler_mean_abs_mps:.0f} m/s\n"
-        f"v0 = {v0_km_s:.2f} +/- {v0_sigma_km_s:.2f} km/s"
+        f"{v0_text}"
     )
 
 
@@ -1220,8 +1956,60 @@ def deterministic_rng(event_id):
 
 
 def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
-    cov = np.asarray(joint_fit.get("parameter_covariance", np.nan), dtype=np.float64)
     params = np.asarray(joint_fit["params"], dtype=np.float64)
+    model_kind = str(joint_fit.get("dynamical_model", "ceplecha"))
+    bootstrap_params = np.asarray(joint_fit.get("bootstrap_params", []), dtype=np.float64)
+    if bool(joint_fit.get("bootstrap_enabled", False)) and bootstrap_params.ndim == 2 and bootstrap_params.shape[0] >= 8:
+        along_axis = np.nanmean(np.asarray(joint_fit["v_gcrs_mps"], dtype=np.float64), axis=0)
+        along_axis = along_axis / max(float(np.linalg.norm(along_axis)), 1e-30)
+        path_samples = []
+        along_velocity_samples = []
+        beam_east_samples = []
+        beam_north_samples = []
+        if bootstrap_params.shape[0] > n_draws:
+            draw_idx = np.linspace(0, bootstrap_params.shape[0] - 1, int(n_draws), dtype=np.int64)
+            bootstrap_draws = bootstrap_params[draw_idx]
+        else:
+            bootstrap_draws = bootstrap_params
+        for trial in bootstrap_draws:
+            try:
+                model = forward_model_for_kind(
+                    trial[: len(params)],
+                    joint_fit["t_rel_s"],
+                    joint_fit["time_ns"],
+                    rho_of_alt_m,
+                    model_kind,
+                )
+            except Exception:
+                continue
+            if not model["ceplecha_success"]:
+                continue
+            path = np.asarray(model["apparent_path_length_m"], dtype=np.float64)
+            along_velocity = (np.asarray(model["v_gcrs_mps"], dtype=np.float64) @ along_axis) / 1e3
+            beam_east_deg, beam_north_deg = sanya_beam_offsets_deg(model["x_itrs_m"])
+            if np.all(np.isfinite(path)) and np.all(np.isfinite(along_velocity)):
+                path_samples.append(path)
+                along_velocity_samples.append(along_velocity)
+                beam_east_samples.append(beam_east_deg)
+                beam_north_samples.append(beam_north_deg)
+        if len(path_samples) >= 8:
+            path_samples = np.asarray(path_samples, dtype=np.float64)
+            along_velocity_samples = np.asarray(along_velocity_samples, dtype=np.float64)
+            beam_east_samples = np.asarray(beam_east_samples, dtype=np.float64)
+            beam_north_samples = np.asarray(beam_north_samples, dtype=np.float64)
+            return {
+                "path_lo_m": np.nanpercentile(path_samples, 2.5, axis=0),
+                "path_hi_m": np.nanpercentile(path_samples, 97.5, axis=0),
+                "along_velocity_lo_km_s": np.nanpercentile(along_velocity_samples, 2.5, axis=0),
+                "along_velocity_hi_km_s": np.nanpercentile(along_velocity_samples, 97.5, axis=0),
+                "beam_east_lo_deg": np.nanpercentile(beam_east_samples, 2.5, axis=0),
+                "beam_east_hi_deg": np.nanpercentile(beam_east_samples, 97.5, axis=0),
+                "beam_north_lo_deg": np.nanpercentile(beam_north_samples, 2.5, axis=0),
+                "beam_north_hi_deg": np.nanpercentile(beam_north_samples, 97.5, axis=0),
+                "n_draws": int(len(path_samples)),
+                "source": "bootstrap",
+            }
+    cov = np.asarray(joint_fit.get("parameter_covariance", np.nan), dtype=np.float64)
     if cov.shape[0] < len(params) or not np.all(np.isfinite(cov[: len(params), : len(params)])):
         return None
     cov = cov[: len(params), : len(params)]
@@ -1241,7 +2029,6 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
     beam_east_samples = []
     beam_north_samples = []
     n_try = 0
-    model_kind = str(joint_fit.get("dynamical_model", "ceplecha"))
     while len(path_samples) < n_draws and n_try < n_draws * 8:
         n_try += 1
         trial = params + transform @ rng.standard_normal(len(params))
@@ -1283,6 +2070,7 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
         "beam_north_lo_deg": np.nanpercentile(beam_north_samples, 2.5, axis=0),
         "beam_north_hi_deg": np.nanpercentile(beam_north_samples, 97.5, axis=0),
         "n_draws": int(len(path_samples)),
+        "source": "local_covariance",
     }
 
 
@@ -1429,12 +2217,13 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
     ax.plot(t, along_velocity_km_s, color="#1b7837", lw=1.9, label="joint fit")
     ax.set_ylabel("Along-track velocity (km/s)")
     ax.set_title("Model along-track velocity")
+    ax.ticklabel_format(axis="y", style="plain", useOffset=False)
     ax.grid(True, alpha=0.25)
     ax.legend(loc="upper right", fontsize=8)
     ax.text(
         0.04,
         0.05,
-        radius_mass_interval_text(joint_fit),
+        radius_mass_orbit_interval_text(joint_fit),
         transform=ax.transAxes,
         ha="left",
         va="bottom",
@@ -1443,8 +2232,31 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
     )
 
     ax = axes[1, 0]
+    path_sigma_m = np.asarray(
+        joint_fit.get(
+            "path_measurement_sigma_m",
+            joint_fit.get("path_sigma_m", np.full_like(joint_fit["path_residuals_m"], np.nan)),
+        ),
+        dtype=np.float64,
+    )
+    path_boot = np.asarray(joint_fit.get("bootstrap_path_residual_measurement_samples_m", []), dtype=np.float64)
+    path_boot_idx = bootstrap_residual_sample_indices(path_boot)
     for col, site in enumerate(SITE_ORDER):
         keep = np.asarray(joint_fit["path_keep"], dtype=bool)[:, col]
+        if path_boot_idx.size:
+            boot_vals = path_boot[path_boot_idx, :, col]
+            good_boot = np.isfinite(boot_vals)
+            if np.any(good_boot):
+                ax.scatter(
+                    np.broadcast_to(t[None, :], boot_vals.shape)[good_boot],
+                    boot_vals[good_boot],
+                    s=4,
+                    color=colors[site],
+                    alpha=0.018,
+                    linewidths=0,
+                    rasterized=True,
+                    zorder=-10,
+                )
         finite = np.isfinite(joint_fit["path_residuals_m"][:, col])
         excluded = finite & ~keep
         if np.any(excluded):
@@ -1456,6 +2268,19 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
                 edgecolors=colors[site],
                 linewidths=0.8,
                 alpha=0.35,
+            )
+        if path_sigma_m.shape == np.asarray(joint_fit["path_residuals_m"]).shape and np.any(keep & np.isfinite(path_sigma_m[:, col])):
+            good_err = keep & np.isfinite(path_sigma_m[:, col])
+            ax.errorbar(
+                t[good_err],
+                joint_fit["path_residuals_m"][good_err, col],
+                yerr=path_sigma_m[good_err, col],
+                fmt="none",
+                ecolor=colors[site],
+                elinewidth=0.75,
+                alpha=0.42,
+                capsize=0,
+                zorder=1,
             )
         ax.scatter(
             t[keep],
@@ -1501,8 +2326,31 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
                 ax_snr.grid(False)
 
     ax = axes[1, 1]
+    fft_sigma_hz = np.asarray(
+        joint_fit.get(
+            "fft_event_sigma_hz",
+            joint_fit.get("fft_sigma_hz", np.full_like(joint_fit["fft_residuals_hz"], np.nan)),
+        ),
+        dtype=np.float64,
+    )
+    fft_boot = np.asarray(joint_fit.get("bootstrap_fft_residual_measurement_samples_hz", []), dtype=np.float64)
+    fft_boot_idx = bootstrap_residual_sample_indices(fft_boot)
     for col, site in enumerate(SITE_ORDER):
         keep = joint_fit["fft_keep"][:, col]
+        if fft_boot_idx.size:
+            boot_vals_khz = fft_boot[fft_boot_idx, :, col] / 1e3
+            good_boot = np.isfinite(boot_vals_khz)
+            if np.any(good_boot):
+                ax.scatter(
+                    np.broadcast_to(t[None, :], boot_vals_khz.shape)[good_boot],
+                    boot_vals_khz[good_boot],
+                    s=4,
+                    color=colors[site],
+                    alpha=0.018,
+                    linewidths=0,
+                    rasterized=True,
+                    zorder=-10,
+                )
         finite = np.isfinite(joint_fit["fft_residuals_hz"][:, col])
         excluded = finite & ~keep
         if np.any(excluded):
@@ -1514,6 +2362,19 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
                 edgecolors=colors[site],
                 linewidths=0.8,
                 alpha=0.35,
+            )
+        if fft_sigma_hz.shape == np.asarray(joint_fit["fft_residuals_hz"]).shape and np.any(keep & np.isfinite(fft_sigma_hz[:, col])):
+            good_err = keep & np.isfinite(fft_sigma_hz[:, col])
+            ax.errorbar(
+                t[good_err],
+                joint_fit["fft_residuals_hz"][good_err, col] / 1e3,
+                yerr=fft_sigma_hz[good_err, col] / 1e3,
+                fmt="none",
+                ecolor=colors[site],
+                elinewidth=0.75,
+                alpha=0.42,
+                capsize=0,
+                zorder=1,
             )
         ax.scatter(
             t[keep],
@@ -1567,7 +2428,12 @@ def write_h5(
         h.attrs["script"] = os.path.basename(__file__)
         h.attrs["script_version"] = SCRIPT_VERSION
         h.attrs["event_id"] = event_id
-        h.attrs["sigma_fft_hz"] = float(sigma_fft_hz)
+        sigma_fft_arr = np.asarray(sigma_fft_hz, dtype=np.float64)
+        if sigma_fft_arr.ndim == 0:
+            h.attrs["sigma_fft_hz"] = float(sigma_fft_arr)
+        else:
+            h.attrs["sigma_fft_hz"] = float(np.nanmedian(sigma_fft_arr))
+            h.create_dataset("sigma_fft_hz_matrix", data=sigma_fft_arr)
         h.attrs["zero_pad_factor"] = int(zero_pad_factor)
         h.attrs["range_measurement"] = str(range_measurement)
         h.attrs["fft_gate_upsample_factor"] = int(gate_upsample_factor)
@@ -1599,6 +2465,8 @@ def write_h5(
         for key, value in joint_fit.items():
             if np.isscalar(value) or isinstance(value, (str, bytes, bool)):
                 jg.attrs[key] = value
+            elif isinstance(value, np.ndarray) and value.dtype.kind in {"O", "U", "S"}:
+                jg.create_dataset(key, data=np.asarray(value, dtype=object), dtype=string_dtype)
             else:
                 jg[key] = value
         og = h.create_group("fft_observations")
@@ -1634,6 +2502,27 @@ def main():
     parser.add_argument("--force-model-reevaluation", action="store_true")
     parser.add_argument("--coincident-delay-weight", type=float, default=DEFAULT_COINCIDENT_DELAY_WEIGHT)
     parser.add_argument(
+        "--residual-scale-model",
+        choices=("legacy_snr", "empirical_snr_beam"),
+        default="legacy_snr",
+        help="Measurement scale model used in the joint fit.",
+    )
+    parser.add_argument(
+        "--residual-likelihood",
+        choices=("scipy_robust_lsq", "student_t"),
+        default="scipy_robust_lsq",
+        help="Fit objective for normalized residuals.",
+    )
+    parser.add_argument("--student-t-nu-delay", type=float, default=DEFAULT_STUDENT_T_NU_DELAY)
+    parser.add_argument("--student-t-nu-fft", type=float, default=DEFAULT_STUDENT_T_NU_FFT)
+    parser.add_argument("--bootstrap-samples", type=int, default=0)
+    parser.add_argument("--bootstrap-seed", type=int, default=None)
+    parser.add_argument(
+        "--bootstrap-method",
+        choices=("parametric_student_t", "parametric_gaussian"),
+        default="parametric_student_t",
+    )
+    parser.add_argument(
         "--fft-model",
         choices=("range_offset_corrected_beat", "zero_beat", "signed_doppler", "ambiguity_residual"),
         default="range_offset_corrected_beat",
@@ -1648,6 +2537,12 @@ def main():
     parser.add_argument("--output-base", default=None)
     parser.add_argument("--seed-from-existing-h5", default=None)
     parser.add_argument("--fit-mode", choices=("joint", "delay-only"), default="joint")
+    parser.add_argument(
+        "--primary-model",
+        choices=("ceplecha", "ceplecha_ablation_sigma", "exponential_speed", "whipple_speed"),
+        default="ceplecha",
+        help="Dynamical model used for the primary joint fit.",
+    )
     args = parser.parse_args()
     min_geometric_points = int(args.min_geometric_points)
     if min_geometric_points < 3:
@@ -1726,7 +2621,16 @@ def main():
     fit_epoch_time_ns = int(times_ns[0])
 
     sigma_model = {"sigma_floor_m": 33.39, "sigma_0_m": 236.9}
-    sigma_m = finite_sigma_from_snr_db(snr_db, sigma_model["sigma_floor_m"], sigma_model["sigma_0_m"])
+    if args.residual_scale_model == "empirical_snr_beam":
+        reference_positions = reference_points_itrs(fit0, times_ns)
+        beam_offset_deg = fixed_beam_offset_matrix_deg(reference_positions, snr_db)
+        sigma_m_measurement = empirical_delay_sigma_m(snr_db, beam_offset_deg)
+        sigma_fft_hz = empirical_fft_sigma_hz(snr_db, beam_offset_deg)
+    else:
+        beam_offset_deg = np.full_like(snr_db, np.nan, dtype=np.float64)
+        sigma_m_measurement = finite_sigma_from_snr_db(snr_db, sigma_model["sigma_floor_m"], sigma_model["sigma_0_m"])
+        sigma_fft_hz = float(args.sigma_fft_hz)
+    sigma_m = np.array(sigma_m_measurement, dtype=np.float64, copy=True)
     coincident_delay_rows = np.all(path_keep_initial, axis=1)
     if np.isfinite(args.coincident_delay_weight) and args.coincident_delay_weight > 1.0:
         sigma_m[coincident_delay_rows, :] = sigma_m[coincident_delay_rows, :] / float(args.coincident_delay_weight)
@@ -1746,7 +2650,12 @@ def main():
             "seed_source": delay_seed_source,
         }
     elif use_coincident_seed:
-        seed_sigma_m = finite_sigma_from_snr_db(seed_snr_db, sigma_model["sigma_floor_m"], sigma_model["sigma_0_m"])
+        if args.residual_scale_model == "empirical_snr_beam":
+            seed_reference_positions = reference_points_itrs(fit0, seed_times_ns)
+            seed_beam_offset_deg = fixed_beam_offset_matrix_deg(seed_reference_positions, seed_snr_db)
+            seed_sigma_m = empirical_delay_sigma_m(seed_snr_db, seed_beam_offset_deg)
+        else:
+            seed_sigma_m = finite_sigma_from_snr_db(seed_snr_db, sigma_model["sigma_floor_m"], sigma_model["sigma_0_m"])
         rho_of_alt_m, _msis_meta = base.density_interpolator(seed_times_ns, points)
         guesses = cepl.unique_initial_guesses(points, seed_times_ns, reference_fit=fit0)
         guesses = shift_constant_velocity_epoch(guesses, int(seed_times_ns[0]), fit_epoch_time_ns)
@@ -1802,80 +2711,60 @@ def main():
     if args.fit_mode == "delay-only":
         fft_obs["fft_keep"] = np.zeros_like(fft_obs["fft_keep"], dtype=bool)
         fit_station_bias = False
+    primary_model = str(args.primary_model)
+    if primary_model == "exponential_speed":
+        primary_seed_params = exponential_speed_initial_params(delay_fit)
+    elif primary_model == "whipple_speed":
+        primary_seed_params = whipple_speed_initial_params(delay_fit)
+    elif primary_model == "ceplecha_ablation_sigma":
+        primary_seed_params = np.concatenate([np.asarray(delay_seed_params, dtype=np.float64)[:7], [np.log10(cepl.ABLATION_SIGMA_KG_J)]])
+    else:
+        primary_seed_params = delay_seed_params
     joint_fit = fit_joint_delay_doppler(
         measured,
         times_ns,
         rho_of_alt_m,
-        delay_seed_params,
+        primary_seed_params,
         sigma_m,
         fft_obs["fft_offset_hz"],
         fft_obs["fft_keep"],
-        args.sigma_fft_hz,
+        sigma_fft_hz,
         keep_rows=np.ones(len(times_ns), dtype=bool),
         epoch_time_ns=fit_epoch_time_ns,
         fit_station_bias=fit_station_bias,
         fft_model=args.fft_model,
         reference_chirp_rate_scale=args.reference_chirp_rate_scale,
         path_keep=path_keep_initial,
+        model_kind=primary_model,
+        residual_likelihood=args.residual_likelihood,
+        student_t_nu_delay=args.student_t_nu_delay,
+        student_t_nu_fft=args.student_t_nu_fft,
     )
-    if np.isfinite(args.clip_fft_residual_khz) and args.clip_fft_residual_khz > 0.0:
-        clip_limit_hz = float(args.clip_fft_residual_khz) * 1e3
-        clipped_fft_keep = fft_obs["fft_keep"] & (np.abs(joint_fit["fft_residuals_hz"]) <= clip_limit_hz)
-        if np.count_nonzero(clipped_fft_keep) >= base.MIN_POINTS:
-            joint_fit = fit_joint_delay_doppler(
-                measured,
-                times_ns,
-                rho_of_alt_m,
-                joint_fit["params"],
-                sigma_m,
-                fft_obs["fft_offset_hz"],
-                clipped_fft_keep,
-                args.sigma_fft_hz,
-                keep_rows=np.ones(len(times_ns), dtype=bool),
-                epoch_time_ns=fit_epoch_time_ns,
-                fit_station_bias=fit_station_bias,
-                fft_model=args.fft_model,
-                reference_chirp_rate_scale=args.reference_chirp_rate_scale,
-                path_keep=path_keep_initial,
-            )
-            joint_fit["fft_clip_limit_hz"] = float(clip_limit_hz)
-            joint_fit["n_fft_clipped_observations"] = int(np.count_nonzero(fft_obs["fft_keep"]) - np.count_nonzero(clipped_fft_keep))
-        else:
-            joint_fit["fft_clip_limit_hz"] = float(clip_limit_hz)
-            joint_fit["n_fft_clipped_observations"] = 0
+    clip_limit_hz = float(args.clip_fft_residual_khz) * 1e3
+    joint_fit = refit_with_auto_clipping(
+        joint_fit,
+        measured,
+        times_ns,
+        rho_of_alt_m,
+        sigma_m,
+        fft_obs,
+        np.asarray(fft_obs["fft_keep"], dtype=bool),
+        sigma_fft_hz,
+        fit_epoch_time_ns,
+        fit_station_bias,
+        args.fft_model,
+        args.reference_chirp_rate_scale,
+        path_keep_initial,
+        args.final_delay_residual_clip_m,
+        clip_limit_hz,
+        model_kind=primary_model,
+        residual_likelihood=args.residual_likelihood,
+        student_t_nu_delay=args.student_t_nu_delay,
+        student_t_nu_fft=args.student_t_nu_fft,
+    )
     final_fft_keep = np.asarray(joint_fit["fft_keep"], dtype=bool)
-    final_path_keep = delay_clip_mask_from_fit(joint_fit, args.final_delay_residual_clip_m)
-    n_delay_clipped = int(np.count_nonzero(joint_fit["path_keep"]) - np.count_nonzero(final_path_keep))
-    if n_delay_clipped > 0 and delay_clip_is_fit_usable(
-        final_path_keep,
-        final_fft_keep,
-        n_dyn=7,
-        fit_station_bias=fit_station_bias,
-    ):
-        joint_fit = fit_joint_delay_doppler(
-            measured,
-            times_ns,
-            rho_of_alt_m,
-            joint_fit["params"],
-            sigma_m,
-            fft_obs["fft_offset_hz"],
-            final_fft_keep,
-            args.sigma_fft_hz,
-            keep_rows=np.ones(len(times_ns), dtype=bool),
-            epoch_time_ns=fit_epoch_time_ns,
-            fit_station_bias=fit_station_bias,
-            fft_model=args.fft_model,
-            reference_chirp_rate_scale=args.reference_chirp_rate_scale,
-            path_keep=final_path_keep,
-            model_kind="ceplecha",
-        )
-        joint_fit["delay_clip_limit_m"] = float(args.final_delay_residual_clip_m)
-        joint_fit["n_delay_clipped_observations"] = n_delay_clipped
-    else:
-        joint_fit["delay_clip_limit_m"] = float(args.final_delay_residual_clip_m)
-        joint_fit["n_delay_clipped_observations"] = 0
-        final_path_keep = np.asarray(joint_fit["path_keep"], dtype=bool)
-    if radius_uncertainty_is_large(
+    final_path_keep = np.asarray(joint_fit["path_keep"], dtype=bool)
+    if str(joint_fit.get("dynamical_model", "ceplecha")) == "ceplecha" and radius_uncertainty_is_large(
         joint_fit,
         max_log10_radius_std=args.max_log10_radius_std_before_constant_velocity,
     ):
@@ -1888,7 +2777,7 @@ def main():
             sigma_m,
             fft_obs["fft_offset_hz"],
             final_fft_keep,
-            args.sigma_fft_hz,
+            sigma_fft_hz,
             keep_rows=np.ones(len(times_ns), dtype=bool),
             epoch_time_ns=fit_epoch_time_ns,
             fit_station_bias=fit_station_bias,
@@ -1896,6 +2785,9 @@ def main():
             reference_chirp_rate_scale=args.reference_chirp_rate_scale,
             path_keep=final_path_keep,
             model_kind="constant_velocity",
+            residual_likelihood=args.residual_likelihood,
+            student_t_nu_delay=args.student_t_nu_delay,
+            student_t_nu_fft=args.student_t_nu_fft,
         )
         constant_fit["delay_clip_limit_m"] = float(args.final_delay_residual_clip_m)
         constant_fit["n_delay_clipped_observations"] = inherited_n_delay_clipped
@@ -1919,7 +2811,7 @@ def main():
                 sigma_m,
                 fft_obs["fft_offset_hz"],
                 np.asarray(joint_fit["fft_keep"], dtype=bool),
-                args.sigma_fft_hz,
+                sigma_fft_hz,
                 keep_rows=np.ones(len(times_ns), dtype=bool),
                 epoch_time_ns=fit_epoch_time_ns,
                 fit_station_bias=fit_station_bias,
@@ -1927,6 +2819,9 @@ def main():
                 reference_chirp_rate_scale=args.reference_chirp_rate_scale,
                 path_keep=np.asarray(joint_fit["path_keep"], dtype=bool),
                 model_kind="constant_velocity",
+                residual_likelihood=args.residual_likelihood,
+                student_t_nu_delay=args.student_t_nu_delay,
+                student_t_nu_fft=args.student_t_nu_fft,
             )
             constant_candidate["fallback_from_ceplecha"] = True
             constant_candidate["fallback_reason"] = "force_model_reevaluation_constant_velocity_preferred"
@@ -1952,7 +2847,7 @@ def main():
             rho_of_alt_m,
             sigma_m,
             fft_obs,
-            args.sigma_fft_hz,
+            sigma_fft_hz,
             fit_epoch_time_ns,
             fit_station_bias,
             args.fft_model,
@@ -1962,6 +2857,11 @@ def main():
             args.bad_fit_retained_path_rms_m,
             args.bad_fit_retained_fft_rms_hz,
             max_retry=args.bad_fit_max_retry,
+            path_candidate_keep=path_keep_initial,
+            fft_candidate_keep=np.asarray(fft_obs["fft_keep"], dtype=bool),
+            residual_likelihood=args.residual_likelihood,
+            student_t_nu_delay=args.student_t_nu_delay,
+            student_t_nu_fft=args.student_t_nu_fft,
         )
         joint_fit["n_delay_clipped_observations"] = int(
             max(
@@ -1986,6 +2886,59 @@ def main():
     joint_fit["delay_seed_source"] = str(delay_seed_source)
     joint_fit["used_coincident_delay_seed"] = bool(use_coincident_seed and existing_seed is None)
     joint_fit["fit_mode"] = str(args.fit_mode)
+    joint_fit["residual_scale_model"] = str(args.residual_scale_model)
+    joint_fit["empirical_scale_beam_offset_source"] = "reference_fit_fixed" if args.residual_scale_model == "empirical_snr_beam" else ""
+    sigma_fft_arr = np.asarray(sigma_fft_hz, dtype=np.float64)
+    if sigma_fft_arr.ndim == 0:
+        sigma_fft_matrix = np.full_like(np.asarray(fft_obs["fft_offset_hz"], dtype=np.float64), float(sigma_fft_arr))
+    else:
+        sigma_fft_matrix = sigma_fft_arr
+    path_event_multiplier = event_residual_scale_multiplier(
+        joint_fit["path_residuals_m"],
+        sigma_m_measurement,
+        joint_fit["path_keep"],
+        args.student_t_nu_delay,
+    )
+    fft_event_multiplier = event_residual_scale_multiplier(
+        joint_fit["fft_residuals_hz"],
+        sigma_fft_matrix,
+        joint_fit["fft_keep"],
+        args.student_t_nu_fft,
+    )
+    path_measurement_sigma_m = np.asarray(sigma_m_measurement, dtype=np.float64) * path_event_multiplier
+    path_fit_sigma_m = np.asarray(sigma_m, dtype=np.float64) * path_event_multiplier
+    fft_event_sigma_hz = sigma_fft_matrix * fft_event_multiplier
+    joint_fit["path_catalog_sigma_m"] = np.asarray(sigma_m_measurement, dtype=np.float64)
+    joint_fit["path_measurement_sigma_m"] = path_measurement_sigma_m
+    joint_fit["path_fit_sigma_m"] = path_fit_sigma_m
+    joint_fit["fft_catalog_sigma_hz"] = sigma_fft_matrix
+    joint_fit["fft_event_sigma_hz"] = fft_event_sigma_hz
+    joint_fit["event_delay_sigma_multiplier"] = float(path_event_multiplier)
+    joint_fit["event_fft_sigma_multiplier"] = float(fft_event_multiplier)
+    joint_fit["local_uncertainty_caveat"] = (
+        "Parameter covariance is a local curvature approximation for the fitted residual objective; "
+        "for Student-t residuals it should not be interpreted as Gaussian measurement-error covariance."
+    )
+    joint_fit = add_bootstrap_uncertainty(
+        joint_fit,
+        measured,
+        times_ns,
+        rho_of_alt_m,
+        path_fit_sigma_m,
+        path_measurement_sigma_m,
+        fft_obs,
+        fft_event_sigma_hz,
+        fit_epoch_time_ns,
+        fit_station_bias,
+        args.fft_model,
+        args.reference_chirp_rate_scale,
+        args.residual_likelihood,
+        args.student_t_nu_delay,
+        args.student_t_nu_fft,
+        args.bootstrap_samples,
+        seed=args.bootstrap_seed,
+        method=args.bootstrap_method,
+    )
     if args.seed_from_existing_h5:
         joint_fit["seed_from_existing_h5"] = os.path.abspath(args.seed_from_existing_h5)
     output_base = args.output_base or f"{DEFAULT_OUTPUT_BASE}_{event_id}"
@@ -1995,7 +2948,7 @@ def main():
         delay_fit,
         joint_fit,
         fft_obs,
-        args.sigma_fft_hz,
+        sigma_fft_hz,
         args.zero_pad_factor,
         args.range_measurement,
         args.fft_gate_upsample_factor,
