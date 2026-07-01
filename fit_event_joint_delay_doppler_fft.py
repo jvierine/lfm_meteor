@@ -1959,11 +1959,11 @@ def segmented_radius_interval_text(joint_fit):
     n_boot = int(joint_fit.get("segmented_radius_bootstrap_samples_successful", 0))
     lines = []
     if np.isfinite(radius_m):
-        lines.append(rf"$r_0 = {radius_m * 1e6:.2g}\,\mu$m")
+        lines.append(rf"$r_0$ = {radius_m * 1e6:.2g} $\mu$m")
     if np.all(np.isfinite([radius_lo_m, radius_hi_m])):
         lines.append(rf"95% $r_0$: {radius_lo_m * 1e6:.2g}--{radius_hi_m * 1e6:.2g} $\mu$m")
     if np.isfinite(mass_kg):
-        lines.append(rf"$m_0 = {compact_sci(mass_kg)}$ kg")
+        lines.append(rf"$m_0$ = {compact_sci(mass_kg)} kg")
     if np.all(np.isfinite([mass_lo_kg, mass_hi_kg])):
         lines.append(rf"95% $m_0$: {compact_sci(mass_lo_kg)}--{compact_sci(mass_hi_kg)} kg")
     if n_boot > 0:

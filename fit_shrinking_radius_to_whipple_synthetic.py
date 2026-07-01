@@ -53,12 +53,12 @@ def forward(params, t_rel_s, times_ns, rho_of_alt_m):
     }
 
 
-def fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev):
+def fit_to_target(whipple_joint, x_target, v_target, x_itrs_for_density, position_sigma_m, velocity_sigma_mps, max_nfev):
     t_rel_s = np.asarray(whipple_joint["t_rel_s"], dtype=np.float64)
     times_ns = np.asarray(whipple_joint["time_ns"], dtype=np.int64)
-    x_target = np.asarray(whipple_joint["x_gcrs_m"], dtype=np.float64)
-    v_target = np.asarray(whipple_joint["v_gcrs_mps"], dtype=np.float64)
-    rho_of_alt_m, _meta = base.density_interpolator(times_ns, np.asarray(whipple_joint["x_itrs_m"], dtype=np.float64))
+    x_target = np.asarray(x_target, dtype=np.float64)
+    v_target = np.asarray(v_target, dtype=np.float64)
+    rho_of_alt_m, _meta = base.density_interpolator(times_ns, np.asarray(x_itrs_for_density, dtype=np.float64))
     x0 = x_target[0]
     v0 = v_target[0]
     lower = np.concatenate([x0 - 2.0e4, np.full(3, -1.2e5), [np.log10(cepl.MIN_RADIUS_M)]])
@@ -93,8 +93,15 @@ def fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev
     model = forward(result.x, t_rel_s, times_ns, rho_of_alt_m)
     dx = np.asarray(model["x_gcrs_m"], dtype=np.float64) - x_target
     dv = np.asarray(model["v_gcrs_mps"], dtype=np.float64) - v_target
-    whipple_path = np.asarray(whipple_joint["apparent_path_length_m"], dtype=np.float64)
-    whipple_rate = np.asarray(whipple_joint["path_rate_mps"], dtype=np.float64)
+    x_target_itrs, v_target_itrs = base.gcrs_state_samples_to_itrs(x_target, v_target, times_ns)
+    target_path_length, target_path_rate = gfit.link_total_paths_and_rates_m(
+        x_target_itrs,
+        v_target_itrs,
+        gfit.LINK_TX_POSITIONS_M,
+        gfit.LINK_RX_POSITIONS_M,
+    )
+    whipple_path = target_path_length + gfit.lfm_total_path_bias_m(target_path_rate)
+    whipple_rate = target_path_rate
     path_resid = np.asarray(model["apparent_path_length_m"], dtype=np.float64) - whipple_path
     rate_resid = np.asarray(model["path_rate_mps"], dtype=np.float64) - whipple_rate
     out = {
@@ -119,6 +126,91 @@ def fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev
     return out
 
 
+def fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev):
+    return fit_to_target(
+        whipple_joint,
+        np.asarray(whipple_joint["x_gcrs_m"], dtype=np.float64),
+        np.asarray(whipple_joint["v_gcrs_mps"], dtype=np.float64),
+        np.asarray(whipple_joint["x_itrs_m"], dtype=np.float64),
+        position_sigma_m,
+        velocity_sigma_mps,
+        max_nfev,
+    )
+
+
+def whipple_bootstrap_models(whipple_joint, n_samples):
+    params0 = np.asarray(whipple_joint["params"], dtype=np.float64)
+    samples = np.asarray(whipple_joint.get("bootstrap_params", []), dtype=np.float64)
+    if n_samples <= 0 or samples.ndim != 2 or samples.shape[0] == 0:
+        return []
+    if samples.shape[0] > n_samples:
+        idx = np.linspace(0, samples.shape[0] - 1, int(n_samples), dtype=np.int64)
+        samples = samples[idx]
+    t_rel_s = np.asarray(whipple_joint["t_rel_s"], dtype=np.float64)
+    times_ns = np.asarray(whipple_joint["time_ns"], dtype=np.int64)
+    rho_of_alt_m, _meta = base.density_interpolator(times_ns, np.asarray(whipple_joint["x_itrs_m"], dtype=np.float64))
+    out = []
+    for sample in samples:
+        try:
+            model = fit.forward_model_for_kind(
+                np.asarray(sample[: len(params0)], dtype=np.float64),
+                t_rel_s,
+                times_ns,
+                rho_of_alt_m,
+                "whipple_speed",
+            )
+        except Exception:
+            continue
+        if bool(model.get("ceplecha_success", False)):
+            out.append(model)
+    return out
+
+
+def add_bootstrap_uncertainty(fit_row, whipple_joint, n_samples, position_sigma_m, velocity_sigma_mps, max_nfev):
+    models = whipple_bootstrap_models(whipple_joint, int(n_samples))
+    radius = []
+    mass = []
+    velocity_rms = []
+    path_rms = []
+    rate_rms = []
+    for model in models:
+        try:
+            row = fit_to_target(
+                whipple_joint,
+                np.asarray(model["x_gcrs_m"], dtype=np.float64),
+                np.asarray(model["v_gcrs_mps"], dtype=np.float64),
+                np.asarray(model["x_itrs_m"], dtype=np.float64),
+                position_sigma_m,
+                velocity_sigma_mps,
+                max_nfev,
+            )
+        except Exception:
+            continue
+        if bool(row.get("optimizer_success", False)) and np.isfinite(row.get("initial_radius_m", np.nan)):
+            radius.append(float(row["initial_radius_m"]))
+            mass.append(float(row["initial_mass_kg"]))
+            velocity_rms.append(float(row["synthetic_velocity_rms_mps"]))
+            path_rms.append(float(row["synthetic_path_rms_m"]))
+            rate_rms.append(float(row["synthetic_path_rate_rms_mps"]))
+    fit_row["bootstrap_samples_requested"] = int(n_samples)
+    fit_row["bootstrap_samples_successful"] = int(len(radius))
+    if radius:
+        radius = np.asarray(radius, dtype=np.float64)
+        mass = np.asarray(mass, dtype=np.float64)
+        fit_row["bootstrap_initial_radius_samples_m"] = radius
+        fit_row["bootstrap_initial_mass_samples_kg"] = mass
+        fit_row["bootstrap_synthetic_velocity_rms_mps"] = np.asarray(velocity_rms, dtype=np.float64)
+        fit_row["bootstrap_synthetic_path_rms_m"] = np.asarray(path_rms, dtype=np.float64)
+        fit_row["bootstrap_synthetic_path_rate_rms_mps"] = np.asarray(rate_rms, dtype=np.float64)
+        fit_row["bootstrap_initial_radius_median_m"] = float(np.nanmedian(radius))
+        fit_row["bootstrap_initial_radius_lo95_m"] = float(np.nanpercentile(radius, 2.5))
+        fit_row["bootstrap_initial_radius_hi95_m"] = float(np.nanpercentile(radius, 97.5))
+        fit_row["bootstrap_initial_mass_median_kg"] = float(np.nanmedian(mass))
+        fit_row["bootstrap_initial_mass_lo95_kg"] = float(np.nanpercentile(mass, 2.5))
+        fit_row["bootstrap_initial_mass_hi95_kg"] = float(np.nanpercentile(mass, 97.5))
+    return fit_row
+
+
 def write_event(path, event_id, fit_row, source_h5, whipple_h5, position_sigma_m, velocity_sigma_mps):
     with h5py.File(path, "w") as h:
         h.attrs["event_id"] = event_id
@@ -136,7 +228,7 @@ def write_event(path, event_id, fit_row, source_h5, whipple_h5, position_sigma_m
                 h[key] = value
 
 
-def fit_one(whipple_h5, source_dir, output_dir, position_sigma_m, velocity_sigma_mps, max_nfev, overwrite):
+def fit_one(whipple_h5, source_dir, output_dir, position_sigma_m, velocity_sigma_mps, max_nfev, bootstrap_samples, bootstrap_max_nfev, overwrite):
     whipple_h5 = Path(whipple_h5)
     event_id = event_id_from_path(whipple_h5)
     source_h5 = Path(source_dir) / whipple_h5.name
@@ -147,6 +239,14 @@ def fit_one(whipple_h5, source_dir, output_dir, position_sigma_m, velocity_sigma
     with h5py.File(whipple_h5, "r") as h:
         whipple_joint = load_group(h["joint_fit"])
     fit_row = fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev)
+    fit_row = add_bootstrap_uncertainty(
+        fit_row,
+        whipple_joint,
+        int(bootstrap_samples),
+        position_sigma_m,
+        velocity_sigma_mps,
+        int(bootstrap_max_nfev),
+    )
     os.makedirs(output_dir, exist_ok=True)
     write_event(output_path, event_id, fit_row, source_h5, whipple_h5, position_sigma_m, velocity_sigma_mps)
     return event_id, "ok", int(fit_row["optimizer_success"]), float(fit_row["synthetic_velocity_rms_mps"]), float(fit_row["initial_radius_m"])
@@ -173,6 +273,8 @@ def main():
     parser.add_argument("--position-sigma-m", type=float, default=10.0)
     parser.add_argument("--velocity-sigma-mps", type=float, default=50.0)
     parser.add_argument("--max-nfev", type=int, default=120)
+    parser.add_argument("--bootstrap-samples", type=int, default=0)
+    parser.add_argument("--bootstrap-max-nfev", type=int, default=80)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -186,13 +288,34 @@ def main():
     rows = []
     if args.jobs <= 1:
         for idx, path in enumerate(whipple_paths, 1):
-            row = fit_one(path, args.source_dir, args.output_dir, args.position_sigma_m, args.velocity_sigma_mps, args.max_nfev, args.overwrite)
+            row = fit_one(
+                path,
+                args.source_dir,
+                args.output_dir,
+                args.position_sigma_m,
+                args.velocity_sigma_mps,
+                args.max_nfev,
+                args.bootstrap_samples,
+                args.bootstrap_max_nfev,
+                args.overwrite,
+            )
             rows.append(row)
             print(f"[{idx}/{len(whipple_paths)}] {row[1]} {row[0]} success={row[2]} vel_rms={row[3]:.1f} r0_um={row[4] * 1e6:.2f}", flush=True)
     else:
         with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
             futures = [
-                pool.submit(fit_one, path, args.source_dir, args.output_dir, args.position_sigma_m, args.velocity_sigma_mps, args.max_nfev, args.overwrite)
+                pool.submit(
+                    fit_one,
+                    path,
+                    args.source_dir,
+                    args.output_dir,
+                    args.position_sigma_m,
+                    args.velocity_sigma_mps,
+                    args.max_nfev,
+                    args.bootstrap_samples,
+                    args.bootstrap_max_nfev,
+                    args.overwrite,
+                )
                 for path in whipple_paths
             ]
             for idx, fut in enumerate(concurrent.futures.as_completed(futures), 1):

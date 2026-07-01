@@ -31,6 +31,14 @@ def inject_shrinking_radius_fit(joint_fit, shrinking_h5):
         joint_fit["segmented_radius_initial_radius_m"] = float(h.attrs.get("initial_radius_m", np.nan))
         joint_fit["segmented_radius_initial_mass_kg"] = float(h.attrs.get("initial_mass_kg", np.nan))
         joint_fit["segmented_radius_bootstrap_samples_successful"] = int(h.attrs.get("bootstrap_samples_successful", 0))
+        interval_map = {
+            "bootstrap_initial_radius_lo95_m": "segmented_radius_initial_radius_lo95_m",
+            "bootstrap_initial_radius_hi95_m": "segmented_radius_initial_radius_hi95_m",
+            "bootstrap_initial_mass_lo95_kg": "segmented_radius_initial_mass_lo95_kg",
+            "bootstrap_initial_mass_hi95_kg": "segmented_radius_initial_mass_hi95_kg",
+        }
+        for h5_key, plot_key in interval_map.items():
+            joint_fit[plot_key] = float(h.attrs.get(h5_key, np.nan))
         joint_fit["segmented_radius_v_gcrs_mps"] = np.asarray(h["v_gcrs_mps"][()], dtype=np.float64)
         joint_fit["segmented_radius_radius_m"] = np.asarray(h["radius_m"][()], dtype=np.float64)
         joint_fit["segmented_radius_mass_kg"] = np.asarray(h["mass_kg"][()], dtype=np.float64)
