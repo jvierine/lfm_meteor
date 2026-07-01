@@ -19,7 +19,7 @@ from fit_whipple_jacchia_catalog_from_h5 import load_group
 DEFAULT_SOURCE_DIR = Path("results/tristatic_student_t_bootstrap_orbit100_20260630")
 DEFAULT_WHIPPLE_DIR = Path("results/tristatic_whipple_jacchia_bootstrap_orbit100_20260701")
 DEFAULT_OUTPUT_DIR = Path("results/tristatic_segmented_radius_from_whipple_20260701")
-RADIUS_GRID_UM = np.asarray([5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0], dtype=np.float64)
+RADIUS_GRID_UM = np.asarray([10.0, 50.0, 200.0], dtype=np.float64)
 
 
 def event_id_from_path(path):
@@ -93,9 +93,7 @@ def segmented_radius_model(params, t_rel_s, times_ns, rho_of_alt_m, x0_ref_gcrs_
             state[2] = radius0_m[seg]
         if i > 0:
             dt = float(t_s - last_t)
-            n_step = max(1, int(np.ceil(abs(dt) / max(cepl.CEPLECHA_SAMPLE_DT_S, 1e-4))))
-            for _ in range(n_step):
-                state = rk4_step(state, dt / n_step, x0_ref_gcrs_m, direction, rho_of_alt_m)
+            state = rk4_step(state, dt, x0_ref_gcrs_m, direction, rho_of_alt_m)
             if i in starts:
                 state[2] = radius0_m[seg]
         x_gcrs[i] = x0_ref_gcrs_m + state[0] * direction
@@ -171,7 +169,7 @@ def fit_segment_count(source_joint, source_fft, whipple_joint, n_segments):
         lower = np.concatenate([[-5000.0, 5e3], np.full(n_radius, np.log10(cepl.MIN_RADIUS_M)), np.full(3, -500e3)])
         upper = np.concatenate([[5000.0, 90e3], np.full(n_radius, np.log10(cepl.MAX_RADIUS_M)), np.full(3, 500e3)])
         scale = np.concatenate([[500.0, 1e4], np.ones(n_radius), np.full(3, 5e4)])
-        result = so.least_squares(residual, np.clip(x0, lower, upper), bounds=(lower, upper), x_scale=scale, max_nfev=240)
+        result = so.least_squares(residual, np.clip(x0, lower, upper), bounds=(lower, upper), x_scale=scale, max_nfev=100)
         value = float(np.sum(residual(result.x) ** 2.0))
         if best is None or value < best["objective"]:
             best = {"result": result, "objective": value}
