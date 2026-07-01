@@ -57,7 +57,8 @@ def rk4_step(state, dt_s, x0_gcrs_m, direction, rho_of_alt_m):
         alt_m = float(np.linalg.norm(x) - cepl.SPHERICAL_EARTH_RADIUS_M)
         rho = float(rho_of_alt_m(alt_m))
         radius = float(np.clip(radius_m, cepl.MIN_RADIUS_M, cepl.MAX_RADIUS_M))
-        speed_abs = abs(float(speed_mps))
+        speed_mps = float(np.clip(speed_mps, -1.2e5, 1.2e5))
+        speed_abs = abs(speed_mps)
         dv_dt = -(3.0 / 4.0) * rho * speed_abs * speed_mps / (cepl.METEOROID_DENSITY_KG_M3 * radius)
         dr_dt = -rho * cepl.ABLATION_SIGMA_KG_J * speed_abs**3.0 / (8.0 * cepl.METEOROID_DENSITY_KG_M3)
         return np.asarray([speed_mps, dv_dt, dr_dt], dtype=np.float64)
@@ -70,6 +71,7 @@ def rk4_step(state, dt_s, x0_gcrs_m, direction, rho_of_alt_m):
     k3 = deriv(y + 0.5 * dt_s * k2)
     k4 = deriv(y + dt_s * k3)
     out = y + (dt_s / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+    out[1] = float(np.clip(out[1], -1.2e5, 1.2e5))
     out[2] = float(np.clip(out[2], cepl.MIN_RADIUS_M, cepl.MAX_RADIUS_M))
     return out
 
@@ -151,7 +153,10 @@ def fit_segment_count(source_joint, source_fft, whipple_joint, n_segments):
     def residual(x):
         dyn = x[: 2 + n_radius]
         station_bias = x[2 + n_radius : 2 + n_radius + 3]
-        model = segmented_radius_model(dyn, t_rel_s, times_ns, rho_of_alt_m, x0_ref, direction, n_radius)
+        try:
+            model = segmented_radius_model(dyn, t_rel_s, times_ns, rho_of_alt_m, x0_ref, direction, n_radius)
+        except Exception:
+            return np.full(int(np.count_nonzero(path_keep) + np.count_nonzero(fft_keep)), 1e6, dtype=np.float64)
         apparent = model["apparent_path_length_m"]
         geo = model["path_length_m"]
         doppler = model["doppler_hz"]
@@ -240,7 +245,8 @@ def fit_one(source_h5, whipple_dir, output_dir, max_segments, overwrite):
     whipple_h5 = Path(whipple_dir) / source_h5.name
     output_path = Path(output_dir) / f"segmented_radius_{event_id}.h5"
     if output_path.exists() and not overwrite:
-        return event_id, "exists", np.nan, -1
+        with h5py.File(output_path, "r") as h:
+            return event_id, "exists", float(h.attrs.get("best_bic", np.nan)), int(h.attrs.get("best_n_segments", -1))
     with h5py.File(source_h5, "r") as h:
         source_joint = load_group(h["joint_fit"])
         source_fft = load_group(h["fft_observations"])
