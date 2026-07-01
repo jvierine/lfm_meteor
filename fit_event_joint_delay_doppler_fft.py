@@ -2288,7 +2288,8 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
     ax.set_title("Model along-track velocity")
     ax.ticklabel_format(axis="y", style="plain", useOffset=False)
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="upper right", fontsize=7.4, framealpha=0.78, borderpad=0.35, labelspacing=0.35)
+    legend = ax.legend(loc="upper right", fontsize=7.4, framealpha=0.78, borderpad=0.35, labelspacing=0.35)
+    legend.set_zorder(100)
     ax.text(
         0.04,
         0.05,
