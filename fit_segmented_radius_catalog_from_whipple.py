@@ -3,6 +3,8 @@ import concurrent.futures
 import os
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
 import h5py
 import numpy as np
 import scipy.optimize as so
@@ -10,7 +12,7 @@ import scipy.optimize as so
 import fit_all_ballistic_snr_weighted as base
 import fit_all_ceplecha_snr_weighted as cepl
 import fit_event_joint_delay_doppler_fft as fit
-import fit_trajectory_correlated as gfit
+import fit_gcrs_trajectories_lfm_ambiguity as gfit
 from fit_whipple_jacchia_catalog_from_h5 import load_group
 
 
