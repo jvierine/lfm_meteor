@@ -20,6 +20,7 @@ DEFAULT_SOURCE_DIR = Path("results/tristatic_student_t_bootstrap_orbit100_202606
 DEFAULT_WHIPPLE_DIR = Path("results/tristatic_whipple_jacchia_bootstrap_orbit100_20260701")
 DEFAULT_OUTPUT_DIR = Path("results/tristatic_shrinking_radius_to_whipple_synthetic_20260701")
 RADIUS_GRID_UM = np.asarray([1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0], dtype=np.float64)
+STATE_VECTOR_SIZE = 6
 
 
 def mass_from_radius(radius_m):
@@ -53,7 +54,118 @@ def forward(params, t_rel_s, times_ns, rho_of_alt_m):
     }
 
 
-def fit_to_target(whipple_joint, x_target, v_target, x_itrs_for_density, position_sigma_m, velocity_sigma_mps, max_nfev):
+def bootstrap_state_covariance(
+    whipple_joint,
+    position_sigma_floor_m=1.0,
+    velocity_sigma_floor_mps=5.0,
+    covariance_shrinkage=0.05,
+):
+    """Return per-time whitening matrices from WJ bootstrap state covariance.
+
+    The state vector is [x, y, z, vx, vy, vz] in GCRS coordinates.  Each
+    whitening matrix W_k satisfies ||W_k delta_z_k||^2 ~= delta_z_k^T C_k^-1
+    delta_z_k for the regularized empirical bootstrap covariance C_k.
+    """
+    x_boot = np.asarray(whipple_joint.get("bootstrap_x_gcrs_m", []), dtype=np.float64)
+    v_boot = np.asarray(whipple_joint.get("bootstrap_v_gcrs_mps", []), dtype=np.float64)
+    x_nom = np.asarray(whipple_joint["x_gcrs_m"], dtype=np.float64)
+    n_times = x_nom.shape[0]
+    floor_diag = np.asarray(
+        [position_sigma_floor_m**2] * 3 + [velocity_sigma_floor_mps**2] * 3,
+        dtype=np.float64,
+    )
+    fallback_inv_sigma = np.asarray(
+        [1.0 / position_sigma_floor_m] * 3 + [1.0 / velocity_sigma_floor_mps] * 3,
+        dtype=np.float64,
+    )
+    fallback = np.repeat(np.diag(fallback_inv_sigma)[None, :, :], n_times, axis=0)
+    meta = {
+        "state_weighting": "fixed_floor",
+        "bootstrap_state_covariance_available": False,
+        "bootstrap_state_covariance_samples": 0,
+        "bootstrap_state_covariance_min_samples": 0,
+        "bootstrap_state_covariance_median_condition": np.nan,
+        "bootstrap_state_covariance_max_condition": np.nan,
+        "state_covariance_position_sigma_floor_m": float(position_sigma_floor_m),
+        "state_covariance_velocity_sigma_floor_mps": float(velocity_sigma_floor_mps),
+        "state_covariance_shrinkage": float(covariance_shrinkage),
+    }
+    if x_boot.ndim != 3 or v_boot.ndim != 3 or x_boot.shape != v_boot.shape or x_boot.shape[1:] != x_nom.shape:
+        return fallback, meta
+
+    state = np.concatenate([x_boot, v_boot], axis=2)
+    whitening = np.empty((n_times, STATE_VECTOR_SIZE, STATE_VECTOR_SIZE), dtype=np.float64)
+    conditions = []
+    sample_counts = []
+    shrink = float(np.clip(covariance_shrinkage, 0.0, 1.0))
+    for k in range(n_times):
+        samples = state[:, k, :]
+        finite = np.all(np.isfinite(samples), axis=1)
+        samples = samples[finite]
+        sample_counts.append(int(samples.shape[0]))
+        if samples.shape[0] < STATE_VECTOR_SIZE + 2:
+            whitening[k] = fallback[k]
+            conditions.append(np.nan)
+            continue
+        cov = np.cov(samples, rowvar=False)
+        cov = np.asarray(cov, dtype=np.float64)
+        diag_cov = np.diag(np.clip(np.diag(cov), 0.0, np.inf))
+        cov = (1.0 - shrink) * cov + shrink * diag_cov
+        cov = cov + np.diag(floor_diag)
+        try:
+            chol = np.linalg.cholesky(cov)
+            whitening[k] = np.linalg.solve(chol, np.eye(STATE_VECTOR_SIZE))
+            conditions.append(float(np.linalg.cond(cov)))
+        except np.linalg.LinAlgError:
+            whitening[k] = fallback[k]
+            conditions.append(np.nan)
+
+    valid_conditions = np.asarray([c for c in conditions if np.isfinite(c)], dtype=np.float64)
+    meta.update(
+        {
+            "state_weighting": "whipple_bootstrap_state_covariance",
+            "bootstrap_state_covariance_available": True,
+            "bootstrap_state_covariance_samples": int(x_boot.shape[0]),
+            "bootstrap_state_covariance_min_samples": int(np.min(sample_counts)) if sample_counts else 0,
+            "bootstrap_state_covariance_median_condition": float(np.nanmedian(valid_conditions))
+            if valid_conditions.size
+            else np.nan,
+            "bootstrap_state_covariance_max_condition": float(np.nanmax(valid_conditions))
+            if valid_conditions.size
+            else np.nan,
+        }
+    )
+    return whitening, meta
+
+
+def fixed_state_whitening(n_times, position_sigma_m, velocity_sigma_mps):
+    inv_sigma = np.asarray([1.0 / position_sigma_m] * 3 + [1.0 / velocity_sigma_mps] * 3, dtype=np.float64)
+    whitening = np.repeat(np.diag(inv_sigma)[None, :, :], int(n_times), axis=0)
+    meta = {
+        "state_weighting": "fixed_diagonal",
+        "bootstrap_state_covariance_available": False,
+        "bootstrap_state_covariance_samples": 0,
+        "bootstrap_state_covariance_min_samples": 0,
+        "bootstrap_state_covariance_median_condition": np.nan,
+        "bootstrap_state_covariance_max_condition": np.nan,
+        "state_covariance_position_sigma_floor_m": float(position_sigma_m),
+        "state_covariance_velocity_sigma_floor_mps": float(velocity_sigma_mps),
+        "state_covariance_shrinkage": np.nan,
+    }
+    return whitening, meta
+
+
+def fit_to_target(
+    whipple_joint,
+    x_target,
+    v_target,
+    x_itrs_for_density,
+    position_sigma_m,
+    velocity_sigma_mps,
+    max_nfev,
+    state_whitening=None,
+    state_weighting_meta=None,
+):
     t_rel_s = np.asarray(whipple_joint["t_rel_s"], dtype=np.float64)
     times_ns = np.asarray(whipple_joint["time_ns"], dtype=np.int64)
     x_target = np.asarray(x_target, dtype=np.float64)
@@ -64,6 +176,9 @@ def fit_to_target(whipple_joint, x_target, v_target, x_itrs_for_density, positio
     lower = np.concatenate([x0 - 2.0e4, np.full(3, -1.2e5), [np.log10(cepl.MIN_RADIUS_M)]])
     upper = np.concatenate([x0 + 2.0e4, np.full(3, 1.2e5), [np.log10(cepl.MAX_RADIUS_M)]])
     scale = np.asarray([1.0e3, 1.0e3, 1.0e3, 1.0e4, 1.0e4, 1.0e4, 1.0], dtype=np.float64)
+    if state_whitening is None:
+        state_whitening, state_weighting_meta = fixed_state_whitening(len(t_rel_s), position_sigma_m, velocity_sigma_mps)
+    state_whitening = np.asarray(state_whitening, dtype=np.float64)
 
     def residual(params):
         try:
@@ -72,9 +187,14 @@ def fit_to_target(whipple_joint, x_target, v_target, x_itrs_for_density, positio
             return np.full(6 * len(t_rel_s), 1e6, dtype=np.float64)
         if not model["ceplecha_success"]:
             return np.full(6 * len(t_rel_s), 1e6, dtype=np.float64)
-        dx = (np.asarray(model["x_gcrs_m"], dtype=np.float64) - x_target) / float(position_sigma_m)
-        dv = (np.asarray(model["v_gcrs_mps"], dtype=np.float64) - v_target) / float(velocity_sigma_mps)
-        return np.concatenate([dx.ravel(), dv.ravel()])
+        delta = np.concatenate(
+            [
+                np.asarray(model["x_gcrs_m"], dtype=np.float64) - x_target,
+                np.asarray(model["v_gcrs_mps"], dtype=np.float64) - v_target,
+            ],
+            axis=1,
+        )
+        return np.einsum("kij,kj->ki", state_whitening, delta).ravel()
 
     best = None
     for radius_um in RADIUS_GRID_UM:
@@ -121,12 +241,13 @@ def fit_to_target(whipple_joint, x_target, v_target, x_itrs_for_density, positio
         "path_residuals_m": path_resid,
         "path_rate_residuals_mps": rate_resid,
         "dynamical_model": "ceplecha_to_whipple_synthetic",
+        **(state_weighting_meta or {}),
         **model,
     }
     return out
 
 
-def fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev):
+def fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev, state_whitening=None, state_weighting_meta=None):
     return fit_to_target(
         whipple_joint,
         np.asarray(whipple_joint["x_gcrs_m"], dtype=np.float64),
@@ -135,6 +256,8 @@ def fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev
         position_sigma_m,
         velocity_sigma_mps,
         max_nfev,
+        state_whitening=state_whitening,
+        state_weighting_meta=state_weighting_meta,
     )
 
 
@@ -166,7 +289,16 @@ def whipple_bootstrap_models(whipple_joint, n_samples):
     return out
 
 
-def add_bootstrap_uncertainty(fit_row, whipple_joint, n_samples, position_sigma_m, velocity_sigma_mps, max_nfev):
+def add_bootstrap_uncertainty(
+    fit_row,
+    whipple_joint,
+    n_samples,
+    position_sigma_m,
+    velocity_sigma_mps,
+    max_nfev,
+    state_whitening=None,
+    state_weighting_meta=None,
+):
     models = whipple_bootstrap_models(whipple_joint, int(n_samples))
     radius = []
     mass = []
@@ -183,6 +315,8 @@ def add_bootstrap_uncertainty(fit_row, whipple_joint, n_samples, position_sigma_
                 position_sigma_m,
                 velocity_sigma_mps,
                 max_nfev,
+                state_whitening=state_whitening,
+                state_weighting_meta=state_weighting_meta,
             )
         except Exception:
             continue
@@ -228,7 +362,19 @@ def write_event(path, event_id, fit_row, source_h5, whipple_h5, position_sigma_m
                 h[key] = value
 
 
-def fit_one(whipple_h5, source_dir, output_dir, position_sigma_m, velocity_sigma_mps, max_nfev, bootstrap_samples, bootstrap_max_nfev, overwrite):
+def fit_one(
+    whipple_h5,
+    source_dir,
+    output_dir,
+    position_sigma_m,
+    velocity_sigma_mps,
+    max_nfev,
+    bootstrap_samples,
+    bootstrap_max_nfev,
+    overwrite,
+    use_bootstrap_covariance,
+    covariance_shrinkage,
+):
     whipple_h5 = Path(whipple_h5)
     event_id = event_id_from_path(whipple_h5)
     source_h5 = Path(source_dir) / whipple_h5.name
@@ -238,7 +384,27 @@ def fit_one(whipple_h5, source_dir, output_dir, position_sigma_m, velocity_sigma
             return event_id, "exists", int(h.attrs.get("optimizer_success", False)), float(h.attrs.get("synthetic_velocity_rms_mps", np.nan)), float(h.attrs.get("initial_radius_m", np.nan))
     with h5py.File(whipple_h5, "r") as h:
         whipple_joint = load_group(h["joint_fit"])
-    fit_row = fit_to_whipple(whipple_joint, position_sigma_m, velocity_sigma_mps, max_nfev)
+    if use_bootstrap_covariance:
+        state_whitening, state_weighting_meta = bootstrap_state_covariance(
+            whipple_joint,
+            position_sigma_floor_m=position_sigma_m,
+            velocity_sigma_floor_mps=velocity_sigma_mps,
+            covariance_shrinkage=covariance_shrinkage,
+        )
+    else:
+        state_whitening, state_weighting_meta = fixed_state_whitening(
+            len(np.asarray(whipple_joint["t_rel_s"], dtype=np.float64)),
+            position_sigma_m,
+            velocity_sigma_mps,
+        )
+    fit_row = fit_to_whipple(
+        whipple_joint,
+        position_sigma_m,
+        velocity_sigma_mps,
+        max_nfev,
+        state_whitening=state_whitening,
+        state_weighting_meta=state_weighting_meta,
+    )
     fit_row = add_bootstrap_uncertainty(
         fit_row,
         whipple_joint,
@@ -246,6 +412,8 @@ def fit_one(whipple_h5, source_dir, output_dir, position_sigma_m, velocity_sigma
         position_sigma_m,
         velocity_sigma_mps,
         int(bootstrap_max_nfev),
+        state_whitening=state_whitening,
+        state_weighting_meta=state_weighting_meta,
     )
     os.makedirs(output_dir, exist_ok=True)
     write_event(output_path, event_id, fit_row, source_h5, whipple_h5, position_sigma_m, velocity_sigma_mps)
@@ -272,6 +440,8 @@ def main():
     parser.add_argument("--event-id", action="append", default=[])
     parser.add_argument("--position-sigma-m", type=float, default=10.0)
     parser.add_argument("--velocity-sigma-mps", type=float, default=50.0)
+    parser.add_argument("--no-bootstrap-covariance", action="store_true")
+    parser.add_argument("--covariance-shrinkage", type=float, default=0.05)
     parser.add_argument("--max-nfev", type=int, default=120)
     parser.add_argument("--bootstrap-samples", type=int, default=0)
     parser.add_argument("--bootstrap-max-nfev", type=int, default=80)
@@ -298,6 +468,8 @@ def main():
                 args.bootstrap_samples,
                 args.bootstrap_max_nfev,
                 args.overwrite,
+                not args.no_bootstrap_covariance,
+                args.covariance_shrinkage,
             )
             rows.append(row)
             print(f"[{idx}/{len(whipple_paths)}] {row[1]} {row[0]} success={row[2]} vel_rms={row[3]:.1f} r0_um={row[4] * 1e6:.2f}", flush=True)
@@ -315,6 +487,8 @@ def main():
                     args.bootstrap_samples,
                     args.bootstrap_max_nfev,
                     args.overwrite,
+                    not args.no_bootstrap_covariance,
+                    args.covariance_shrinkage,
                 )
                 for path in whipple_paths
             ]

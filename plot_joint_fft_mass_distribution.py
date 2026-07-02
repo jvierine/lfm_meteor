@@ -11,6 +11,7 @@ import fit_all_ceplecha_snr_weighted as cepl
 
 
 DEFAULT_CATALOG_DIR = "results/tristatic"
+DEFAULT_WHIPPLE_DIR = "results/tristatic_whipple_jacchia_bootstrap_orbit100_20260701"
 DEFAULT_OUTPUT_BASE = "results/joint_fft_mass_distribution_v20260618a"
 PAPER_FIGURE_DIR = "/Users/jvi019/src/sanya_tristatic_paper/figures"
 
@@ -61,7 +62,7 @@ def finite_attr(group, name):
     return value if np.isfinite(value) else np.nan
 
 
-def load_rows(catalog_dir):
+def load_joint_rows(catalog_dir):
     rows = []
     for path in sorted(glob.glob(os.path.join(catalog_dir, "joint_delay_doppler_fft_tri_*.h5"))):
         with h5py.File(path, "r") as h:
@@ -110,6 +111,57 @@ def load_rows(catalog_dir):
     return rows
 
 
+def load_shrinking_radius_to_whipple_rows(catalog_dir, whipple_dir):
+    rows = []
+    for path in sorted(glob.glob(os.path.join(catalog_dir, "shrinking_radius_to_whipple_tri_*.h5"))):
+        with h5py.File(path, "r") as h:
+            event_id = decode(h.attrs["event_id"])
+            whipple_path = os.path.join(whipple_dir, f"joint_delay_doppler_fft_{event_id}.h5")
+            if not os.path.exists(whipple_path):
+                print(f"warning: missing Whipple-Jacchia file for {event_id}: {whipple_path}")
+                continue
+            with h5py.File(whipple_path, "r") as hw:
+                j = hw["joint_fit"]
+                speed = float(j["speed_km_s"][0])
+                n_points = int(j.attrs["n_points"])
+                n_fft_observations = int(j.attrs["n_fft_observations"])
+                rms_fft_residual_hz = float(j.attrs["rms_fft_residual_hz"])
+                rms_total_path_residual_m = float(j.attrs["rms_total_path_residual_m"])
+            rows.append(
+                {
+                    "event_id": event_id,
+                    "initial_radius_m": finite_attr(h, "initial_radius_m"),
+                    "initial_mass_kg": finite_attr(h, "initial_mass_kg"),
+                    "radius_95_lo_m": finite_attr(h, "bootstrap_initial_radius_lo95_m"),
+                    "radius_95_hi_m": finite_attr(h, "bootstrap_initial_radius_hi95_m"),
+                    "mass_95_lo_kg": finite_attr(h, "bootstrap_initial_mass_lo95_kg"),
+                    "mass_95_hi_kg": finite_attr(h, "bootstrap_initial_mass_hi95_kg"),
+                    "bootstrap_initial_radius_median_m": finite_attr(h, "bootstrap_initial_radius_median_m"),
+                    "bootstrap_initial_mass_median_kg": finite_attr(h, "bootstrap_initial_mass_median_kg"),
+                    "log10_radius_std": np.nan,
+                    "uncertainty_source": 1,
+                    "optimizer_success": float(bool(h.attrs.get("optimizer_success", False))),
+                    "bootstrap_samples_successful": int(h.attrs.get("bootstrap_samples_successful", 0)),
+                    "synthetic_velocity_rms_mps": finite_attr(h, "synthetic_velocity_rms_mps"),
+                    "synthetic_path_rms_m": finite_attr(h, "synthetic_path_rms_m"),
+                    "synthetic_path_rate_rms_mps": finite_attr(h, "synthetic_path_rate_rms_mps"),
+                    "n_points": n_points,
+                    "n_fft_observations": n_fft_observations,
+                    "rms_fft_residual_hz": rms_fft_residual_hz,
+                    "rms_total_path_residual_m": rms_total_path_residual_m,
+                    "initial_speed_km_s": speed,
+                }
+            )
+    return rows
+
+
+def load_rows(catalog_dir, whipple_dir):
+    rows = load_shrinking_radius_to_whipple_rows(catalog_dir, whipple_dir)
+    if rows:
+        return rows
+    return load_joint_rows(catalog_dir)
+
+
 def selected_mask(rows, args):
     radius = np.asarray([r["initial_radius_m"] for r in rows], dtype=np.float64)
     log10_std = np.asarray([r["log10_radius_std"] for r in rows], dtype=np.float64)
@@ -122,6 +174,11 @@ def selected_mask(rows, args):
     mass = np.asarray([r["initial_mass_kg"] for r in rows], dtype=np.float64)
     radius_lo = np.asarray([r["radius_95_lo_m"] for r in rows], dtype=np.float64)
     radius_hi = np.asarray([r["radius_95_hi_m"] for r in rows], dtype=np.float64)
+    optimizer_success = np.asarray([r.get("optimizer_success", 1.0) for r in rows], dtype=np.float64)
+    bootstrap_samples_successful = np.asarray(
+        [r.get("bootstrap_samples_successful", np.inf) for r in rows],
+        dtype=np.float64,
+    )
     mass_95_width_dex = np.log10(mass_hi) - np.log10(mass_lo)
     mask = (
         np.isfinite(radius)
@@ -135,6 +192,8 @@ def selected_mask(rows, args):
         & (mass_hi > mass)
         & (radius > 1.01 * cepl.MIN_RADIUS_M)
         & (radius < 0.99 * cepl.MAX_RADIUS_M)
+        & (optimizer_success > 0.0)
+        & (bootstrap_samples_successful >= args.min_bootstrap_samples)
         & (mass_95_width_dex <= args.max_mass_95_width_dex)
     )
     if np.isfinite(args.max_log10_radius_std):
@@ -154,7 +213,9 @@ def write_h5(output_base, rows, mask, args):
     with h5py.File(output_base + ".h5", "w") as h:
         h.attrs["script"] = os.path.basename(__file__)
         h.attrs["catalog_dir"] = args.catalog_dir
+        h.attrs["whipple_dir"] = args.whipple_dir
         h.attrs["min_fft_observations"] = int(args.min_fft_observations)
+        h.attrs["min_bootstrap_samples"] = int(args.min_bootstrap_samples)
         h.attrs["max_fft_rms_hz"] = float(args.max_fft_rms_hz)
         h.attrs["max_path_rms_m"] = float(args.max_path_rms_m)
         h.attrs["max_log10_radius_std"] = float(args.max_log10_radius_std)
@@ -292,8 +353,10 @@ def copy_to_paper(output_base):
 def main():
     parser = argparse.ArgumentParser(description="Plot joint delay--FFT initial-mass distribution with 95% error bars.")
     parser.add_argument("--catalog-dir", default=DEFAULT_CATALOG_DIR)
+    parser.add_argument("--whipple-dir", default=DEFAULT_WHIPPLE_DIR)
     parser.add_argument("--output-base", default=DEFAULT_OUTPUT_BASE)
     parser.add_argument("--min-fft-observations", type=int, default=0)
+    parser.add_argument("--min-bootstrap-samples", type=int, default=20)
     parser.add_argument("--max-fft-rms-hz", type=float, default=np.inf)
     parser.add_argument("--max-path-rms-m", type=float, default=np.inf)
     parser.add_argument("--max-log10-radius-std", type=float, default=0.5)
@@ -301,7 +364,7 @@ def main():
     parser.add_argument("--copy-to-paper", action="store_true")
     args = parser.parse_args()
 
-    rows = load_rows(args.catalog_dir)
+    rows = load_rows(args.catalog_dir, args.whipple_dir)
     if not rows:
         raise RuntimeError(f"No joint event HDF5 files found in {args.catalog_dir}")
     mask = selected_mask(rows, args)
