@@ -2051,13 +2051,30 @@ def deterministic_rng(event_id):
     return np.random.default_rng(seed)
 
 
+def centered_percentile_band(samples, nominal, lo_q=2.5, hi_q=97.5):
+    """Return a bootstrap-width band centered on the nominal fitted curve."""
+
+    samples = np.asarray(samples, dtype=np.float64)
+    nominal = np.asarray(nominal, dtype=np.float64)
+    sample_center = np.nanmedian(samples, axis=0)
+    delta = samples - sample_center[None, :]
+    lo = nominal + np.nanpercentile(delta, lo_q, axis=0)
+    hi = nominal + np.nanpercentile(delta, hi_q, axis=0)
+    return np.minimum(lo, nominal), np.maximum(hi, nominal)
+
+
 def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
     params = np.asarray(joint_fit["params"], dtype=np.float64)
     model_kind = str(joint_fit.get("dynamical_model", "ceplecha"))
     bootstrap_params = np.asarray(joint_fit.get("bootstrap_params", []), dtype=np.float64)
+    nominal_path = np.asarray(joint_fit["apparent_path_length_m"], dtype=np.float64)
+    nominal_x_itrs = np.asarray(joint_fit["x_itrs_m"], dtype=np.float64)
+    nominal_v_gcrs = np.asarray(joint_fit["v_gcrs_mps"], dtype=np.float64)
+    along_axis = np.nanmean(nominal_v_gcrs, axis=0)
+    along_axis = along_axis / max(float(np.linalg.norm(along_axis)), 1e-30)
+    nominal_along_velocity = (nominal_v_gcrs @ along_axis) / 1e3
+    nominal_beam_east, nominal_beam_north = sanya_beam_offsets_deg(nominal_x_itrs)
     if bool(joint_fit.get("bootstrap_enabled", False)) and bootstrap_params.ndim == 2 and bootstrap_params.shape[0] >= 8:
-        along_axis = np.nanmean(np.asarray(joint_fit["v_gcrs_mps"], dtype=np.float64), axis=0)
-        along_axis = along_axis / max(float(np.linalg.norm(along_axis)), 1e-30)
         path_samples = []
         along_velocity_samples = []
         beam_east_samples = []
@@ -2093,17 +2110,21 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
             along_velocity_samples = np.asarray(along_velocity_samples, dtype=np.float64)
             beam_east_samples = np.asarray(beam_east_samples, dtype=np.float64)
             beam_north_samples = np.asarray(beam_north_samples, dtype=np.float64)
+            path_lo, path_hi = centered_percentile_band(path_samples, nominal_path)
+            velocity_lo, velocity_hi = centered_percentile_band(along_velocity_samples, nominal_along_velocity)
+            beam_east_lo, beam_east_hi = centered_percentile_band(beam_east_samples, nominal_beam_east)
+            beam_north_lo, beam_north_hi = centered_percentile_band(beam_north_samples, nominal_beam_north)
             return {
-                "path_lo_m": np.nanpercentile(path_samples, 2.5, axis=0),
-                "path_hi_m": np.nanpercentile(path_samples, 97.5, axis=0),
-                "along_velocity_lo_km_s": np.nanpercentile(along_velocity_samples, 2.5, axis=0),
-                "along_velocity_hi_km_s": np.nanpercentile(along_velocity_samples, 97.5, axis=0),
-                "beam_east_lo_deg": np.nanpercentile(beam_east_samples, 2.5, axis=0),
-                "beam_east_hi_deg": np.nanpercentile(beam_east_samples, 97.5, axis=0),
-                "beam_north_lo_deg": np.nanpercentile(beam_north_samples, 2.5, axis=0),
-                "beam_north_hi_deg": np.nanpercentile(beam_north_samples, 97.5, axis=0),
+                "path_lo_m": path_lo,
+                "path_hi_m": path_hi,
+                "along_velocity_lo_km_s": velocity_lo,
+                "along_velocity_hi_km_s": velocity_hi,
+                "beam_east_lo_deg": beam_east_lo,
+                "beam_east_hi_deg": beam_east_hi,
+                "beam_north_lo_deg": beam_north_lo,
+                "beam_north_hi_deg": beam_north_hi,
                 "n_draws": int(len(path_samples)),
-                "source": "bootstrap",
+                "source": "centered_bootstrap",
             }
     cov = np.asarray(joint_fit.get("parameter_covariance", np.nan), dtype=np.float64)
     if cov.shape[0] < len(params) or not np.all(np.isfinite(cov[: len(params), : len(params)])):
@@ -2117,8 +2138,6 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
     if not np.any(eigval > 0.0):
         return None
     transform = eigvec @ np.diag(np.sqrt(eigval))
-    along_axis = np.nanmean(np.asarray(joint_fit["v_gcrs_mps"], dtype=np.float64), axis=0)
-    along_axis = along_axis / max(float(np.linalg.norm(along_axis)), 1e-30)
     rng = deterministic_rng(event_id)
     path_samples = []
     along_velocity_samples = []
@@ -2156,17 +2175,21 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
     along_velocity_samples = np.asarray(along_velocity_samples, dtype=np.float64)
     beam_east_samples = np.asarray(beam_east_samples, dtype=np.float64)
     beam_north_samples = np.asarray(beam_north_samples, dtype=np.float64)
+    path_lo, path_hi = centered_percentile_band(path_samples, nominal_path)
+    velocity_lo, velocity_hi = centered_percentile_band(along_velocity_samples, nominal_along_velocity)
+    beam_east_lo, beam_east_hi = centered_percentile_band(beam_east_samples, nominal_beam_east)
+    beam_north_lo, beam_north_hi = centered_percentile_band(beam_north_samples, nominal_beam_north)
     return {
-        "path_lo_m": np.nanpercentile(path_samples, 2.5, axis=0),
-        "path_hi_m": np.nanpercentile(path_samples, 97.5, axis=0),
-        "along_velocity_lo_km_s": np.nanpercentile(along_velocity_samples, 2.5, axis=0),
-        "along_velocity_hi_km_s": np.nanpercentile(along_velocity_samples, 97.5, axis=0),
-        "beam_east_lo_deg": np.nanpercentile(beam_east_samples, 2.5, axis=0),
-        "beam_east_hi_deg": np.nanpercentile(beam_east_samples, 97.5, axis=0),
-        "beam_north_lo_deg": np.nanpercentile(beam_north_samples, 2.5, axis=0),
-        "beam_north_hi_deg": np.nanpercentile(beam_north_samples, 97.5, axis=0),
+        "path_lo_m": path_lo,
+        "path_hi_m": path_hi,
+        "along_velocity_lo_km_s": velocity_lo,
+        "along_velocity_hi_km_s": velocity_hi,
+        "beam_east_lo_deg": beam_east_lo,
+        "beam_east_hi_deg": beam_east_hi,
+        "beam_north_lo_deg": beam_north_lo,
+        "beam_north_hi_deg": beam_north_hi,
         "n_draws": int(len(path_samples)),
-        "source": "local_covariance",
+        "source": "centered_local_covariance",
     }
 
 
