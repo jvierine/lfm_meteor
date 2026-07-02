@@ -224,6 +224,8 @@ def fit_to_target(
     whipple_rate = target_path_rate
     path_resid = np.asarray(model["apparent_path_length_m"], dtype=np.float64) - whipple_path
     rate_resid = np.asarray(model["path_rate_mps"], dtype=np.float64) - whipple_rate
+    position_norm_resid = np.linalg.norm(dx, axis=1)
+    velocity_norm_resid = np.linalg.norm(dv, axis=1)
     out = {
         "params": np.asarray(result.x, dtype=np.float64),
         "objective": float(best["objective"]),
@@ -232,8 +234,10 @@ def fit_to_target(
         "optimizer_nfev": int(result.nfev),
         "initial_radius_m": float(model["radius_m"][0]),
         "initial_mass_kg": float(model["mass_kg"][0]),
-        "synthetic_position_rms_m": float(np.sqrt(np.nanmean(np.sum(dx**2.0, axis=1)))),
-        "synthetic_velocity_rms_mps": float(np.sqrt(np.nanmean(np.sum(dv**2.0, axis=1)))),
+        "synthetic_position_rms_m": float(np.sqrt(np.nanmean(position_norm_resid**2.0))),
+        "synthetic_position_max_m": float(np.nanmax(position_norm_resid)),
+        "synthetic_velocity_rms_mps": float(np.sqrt(np.nanmean(velocity_norm_resid**2.0))),
+        "synthetic_velocity_max_mps": float(np.nanmax(velocity_norm_resid)),
         "synthetic_path_rms_m": float(np.sqrt(np.nanmean(path_resid**2.0))),
         "synthetic_path_mean_abs_m": float(np.nanmean(np.abs(path_resid))),
         "synthetic_path_rate_rms_mps": float(np.sqrt(np.nanmean(rate_resid**2.0))),

@@ -15,7 +15,9 @@ DEFAULT_WHIPPLE_DIR = "results/tristatic_whipple_jacchia_bootstrap_orbit100_2026
 DEFAULT_OUTPUT_BASE = "results/joint_fft_mass_distribution_v20260618a"
 PAPER_FIGURE_DIR = "/Users/jvi019/src/sanya_tristatic_paper/figures"
 DEFAULT_MAX_SYNTHETIC_VELOCITY_RMS_MPS = 1000.0
+DEFAULT_MAX_SYNTHETIC_VELOCITY_MAX_MPS = 1000.0
 DEFAULT_MAX_SYNTHETIC_PATH_RATE_RMS_MPS = 1000.0
+DEFAULT_MAX_SYNTHETIC_PATH_RMS_M = 2.0
 
 
 def decode(value):
@@ -129,6 +131,15 @@ def load_shrinking_radius_to_whipple_rows(catalog_dir, whipple_dir):
                 n_fft_observations = int(j.attrs["n_fft_observations"])
                 rms_fft_residual_hz = float(j.attrs["rms_fft_residual_hz"])
                 rms_total_path_residual_m = float(j.attrs["rms_total_path_residual_m"])
+                try:
+                    shrinking_v = np.asarray(h["v_gcrs_mps"][()], dtype=np.float64)
+                    whipple_v = np.asarray(j["v_gcrs_mps"][()], dtype=np.float64)
+                    if shrinking_v.shape == whipple_v.shape:
+                        synthetic_velocity_max_mps = float(np.nanmax(np.linalg.norm(shrinking_v - whipple_v, axis=1)))
+                    else:
+                        synthetic_velocity_max_mps = finite_attr(h, "synthetic_velocity_max_mps")
+                except Exception:
+                    synthetic_velocity_max_mps = finite_attr(h, "synthetic_velocity_max_mps")
             rows.append(
                 {
                     "event_id": event_id,
@@ -145,6 +156,7 @@ def load_shrinking_radius_to_whipple_rows(catalog_dir, whipple_dir):
                     "optimizer_success": float(bool(h.attrs.get("optimizer_success", False))),
                     "bootstrap_samples_successful": int(h.attrs.get("bootstrap_samples_successful", 0)),
                     "synthetic_velocity_rms_mps": finite_attr(h, "synthetic_velocity_rms_mps"),
+                    "synthetic_velocity_max_mps": synthetic_velocity_max_mps,
                     "synthetic_path_rms_m": finite_attr(h, "synthetic_path_rms_m"),
                     "synthetic_path_rate_rms_mps": finite_attr(h, "synthetic_path_rate_rms_mps"),
                     "n_points": n_points,
@@ -182,6 +194,8 @@ def selected_mask(rows, args):
         dtype=np.float64,
     )
     synthetic_velocity_rms = np.asarray([r.get("synthetic_velocity_rms_mps", np.nan) for r in rows], dtype=np.float64)
+    synthetic_velocity_max = np.asarray([r.get("synthetic_velocity_max_mps", np.nan) for r in rows], dtype=np.float64)
+    synthetic_path_rms = np.asarray([r.get("synthetic_path_rms_m", np.nan) for r in rows], dtype=np.float64)
     synthetic_path_rate_rms = np.asarray(
         [r.get("synthetic_path_rate_rms_mps", np.nan) for r in rows],
         dtype=np.float64,
@@ -204,6 +218,14 @@ def selected_mask(rows, args):
         & (
             ~np.isfinite(synthetic_velocity_rms)
             | (synthetic_velocity_rms <= float(args.max_synthetic_velocity_rms_mps))
+        )
+        & (
+            ~np.isfinite(synthetic_velocity_max)
+            | (synthetic_velocity_max <= float(args.max_synthetic_velocity_max_mps))
+        )
+        & (
+            ~np.isfinite(synthetic_path_rms)
+            | (synthetic_path_rms <= float(args.max_synthetic_path_rms_m))
         )
         & (
             ~np.isfinite(synthetic_path_rate_rms)
@@ -236,6 +258,8 @@ def write_h5(output_base, rows, mask, args):
         h.attrs["max_log10_radius_std"] = float(args.max_log10_radius_std)
         h.attrs["max_mass_95_width_dex"] = float(args.max_mass_95_width_dex)
         h.attrs["max_synthetic_velocity_rms_mps"] = float(args.max_synthetic_velocity_rms_mps)
+        h.attrs["max_synthetic_velocity_max_mps"] = float(args.max_synthetic_velocity_max_mps)
+        h.attrs["max_synthetic_path_rms_m"] = float(args.max_synthetic_path_rms_m)
         h.attrs["max_synthetic_path_rate_rms_mps"] = float(args.max_synthetic_path_rate_rms_mps)
         h.attrs["n_catalog_events"] = int(len(rows))
         h.attrs["n_selected"] = int(np.count_nonzero(mask))
@@ -379,6 +403,8 @@ def main():
     parser.add_argument("--max-log10-radius-std", type=float, default=0.5)
     parser.add_argument("--max-mass-95-width-dex", type=float, default=1.0)
     parser.add_argument("--max-synthetic-velocity-rms-mps", type=float, default=DEFAULT_MAX_SYNTHETIC_VELOCITY_RMS_MPS)
+    parser.add_argument("--max-synthetic-velocity-max-mps", type=float, default=DEFAULT_MAX_SYNTHETIC_VELOCITY_MAX_MPS)
+    parser.add_argument("--max-synthetic-path-rms-m", type=float, default=DEFAULT_MAX_SYNTHETIC_PATH_RMS_M)
     parser.add_argument("--max-synthetic-path-rate-rms-mps", type=float, default=DEFAULT_MAX_SYNTHETIC_PATH_RATE_RMS_MPS)
     parser.add_argument("--copy-to-paper", action="store_true")
     args = parser.parse_args()

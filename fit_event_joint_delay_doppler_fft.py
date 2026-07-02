@@ -1994,10 +1994,14 @@ def add_segmented_radius_velocity_fit(ax, t_rel_s, along_axis, joint_fit):
         return
     if not bool(joint_fit.get("segmented_radius_fit_quality_ok", True)):
         velocity_rms = float(joint_fit.get("shrinking_radius_synthetic_velocity_rms_mps", np.nan))
+        velocity_max = float(joint_fit.get("shrinking_radius_synthetic_velocity_max_mps", np.nan))
+        path_rms = float(joint_fit.get("shrinking_radius_synthetic_path_rms_m", np.nan))
         path_rate_rms = float(joint_fit.get("shrinking_radius_synthetic_path_rate_rms_mps", np.nan))
         text = "shrinking-radius fit poorly matched"
-        if np.isfinite(velocity_rms) and np.isfinite(path_rate_rms):
-            text += f"\nRMS: {velocity_rms:.0f} m/s, {path_rate_rms:.0f} m/s"
+        if np.isfinite(velocity_rms) and np.isfinite(path_rate_rms) and np.isfinite(path_rms):
+            text += f"\nRMS: {path_rms:.1f} m, {path_rate_rms:.0f} m/s"
+        if np.isfinite(velocity_max):
+            text += f"\nmax dv: {velocity_max:.0f} m/s"
         ax.text(
             0.04,
             0.93,

@@ -19,14 +19,18 @@ DEFAULT_SHRINKING_DIR = Path("results/tristatic_shrinking_radius_to_whipple_synt
 DEFAULT_OUTPUT_DIR = Path("results/tristatic_shrinking_radius_to_whipple_event_plots_20260701")
 EVENT_PREFIX = "joint_delay_doppler_fft_"
 DEFAULT_MAX_SHRINKING_VELOCITY_RMS_MPS = 1000.0
+DEFAULT_MAX_SHRINKING_VELOCITY_MAX_MPS = 1000.0
 DEFAULT_MAX_SHRINKING_PATH_RATE_RMS_MPS = 1000.0
+DEFAULT_MAX_SHRINKING_PATH_RMS_M = 2.0
 
 
 def inject_shrinking_radius_fit(
     joint_fit,
     shrinking_h5,
     max_velocity_rms_mps=DEFAULT_MAX_SHRINKING_VELOCITY_RMS_MPS,
+    max_velocity_max_mps=DEFAULT_MAX_SHRINKING_VELOCITY_MAX_MPS,
     max_path_rate_rms_mps=DEFAULT_MAX_SHRINKING_PATH_RATE_RMS_MPS,
+    max_path_rms_m=DEFAULT_MAX_SHRINKING_PATH_RMS_M,
 ):
     shrinking_h5 = Path(shrinking_h5)
     if not shrinking_h5.exists():
@@ -34,13 +38,24 @@ def inject_shrinking_radius_fit(
         return joint_fit
     with h5py.File(shrinking_h5, "r") as h:
         velocity_rms = float(h.attrs.get("synthetic_velocity_rms_mps", np.nan))
+        path_rms = float(h.attrs.get("synthetic_path_rms_m", np.nan))
         path_rate_rms = float(h.attrs.get("synthetic_path_rate_rms_mps", np.nan))
         optimizer_success = bool(h.attrs.get("optimizer_success", False))
+        segmented_v_gcrs_mps = np.asarray(h["v_gcrs_mps"][()], dtype=np.float64)
+        nominal_v_gcrs_mps = np.asarray(joint_fit.get("v_gcrs_mps", []), dtype=np.float64)
+        if segmented_v_gcrs_mps.shape == nominal_v_gcrs_mps.shape:
+            velocity_max = float(np.nanmax(np.linalg.norm(segmented_v_gcrs_mps - nominal_v_gcrs_mps, axis=1)))
+        else:
+            velocity_max = float(h.attrs.get("synthetic_velocity_max_mps", np.nan))
         fit_quality_ok = (
             optimizer_success
             and np.isfinite(velocity_rms)
+            and np.isfinite(velocity_max)
+            and np.isfinite(path_rms)
             and np.isfinite(path_rate_rms)
             and velocity_rms <= float(max_velocity_rms_mps)
+            and velocity_max <= float(max_velocity_max_mps)
+            and path_rms <= float(max_path_rms_m)
             and path_rate_rms <= float(max_path_rate_rms_mps)
         )
         joint_fit["segmented_radius_available"] = True
@@ -57,7 +72,7 @@ def inject_shrinking_radius_fit(
         }
         for h5_key, plot_key in interval_map.items():
             joint_fit[plot_key] = float(h.attrs.get(h5_key, np.nan))
-        joint_fit["segmented_radius_v_gcrs_mps"] = np.asarray(h["v_gcrs_mps"][()], dtype=np.float64)
+        joint_fit["segmented_radius_v_gcrs_mps"] = segmented_v_gcrs_mps
         joint_fit["segmented_radius_radius_m"] = np.asarray(h["radius_m"][()], dtype=np.float64)
         joint_fit["segmented_radius_mass_kg"] = np.asarray(h["mass_kg"][()], dtype=np.float64)
         joint_fit["shrinking_radius_synthetic_velocity_rms_mps"] = float(
@@ -66,7 +81,8 @@ def inject_shrinking_radius_fit(
         joint_fit["shrinking_radius_synthetic_path_rate_rms_mps"] = float(
             h.attrs.get("synthetic_path_rate_rms_mps", np.nan)
         )
-        joint_fit["shrinking_radius_synthetic_path_rms_m"] = float(h.attrs.get("synthetic_path_rms_m", np.nan))
+        joint_fit["shrinking_radius_synthetic_path_rms_m"] = path_rms
+        joint_fit["shrinking_radius_synthetic_velocity_max_mps"] = velocity_max
     return joint_fit
 
 
@@ -87,7 +103,9 @@ def plot_one(
     output_dir,
     overwrite,
     max_shrinking_velocity_rms_mps,
+    max_shrinking_velocity_max_mps,
     max_shrinking_path_rate_rms_mps,
+    max_shrinking_path_rms_m,
 ):
     whipple_h5 = Path(whipple_h5)
     event_id = event_id_from_path(whipple_h5)
@@ -109,7 +127,9 @@ def plot_one(
         joint_fit,
         shrinking_h5,
         max_velocity_rms_mps=max_shrinking_velocity_rms_mps,
+        max_velocity_max_mps=max_shrinking_velocity_max_mps,
         max_path_rate_rms_mps=max_shrinking_path_rate_rms_mps,
+        max_path_rms_m=max_shrinking_path_rms_m,
     )
     n_params = len(np.asarray(joint_fit.get("params", []), dtype=np.float64))
     if n_params:
@@ -150,7 +170,9 @@ def main():
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--event-id", action="append", default=[])
     parser.add_argument("--max-shrinking-velocity-rms-mps", type=float, default=DEFAULT_MAX_SHRINKING_VELOCITY_RMS_MPS)
+    parser.add_argument("--max-shrinking-velocity-max-mps", type=float, default=DEFAULT_MAX_SHRINKING_VELOCITY_MAX_MPS)
     parser.add_argument("--max-shrinking-path-rate-rms-mps", type=float, default=DEFAULT_MAX_SHRINKING_PATH_RATE_RMS_MPS)
+    parser.add_argument("--max-shrinking-path-rms-m", type=float, default=DEFAULT_MAX_SHRINKING_PATH_RMS_M)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -172,7 +194,9 @@ def main():
                 args.output_dir,
                 args.overwrite,
                 args.max_shrinking_velocity_rms_mps,
+                args.max_shrinking_velocity_max_mps,
                 args.max_shrinking_path_rate_rms_mps,
+                args.max_shrinking_path_rms_m,
             )
             rows.append(row)
             print(f"[{idx}/{len(whipple_paths)}] {row[1]} {row[0]} {row[2]}", flush=True)
@@ -187,7 +211,9 @@ def main():
                     args.output_dir,
                     args.overwrite,
                     args.max_shrinking_velocity_rms_mps,
+                    args.max_shrinking_velocity_max_mps,
                     args.max_shrinking_path_rate_rms_mps,
+                    args.max_shrinking_path_rms_m,
                 )
                 for path in whipple_paths
             ]
