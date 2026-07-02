@@ -790,8 +790,14 @@ def forward_model_whipple_speed_link_observables(params, t_rel_s, times_ns, rho_
 
     The GCRS direction is fixed by the fitted velocity vector.  With time
     measured from the start of the event, the scalar speed is
-    v(t) = v0 - a exp(b t), where v0=|v0_vec|, a=10**log10_a, and
-    b=10**log10_b.  The position is the analytic integral of that speed.
+
+        v(t) = v_inf - a exp(b t),
+
+    where v_inf=|v0_vec|, a=10**log10_a, and b=10**log10_b.  Thus the
+    speed at first detection is v(0)=v_inf-a.  The position is the analytic
+    integral of this speed over the fitted event.  Fits are rejected when the
+    speed becomes non-positive, which prevents the vector from flipping
+    direction and producing an unphysical increasing speed norm.
     """
 
     params = np.asarray(params, dtype=np.float64)
@@ -808,9 +814,17 @@ def forward_model_whipple_speed_link_observables(params, t_rel_s, times_ns, rho_
         b_s_inv = float(10.0 ** params[7])
         exp_term = np.exp(np.clip(b_s_inv * t_rel_s, -80.0, 80.0))
         speed_mps = speed0_const - a_mps * exp_term
-        distance_m = speed0_const * t_rel_s - (a_mps / b_s_inv) * (exp_term - 1.0)
-        x_gcrs = x0[None, :] + distance_m[:, None] * direction[None, :]
-        v_gcrs = speed_mps[:, None] * direction[None, :]
+        if np.any(~np.isfinite(speed_mps)) or np.any(speed_mps <= 0.0) or np.any(np.diff(speed_mps) > 1e-6):
+            x_gcrs = np.full((len(t_rel_s), 3), np.nan, dtype=np.float64)
+            v_gcrs = np.full((len(t_rel_s), 3), np.nan, dtype=np.float64)
+            success = False
+            message = "whipple_speed_nonpositive_or_increasing_speed"
+        else:
+            distance_m = speed0_const * t_rel_s - (a_mps / b_s_inv) * (exp_term - 1.0)
+            x_gcrs = x0[None, :] + distance_m[:, None] * direction[None, :]
+            v_gcrs = speed_mps[:, None] * direction[None, :]
+            success = True
+            message = "whipple_speed"
     x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
     path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
         x_itrs,
@@ -831,8 +845,8 @@ def forward_model_whipple_speed_link_observables(params, t_rel_s, times_ns, rho_
         "v_itrs_mps": v_itrs,
         "radius_m": np.full(len(t_rel_s), np.nan, dtype=np.float64),
         "mass_kg": np.full(len(t_rel_s), np.nan, dtype=np.float64),
-        "ceplecha_success": True,
-        "ceplecha_message": "whipple_speed",
+        "ceplecha_success": bool(locals().get("success", False)),
+        "ceplecha_message": str(locals().get("message", "whipple_speed_invalid_initial_velocity")),
     }
 
 
@@ -938,6 +952,9 @@ def fit_joint_delay_doppler(
     def residual(x):
         dyn_params, station_bias_hz = split_params(x)
         model = forward_model_for_kind(dyn_params, t_rel_s, times_fit, rho_of_alt_m, model_kind)
+        if not bool(model.get("ceplecha_success", True)):
+            n_bad = int(np.count_nonzero(path_keep_fit) + np.count_nonzero(fft_keep_fit))
+            return np.full(max(n_bad, 1), 1.0e6, dtype=np.float64)
         apparent = model["apparent_path_length_m"]
         geo = model["path_length_m"]
         doppler = model["doppler_hz"]
@@ -1762,8 +1779,8 @@ def radius_mass_interval_text(joint_fit):
         else:
             speed_text = f"v0 = {v0_km_s:.2f} km/s"
         return (
-            r"$v(t)=(v_0-ae^{bt})\hat{u}_0$" "\n"
-            f"v0 = {v0_km_s:.2f} km/s\n"
+            r"$v(t)=(v_\infty-ae^{bt})\hat{u}_0$" "\n"
+            f"v_inf = {v0_km_s:.2f} km/s\n"
             f"a = {a_mps:.1f} m/s, b = {b_s_inv:.3g} 1/s\n"
             f"{speed_text}"
         )
@@ -1974,6 +1991,25 @@ def segmented_radius_interval_text(joint_fit):
 def add_segmented_radius_velocity_fit(ax, t_rel_s, along_axis, joint_fit):
     v_gcrs = np.asarray(joint_fit.get("segmented_radius_v_gcrs_mps", []), dtype=np.float64)
     if v_gcrs.ndim != 2 or v_gcrs.shape[1] != 3 or v_gcrs.shape[0] != len(t_rel_s):
+        return
+    if not bool(joint_fit.get("segmented_radius_fit_quality_ok", True)):
+        velocity_rms = float(joint_fit.get("shrinking_radius_synthetic_velocity_rms_mps", np.nan))
+        path_rate_rms = float(joint_fit.get("shrinking_radius_synthetic_path_rate_rms_mps", np.nan))
+        text = "shrinking-radius fit poorly matched"
+        if np.isfinite(velocity_rms) and np.isfinite(path_rate_rms):
+            text += f"\nRMS: {velocity_rms:.0f} m/s, {path_rate_rms:.0f} m/s"
+        ax.text(
+            0.04,
+            0.93,
+            text,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=7.6,
+            color="0.2",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.0},
+            zorder=7,
+        )
         return
     segmented_velocity_km_s = (v_gcrs @ along_axis) / 1e3
     if not np.any(np.isfinite(segmented_velocity_km_s)):

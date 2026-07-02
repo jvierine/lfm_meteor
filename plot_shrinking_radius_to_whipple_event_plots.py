@@ -18,15 +18,33 @@ DEFAULT_WHIPPLE_DIR = Path("results/tristatic_whipple_jacchia_bootstrap_orbit100
 DEFAULT_SHRINKING_DIR = Path("results/tristatic_shrinking_radius_to_whipple_synthetic_20260701")
 DEFAULT_OUTPUT_DIR = Path("results/tristatic_shrinking_radius_to_whipple_event_plots_20260701")
 EVENT_PREFIX = "joint_delay_doppler_fft_"
+DEFAULT_MAX_SHRINKING_VELOCITY_RMS_MPS = 1000.0
+DEFAULT_MAX_SHRINKING_PATH_RATE_RMS_MPS = 1000.0
 
 
-def inject_shrinking_radius_fit(joint_fit, shrinking_h5):
+def inject_shrinking_radius_fit(
+    joint_fit,
+    shrinking_h5,
+    max_velocity_rms_mps=DEFAULT_MAX_SHRINKING_VELOCITY_RMS_MPS,
+    max_path_rate_rms_mps=DEFAULT_MAX_SHRINKING_PATH_RATE_RMS_MPS,
+):
     shrinking_h5 = Path(shrinking_h5)
     if not shrinking_h5.exists():
         joint_fit["segmented_radius_available"] = False
         return joint_fit
     with h5py.File(shrinking_h5, "r") as h:
+        velocity_rms = float(h.attrs.get("synthetic_velocity_rms_mps", np.nan))
+        path_rate_rms = float(h.attrs.get("synthetic_path_rate_rms_mps", np.nan))
+        optimizer_success = bool(h.attrs.get("optimizer_success", False))
+        fit_quality_ok = (
+            optimizer_success
+            and np.isfinite(velocity_rms)
+            and np.isfinite(path_rate_rms)
+            and velocity_rms <= float(max_velocity_rms_mps)
+            and path_rate_rms <= float(max_path_rate_rms_mps)
+        )
         joint_fit["segmented_radius_available"] = True
+        joint_fit["segmented_radius_fit_quality_ok"] = bool(fit_quality_ok)
         joint_fit["segmented_radius_best_n_segments"] = 1
         joint_fit["segmented_radius_initial_radius_m"] = float(h.attrs.get("initial_radius_m", np.nan))
         joint_fit["segmented_radius_initial_mass_kg"] = float(h.attrs.get("initial_mass_kg", np.nan))
@@ -62,7 +80,15 @@ def make_delay_fit(source_joint):
     }
 
 
-def plot_one(whipple_h5, source_dir, shrinking_dir, output_dir, overwrite):
+def plot_one(
+    whipple_h5,
+    source_dir,
+    shrinking_dir,
+    output_dir,
+    overwrite,
+    max_shrinking_velocity_rms_mps,
+    max_shrinking_path_rate_rms_mps,
+):
     whipple_h5 = Path(whipple_h5)
     event_id = event_id_from_path(whipple_h5)
     source_h5 = Path(source_dir) / whipple_h5.name
@@ -79,7 +105,12 @@ def plot_one(whipple_h5, source_dir, shrinking_dir, output_dir, overwrite):
     with h5py.File(whipple_h5, "r") as h:
         joint_fit = load_group(h["joint_fit"])
 
-    joint_fit = inject_shrinking_radius_fit(joint_fit, shrinking_h5)
+    joint_fit = inject_shrinking_radius_fit(
+        joint_fit,
+        shrinking_h5,
+        max_velocity_rms_mps=max_shrinking_velocity_rms_mps,
+        max_path_rate_rms_mps=max_shrinking_path_rate_rms_mps,
+    )
     n_params = len(np.asarray(joint_fit.get("params", []), dtype=np.float64))
     if n_params:
         joint_fit["parameter_covariance"] = np.asarray(
@@ -118,6 +149,8 @@ def main():
     parser.add_argument("--shrinking-dir", default=DEFAULT_SHRINKING_DIR)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--event-id", action="append", default=[])
+    parser.add_argument("--max-shrinking-velocity-rms-mps", type=float, default=DEFAULT_MAX_SHRINKING_VELOCITY_RMS_MPS)
+    parser.add_argument("--max-shrinking-path-rate-rms-mps", type=float, default=DEFAULT_MAX_SHRINKING_PATH_RATE_RMS_MPS)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -132,13 +165,30 @@ def main():
     rows = []
     if args.jobs <= 1:
         for idx, path in enumerate(whipple_paths, 1):
-            row = plot_one(path, args.source_dir, args.shrinking_dir, args.output_dir, args.overwrite)
+            row = plot_one(
+                path,
+                args.source_dir,
+                args.shrinking_dir,
+                args.output_dir,
+                args.overwrite,
+                args.max_shrinking_velocity_rms_mps,
+                args.max_shrinking_path_rate_rms_mps,
+            )
             rows.append(row)
             print(f"[{idx}/{len(whipple_paths)}] {row[1]} {row[0]} {row[2]}", flush=True)
     else:
         with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
             futures = [
-                pool.submit(plot_one, path, args.source_dir, args.shrinking_dir, args.output_dir, args.overwrite)
+                pool.submit(
+                    plot_one,
+                    path,
+                    args.source_dir,
+                    args.shrinking_dir,
+                    args.output_dir,
+                    args.overwrite,
+                    args.max_shrinking_velocity_rms_mps,
+                    args.max_shrinking_path_rate_rms_mps,
+                )
                 for path in whipple_paths
             ]
             for idx, fut in enumerate(concurrent.futures.as_completed(futures), 1):

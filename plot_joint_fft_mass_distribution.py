@@ -14,6 +14,8 @@ DEFAULT_CATALOG_DIR = "results/tristatic"
 DEFAULT_WHIPPLE_DIR = "results/tristatic_whipple_jacchia_bootstrap_orbit100_20260701"
 DEFAULT_OUTPUT_BASE = "results/joint_fft_mass_distribution_v20260618a"
 PAPER_FIGURE_DIR = "/Users/jvi019/src/sanya_tristatic_paper/figures"
+DEFAULT_MAX_SYNTHETIC_VELOCITY_RMS_MPS = 1000.0
+DEFAULT_MAX_SYNTHETIC_PATH_RATE_RMS_MPS = 1000.0
 
 
 def decode(value):
@@ -179,6 +181,11 @@ def selected_mask(rows, args):
         [r.get("bootstrap_samples_successful", np.inf) for r in rows],
         dtype=np.float64,
     )
+    synthetic_velocity_rms = np.asarray([r.get("synthetic_velocity_rms_mps", np.nan) for r in rows], dtype=np.float64)
+    synthetic_path_rate_rms = np.asarray(
+        [r.get("synthetic_path_rate_rms_mps", np.nan) for r in rows],
+        dtype=np.float64,
+    )
     mass_95_width_dex = np.log10(mass_hi) - np.log10(mass_lo)
     mask = (
         np.isfinite(radius)
@@ -194,6 +201,14 @@ def selected_mask(rows, args):
         & (radius < 0.99 * cepl.MAX_RADIUS_M)
         & (optimizer_success > 0.0)
         & (bootstrap_samples_successful >= args.min_bootstrap_samples)
+        & (
+            ~np.isfinite(synthetic_velocity_rms)
+            | (synthetic_velocity_rms <= float(args.max_synthetic_velocity_rms_mps))
+        )
+        & (
+            ~np.isfinite(synthetic_path_rate_rms)
+            | (synthetic_path_rate_rms <= float(args.max_synthetic_path_rate_rms_mps))
+        )
         & (mass_95_width_dex <= args.max_mass_95_width_dex)
     )
     if np.isfinite(args.max_log10_radius_std):
@@ -220,6 +235,8 @@ def write_h5(output_base, rows, mask, args):
         h.attrs["max_path_rms_m"] = float(args.max_path_rms_m)
         h.attrs["max_log10_radius_std"] = float(args.max_log10_radius_std)
         h.attrs["max_mass_95_width_dex"] = float(args.max_mass_95_width_dex)
+        h.attrs["max_synthetic_velocity_rms_mps"] = float(args.max_synthetic_velocity_rms_mps)
+        h.attrs["max_synthetic_path_rate_rms_mps"] = float(args.max_synthetic_path_rate_rms_mps)
         h.attrs["n_catalog_events"] = int(len(rows))
         h.attrs["n_selected"] = int(np.count_nonzero(mask))
         h.create_dataset("event_id", data=np.asarray([r["event_id"] for r in rows], dtype=object), dtype=string_dtype)
@@ -361,6 +378,8 @@ def main():
     parser.add_argument("--max-path-rms-m", type=float, default=np.inf)
     parser.add_argument("--max-log10-radius-std", type=float, default=0.5)
     parser.add_argument("--max-mass-95-width-dex", type=float, default=1.0)
+    parser.add_argument("--max-synthetic-velocity-rms-mps", type=float, default=DEFAULT_MAX_SYNTHETIC_VELOCITY_RMS_MPS)
+    parser.add_argument("--max-synthetic-path-rate-rms-mps", type=float, default=DEFAULT_MAX_SYNTHETIC_PATH_RATE_RMS_MPS)
     parser.add_argument("--copy-to-paper", action="store_true")
     args = parser.parse_args()
 
