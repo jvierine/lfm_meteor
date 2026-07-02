@@ -28,6 +28,48 @@ DEFAULT_WARN_SHRINKING_PATH_RATE_RMS_MPS = 1000.0
 DEFAULT_WARN_SHRINKING_PATH_RMS_M = 2.0
 
 
+def whipple_speed_is_nonincreasing(joint_fit, atol_mps=1e-6):
+    v_gcrs = np.asarray(joint_fit.get("v_gcrs_mps", []), dtype=np.float64)
+    if v_gcrs.ndim != 2 or v_gcrs.shape[1] != 3 or v_gcrs.shape[0] < 2:
+        return False
+    speed = np.linalg.norm(v_gcrs, axis=1)
+    return bool(np.all(np.isfinite(speed)) and np.all(np.diff(speed) <= float(atol_mps)))
+
+
+def refresh_whipple_state_if_needed(joint_fit, rho_of_alt_m):
+    """Recompute stale Whipple-Jacchia state arrays before plotting."""
+
+    if str(joint_fit.get("dynamical_model", "")) != "whipple_speed":
+        return joint_fit
+    if whipple_speed_is_nonincreasing(joint_fit):
+        return joint_fit
+    params = np.asarray(joint_fit.get("params", []), dtype=np.float64)
+    t_rel_s = np.asarray(joint_fit.get("t_rel_s", []), dtype=np.float64)
+    times_ns = np.asarray(joint_fit.get("time_ns", []), dtype=np.int64)
+    model = fit.forward_model_whipple_speed_link_observables(params, t_rel_s, times_ns, rho_of_alt_m)
+    if not bool(model.get("ceplecha_success", False)):
+        raise ValueError(f"stale_or_invalid_whipple_velocity:{model.get('ceplecha_message', 'unknown')}")
+    for key in (
+        "apparent_path_length_m",
+        "path_length_m",
+        "path_rate_mps",
+        "doppler_hz",
+        "x_gcrs_m",
+        "v_gcrs_mps",
+        "x_itrs_m",
+        "v_itrs_mps",
+        "speed_km_s",
+    ):
+        if key == "speed_km_s":
+            joint_fit[key] = np.linalg.norm(model["v_gcrs_mps"], axis=1) / 1e3
+        else:
+            joint_fit[key] = model[key]
+    if not whipple_speed_is_nonincreasing(joint_fit):
+        raise ValueError("stale_or_invalid_whipple_velocity:recomputed_speed_increases")
+    joint_fit["whipple_state_recomputed_for_plot"] = True
+    return joint_fit
+
+
 def inject_shrinking_radius_fit(
     joint_fit,
     shrinking_h5,
@@ -149,6 +191,15 @@ def plot_one(
     with h5py.File(whipple_h5, "r") as h:
         joint_fit = load_group(h["joint_fit"])
 
+    rho_of_alt_m, _meta = base.density_interpolator(
+        np.asarray(joint_fit["time_ns"], dtype=np.int64),
+        np.asarray(joint_fit["x_itrs_m"], dtype=np.float64),
+    )
+    try:
+        joint_fit = refresh_whipple_state_if_needed(joint_fit, rho_of_alt_m)
+    except ValueError as exc:
+        return event_id, "error", str(exc)
+
     joint_fit = inject_shrinking_radius_fit(
         joint_fit,
         shrinking_h5,
@@ -174,10 +225,6 @@ def plot_one(
             dtype=np.float64,
         )
     delay_fit = make_delay_fit(source_joint)
-    rho_of_alt_m, _meta = base.density_interpolator(
-        np.asarray(joint_fit["time_ns"], dtype=np.int64),
-        np.asarray(joint_fit["x_itrs_m"], dtype=np.float64),
-    )
     os.makedirs(output_dir, exist_ok=True)
     fit.plot_joint_fit(
         event_id,
