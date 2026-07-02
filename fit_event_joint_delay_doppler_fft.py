@@ -2034,6 +2034,13 @@ def add_segmented_radius_velocity_fit(ax, t_rel_s, along_axis, joint_fit):
     ax.set_xlim(x0 - 0.02 * dx, x1 + 0.12 * dx)
     ax.set_ylim(y0 - 0.04 * dy, y1 + 0.58 * dy)
     text = segmented_radius_interval_text(joint_fit)
+    if bool(joint_fit.get("segmented_radius_fit_warning", False)):
+        path_rms = float(joint_fit.get("shrinking_radius_synthetic_path_rms_m", np.nan))
+        path_rate_rms = float(joint_fit.get("shrinking_radius_synthetic_path_rate_rms_mps", np.nan))
+        warning = "shrinking-radius match marginal"
+        if np.isfinite(path_rms) and np.isfinite(path_rate_rms):
+            warning += f"\nmatch RMS: {path_rms:.1f} m, {path_rate_rms:.0f} m/s"
+        text = warning if not text else f"{warning}\n{text}"
     if text:
         ax.text(
             0.04,
