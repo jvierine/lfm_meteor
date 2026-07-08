@@ -14,6 +14,7 @@ from astropy.constants import GM_sun
 from astropy.coordinates import get_body_barycentric_posvel
 from astropy.time import Time
 from matplotlib.lines import Line2D
+from matplotlib.colors import LogNorm
 
 import fit_all_ballistic_snr_weighted as base
 import fit_all_ceplecha_snr_weighted as cepl
@@ -68,6 +69,8 @@ MODEL_PARAMETER_COUNT = {
     "exponential_speed": 7,
     "whipple_speed": 8,
 }
+DYNAMIC_MASS_DRAG_COEFFICIENT = 1.0
+DYNAMIC_MASS_AREA_FACTOR = 1.0
 
 
 def choose_triplet(event_id, triplets, ref_fits):
@@ -1778,11 +1781,28 @@ def radius_mass_interval_text(joint_fit):
             speed_text = f"v: {speed[0]:.2f} to {speed[-1]:.2f} km/s"
         else:
             speed_text = f"v0 = {v0_km_s:.2f} km/s"
+        mass_kg = float(joint_fit.get("initial_dynamic_mass_kg", joint_fit.get("initial_mass_kg", np.nan)))
+        radius_m = float(joint_fit.get("initial_dynamic_radius_m", joint_fit.get("initial_radius_m", np.nan)))
+        mass_lo_kg = float(joint_fit.get("initial_dynamic_mass_lo95_kg", np.nan))
+        mass_hi_kg = float(joint_fit.get("initial_dynamic_mass_hi95_kg", np.nan))
+        radius_lo_m = float(joint_fit.get("initial_dynamic_radius_lo95_m", np.nan))
+        radius_hi_m = float(joint_fit.get("initial_dynamic_radius_hi95_m", np.nan))
+        dynamic_lines = []
+        if np.isfinite(radius_m):
+            dynamic_lines.append(rf"$r_{{0,\mathrm{{dyn}}}}$ = {radius_m * 1e6:.3g} um")
+        if np.all(np.isfinite([radius_lo_m, radius_hi_m])):
+            dynamic_lines.append(rf"95% $r_{{0,\mathrm{{dyn}}}}$: {radius_lo_m * 1e6:.3g} - {radius_hi_m * 1e6:.3g} um")
+        if np.isfinite(mass_kg):
+            dynamic_lines.append(rf"$m_{{0,\mathrm{{dyn}}}}$ = {compact_sci(mass_kg)} kg")
+        if np.all(np.isfinite([mass_lo_kg, mass_hi_kg])):
+            dynamic_lines.append(rf"95% $m_{{0,\mathrm{{dyn}}}}$: {compact_sci(mass_lo_kg)} - {compact_sci(mass_hi_kg)} kg")
+        dynamic_text = "\n" + "\n".join(dynamic_lines) if dynamic_lines else ""
         return (
             r"$v(t)=(v_\infty-ae^{bt})\hat{u}_0$" "\n"
             f"v_inf = {v0_km_s:.2f} km/s\n"
             f"a = {a_mps:.1f} m/s, b = {b_s_inv:.3g} 1/s\n"
             f"{speed_text}"
+            f"{dynamic_text}"
         )
     if model_kind == "exponential_speed":
         params = np.asarray(joint_fit["params"], dtype=np.float64)
@@ -1959,10 +1979,19 @@ def fit_quality_annotation(joint_fit):
         v0_text = f"v0 = {v0_km_s:.2f} km/s"
     else:
         v0_text = "v0 unavailable"
+    delta_bic = float(joint_fit.get("delta_bic_constant_minus_whipple_jacchia", np.nan))
+    selected = str(joint_fit.get("bic_selected_model", ""))
+    bic_text = ""
+    if np.isfinite(delta_bic):
+        if selected == "constant_velocity":
+            bic_text = f"\nBIC selects constant velocity; no dynamic mass\nDelta BIC const-WJ = {delta_bic:.1f}"
+        elif selected:
+            bic_text = f"\nBIC selects Whipple-Jacchia\nDelta BIC const-WJ = {delta_bic:.1f}"
     return (
         f"mean |delay residual| = {delay_mean_abs_m:.1f} m\n"
         f"mean |Doppler residual| = {doppler_mean_abs_mps:.0f} m/s\n"
         f"{v0_text}"
+        f"{bic_text}"
     )
 
 
@@ -1986,6 +2015,112 @@ def segmented_radius_interval_text(joint_fit):
     if n_boot > 0:
         lines.append(f"radius bootstrap n = {n_boot}")
     return "\n".join(lines)
+
+
+def dynamic_mass_from_whipple_state(params, t_rel_s, x_itrs_m, v_gcrs_mps, rho_of_alt_m):
+    """Instantaneous dynamic mass from the analytic Whipple-Jacchia speed law."""
+
+    params = np.asarray(params, dtype=np.float64)
+    t_rel_s = np.asarray(t_rel_s, dtype=np.float64)
+    x_itrs_m = np.asarray(x_itrs_m, dtype=np.float64)
+    v_gcrs_mps = np.asarray(v_gcrs_mps, dtype=np.float64)
+    if (
+        params.size < 8
+        or t_rel_s.ndim != 1
+        or x_itrs_m.ndim != 2
+        or v_gcrs_mps.ndim != 2
+        or x_itrs_m.shape[0] != t_rel_s.size
+        or v_gcrs_mps.shape[0] != t_rel_s.size
+    ):
+        nan = np.full(t_rel_s.shape, np.nan, dtype=np.float64)
+        return nan, nan, nan
+
+    llh = np.asarray([jcoord.ecef2geodetic(*point) for point in x_itrs_m], dtype=np.float64)
+    alt_m = llh[:, 2]
+    rho_air = np.asarray(rho_of_alt_m(alt_m), dtype=np.float64)
+    speed_mps = np.linalg.norm(v_gcrs_mps, axis=1)
+    a_mps = float(10.0 ** params[6])
+    b_s_inv = float(10.0 ** params[7])
+    decel_mps2 = a_mps * b_s_inv * np.exp(np.clip(b_s_inv * t_rel_s, -80.0, 80.0))
+
+    # Dynamic mass equation: m/A = v gamma rho_air sec(chi) / (dv/dh).
+    # With dh/dt = -v cos(chi), this is m/A = gamma rho_air v^2 / |dv/dt|.
+    # Use A = pi r^2 for the compact spherical-meteoroid conversion.
+    mass_per_area_kg_m2 = (
+        DYNAMIC_MASS_DRAG_COEFFICIENT
+        * rho_air
+        * speed_mps**2.0
+        / np.maximum(decel_mps2, 1e-30)
+    )
+    radius_m = (
+        3.0
+        * DYNAMIC_MASS_AREA_FACTOR
+        * mass_per_area_kg_m2
+        / (4.0 * cepl.METEOROID_DENSITY_KG_M3)
+    )
+    mass_kg = (4.0 / 3.0) * np.pi * cepl.METEOROID_DENSITY_KG_M3 * radius_m**3.0
+    area_per_mass_m2_kg = 1.0 / mass_per_area_kg_m2
+    finite = (
+        np.isfinite(rho_air)
+        & (rho_air > 0.0)
+        & np.isfinite(speed_mps)
+        & (speed_mps > 0.0)
+        & np.isfinite(decel_mps2)
+        & (decel_mps2 > 0.0)
+        & np.isfinite(mass_kg)
+        & (mass_kg > 0.0)
+    )
+    mass_kg = np.where(finite, mass_kg, np.nan)
+    radius_m = np.where(finite, radius_m, np.nan)
+    area_per_mass_m2_kg = np.where(finite, area_per_mass_m2_kg, np.nan)
+    return mass_kg, radius_m, area_per_mass_m2_kg
+
+
+def dynamic_mass_kg(joint_fit, rho_of_alt_m):
+    """Instantaneous dynamic mass from the WJ fit."""
+
+    if str(joint_fit.get("dynamical_model", "")) != "whipple_speed":
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
+    mass_kg, _radius_m, area_per_mass_m2_kg = dynamic_mass_from_whipple_state(
+        joint_fit.get("params", []),
+        joint_fit.get("t_rel_s", []),
+        joint_fit.get("x_itrs_m", []),
+        joint_fit.get("v_gcrs_mps", []),
+        rho_of_alt_m,
+    )
+    return mass_kg, area_per_mass_m2_kg
+
+
+def add_dynamic_mass_scatter(fig, ax, t_rel_s, along_velocity_km_s, joint_fit, rho_of_alt_m):
+    mass_kg, area_per_mass_m2_kg = dynamic_mass_kg(joint_fit, rho_of_alt_m)
+    if mass_kg.size != len(t_rel_s):
+        return None
+    finite = np.isfinite(mass_kg) & (mass_kg > 0.0) & np.isfinite(along_velocity_km_s)
+    if np.count_nonzero(finite) < 2:
+        return None
+    vmin = float(np.nanpercentile(mass_kg[finite], 5.0))
+    vmax = float(np.nanpercentile(mass_kg[finite], 95.0))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        vmin = float(np.nanmin(mass_kg[finite]))
+        vmax = float(np.nanmax(mass_kg[finite]))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        return None
+    sc = ax.scatter(
+        t_rel_s[finite],
+        along_velocity_km_s[finite],
+        c=mass_kg[finite],
+        s=24,
+        cmap="magma",
+        norm=LogNorm(vmin=max(vmin, 1e-30), vmax=vmax),
+        edgecolors="white",
+        linewidths=0.25,
+        alpha=0.9,
+        label="dynamic mass",
+        zorder=8,
+    )
+    cb = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
+    cb.set_label(r"Dynamic mass (kg)")
+    return sc
 
 
 def add_segmented_radius_velocity_fit(ax, t_rel_s, along_axis, joint_fit):
@@ -2353,7 +2488,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             label="Whipple-Jacchia 95%",
         )
     ax.plot(t, along_velocity_km_s, color="black", lw=1.9, label="Whipple-Jacchia")
-    add_segmented_radius_velocity_fit(ax, t, along_axis, joint_fit)
+    add_dynamic_mass_scatter(fig, ax, t, along_velocity_km_s, joint_fit, rho_of_alt_m)
     ax.set_ylabel("Along-track velocity (km/s)")
     ax.set_title("Model along-track velocity")
     ax.ticklabel_format(axis="y", style="plain", useOffset=False)
@@ -3081,6 +3216,8 @@ def main():
     )
     if args.seed_from_existing_h5:
         joint_fit["seed_from_existing_h5"] = os.path.abspath(args.seed_from_existing_h5)
+    joint_fit["snr_db"] = np.asarray(snr_db, dtype=np.float64)
+    joint_fit["source_indices"] = np.asarray(source_indices, dtype=np.int32)
     output_base = args.output_base or f"{DEFAULT_OUTPUT_BASE}_{event_id}"
     write_h5(
         output_base,

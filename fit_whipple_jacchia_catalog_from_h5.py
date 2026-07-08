@@ -69,6 +69,122 @@ def finite_percentile(values, q, axis=0):
     return np.nanpercentile(arr, q, axis=axis)
 
 
+def bic_from_joint_fit(joint_fit):
+    path_keep = np.asarray(joint_fit.get("path_keep", []), dtype=bool)
+    fft_keep = np.asarray(joint_fit.get("fft_keep", []), dtype=bool)
+    path_resid = np.asarray(joint_fit.get("normalized_path_residuals", []), dtype=np.float64)
+    fft_resid = np.asarray(joint_fit.get("normalized_fft_residuals", []), dtype=np.float64)
+    values = []
+    if path_resid.shape == path_keep.shape:
+        values.append(path_resid[path_keep])
+    if fft_resid.shape == fft_keep.shape:
+        values.append(fft_resid[fft_keep])
+    if not values:
+        return np.nan, np.nan, 0, 0
+    residuals = np.concatenate([np.ravel(v) for v in values])
+    residuals = residuals[np.isfinite(residuals)]
+    n_obs = int(residuals.size)
+    k_params = int(np.asarray(joint_fit.get("full_params", joint_fit.get("params", [])), dtype=np.float64).size)
+    if n_obs <= 0 or k_params <= 0:
+        return np.nan, np.nan, n_obs, k_params
+    chi2 = float(np.sum(residuals**2.0))
+    bic = float(chi2 + k_params * np.log(n_obs))
+    return bic, chi2, n_obs, k_params
+
+
+def constant_velocity_seed(source_joint):
+    params = np.asarray(source_joint.get("params", []), dtype=np.float64)
+    if params.size >= 6 and np.all(np.isfinite(params[:6])):
+        return params[:6]
+    x = np.asarray(source_joint["x_gcrs_m"], dtype=np.float64)
+    v = np.asarray(source_joint["v_gcrs_mps"], dtype=np.float64)
+    return np.concatenate([x[0], v[0]])
+
+
+def add_dynamic_mass_summary(best, times_ns, rho_of_alt_m):
+    """Attach analytic dynamic-mass products derived from the WJ fit."""
+
+    t_rel_s = np.asarray(best.get("t_rel_s", []), dtype=np.float64)
+    mass_kg, radius_m, area_per_mass_m2_kg = fit.dynamic_mass_from_whipple_state(
+        best.get("params", []),
+        t_rel_s,
+        best.get("x_itrs_m", []),
+        best.get("v_gcrs_mps", []),
+        rho_of_alt_m,
+    )
+    best["dynamic_mass_kg"] = mass_kg
+    best["dynamic_radius_m"] = radius_m
+    best["dynamic_area_per_mass_m2_kg"] = area_per_mass_m2_kg
+    best["dynamic_mass_equation"] = "m/A = gamma rho_air v(t)^2 / |dv/dt|"
+    best["dynamic_mass_speed_model"] = "v(t) = v_inf - a exp(b t); |dv/dt| = a b exp(b t)"
+    best["dynamic_mass_epoch"] = "first_detected_pulse"
+    best["dynamic_mass_area_convention"] = "A = pi r^2 for compact spherical meteoroid equivalent radius"
+    best["dynamic_mass_drag_coefficient_gamma"] = float(fit.DYNAMIC_MASS_DRAG_COEFFICIENT)
+    best["dynamic_mass_area_factor"] = float(fit.DYNAMIC_MASS_AREA_FACTOR)
+
+    finite = np.isfinite(mass_kg) & (mass_kg > 0.0) & np.isfinite(radius_m) & (radius_m > 0.0)
+    idx0 = int(np.flatnonzero(finite)[0]) if np.any(finite) else 0
+    best["initial_dynamic_mass_kg"] = float(mass_kg[idx0]) if mass_kg.size else np.nan
+    best["initial_dynamic_radius_m"] = float(radius_m[idx0]) if radius_m.size else np.nan
+    best["initial_dynamic_area_per_mass_m2_kg"] = (
+        float(area_per_mass_m2_kg[idx0]) if area_per_mass_m2_kg.size else np.nan
+    )
+
+    mass0_samples = []
+    radius0_samples = []
+    if (
+        "bootstrap_params" in best
+        and "bootstrap_x_gcrs_m" in best
+        and "bootstrap_v_gcrs_mps" in best
+    ):
+        params = np.asarray(best["bootstrap_params"], dtype=np.float64)
+        x_gcrs = np.asarray(best["bootstrap_x_gcrs_m"], dtype=np.float64)
+        v_gcrs = np.asarray(best["bootstrap_v_gcrs_mps"], dtype=np.float64)
+        success = np.asarray(best.get("bootstrap_optimizer_success", np.ones(params.shape[0], dtype=bool)), dtype=bool)
+        n_boot = min(params.shape[0], x_gcrs.shape[0], v_gcrs.shape[0], success.shape[0])
+        for sample_idx in range(n_boot):
+            if not success[sample_idx]:
+                continue
+            try:
+                sample_x_itrs, _sample_v_itrs = base.gcrs_state_samples_to_itrs(
+                    x_gcrs[sample_idx],
+                    v_gcrs[sample_idx],
+                    times_ns,
+                )
+                sample_mass, sample_radius, _sample_area_per_mass = fit.dynamic_mass_from_whipple_state(
+                    params[sample_idx],
+                    t_rel_s,
+                    sample_x_itrs,
+                    v_gcrs[sample_idx],
+                    rho_of_alt_m,
+                )
+            except Exception:
+                continue
+            if sample_mass.size <= idx0 or sample_radius.size <= idx0:
+                continue
+            if np.isfinite(sample_mass[idx0]) and sample_mass[idx0] > 0.0:
+                mass0_samples.append(float(sample_mass[idx0]))
+            if np.isfinite(sample_radius[idx0]) and sample_radius[idx0] > 0.0:
+                radius0_samples.append(float(sample_radius[idx0]))
+
+    best["initial_dynamic_mass_bootstrap_kg"] = np.asarray(mass0_samples, dtype=np.float64)
+    best["initial_dynamic_radius_bootstrap_m"] = np.asarray(radius0_samples, dtype=np.float64)
+    best["initial_dynamic_mass_bootstrap_samples_successful"] = int(len(mass0_samples))
+    if len(mass0_samples):
+        best["initial_dynamic_mass_median_kg"] = float(np.nanmedian(mass0_samples))
+        best["initial_dynamic_mass_lo95_kg"] = float(np.nanpercentile(mass0_samples, 2.5))
+        best["initial_dynamic_mass_hi95_kg"] = float(np.nanpercentile(mass0_samples, 97.5))
+    if len(radius0_samples):
+        best["initial_dynamic_radius_median_m"] = float(np.nanmedian(radius0_samples))
+        best["initial_dynamic_radius_lo95_m"] = float(np.nanpercentile(radius0_samples, 2.5))
+        best["initial_dynamic_radius_hi95_m"] = float(np.nanpercentile(radius0_samples, 97.5))
+
+    # Make generic mass/radius fields point to the selected canonical mass product.
+    best["initial_mass_kg"] = float(best["initial_dynamic_mass_kg"])
+    best["initial_radius_m"] = float(best["initial_dynamic_radius_m"])
+    return best
+
+
 def add_whipple_bootstrap(
     best,
     measured,
@@ -267,14 +383,25 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
                     "n_fft_observations": float(jg.attrs.get("n_fft_observations", np.nan)),
                     "start_speed_km_s": float(np.asarray(jg["speed_km_s"])[0]) if "speed_km_s" in jg else np.nan,
                     "end_speed_km_s": float(np.asarray(jg["speed_km_s"])[-1]) if "speed_km_s" in jg else np.nan,
-                    "a_mps": float(10.0 ** np.asarray(jg["params"])[6]) if "params" in jg else np.nan,
-                    "b_s_inv": float(10.0 ** np.asarray(jg["params"])[7]) if "params" in jg else np.nan,
+                    "a_mps": float(10.0 ** np.asarray(jg["params"])[6])
+                    if "params" in jg and np.asarray(jg["params"]).size >= 8
+                    else np.nan,
+                    "b_s_inv": float(10.0 ** np.asarray(jg["params"])[7])
+                    if "params" in jg and np.asarray(jg["params"]).size >= 8
+                    else np.nan,
                     "heliocentric_eccentricity": float(jg.attrs.get("heliocentric_eccentricity", np.nan)),
                     "bootstrap_eccentricity_lo95": float(jg.attrs.get("bootstrap_eccentricity_lo95", np.nan)),
                     "bootstrap_eccentricity_hi95": float(jg.attrs.get("bootstrap_eccentricity_hi95", np.nan)),
                     "bootstrap_interstellar_fraction_e_gt_1": float(jg.attrs.get("bootstrap_interstellar_fraction_e_gt_1", np.nan)),
                     "bootstrap_samples_successful": float(jg.attrs.get("bootstrap_samples_successful", np.nan)),
                     "bootstrap_log10_a_log10_b_corr": float(jg.attrs.get("bootstrap_log10_a_log10_b_corr", np.nan)),
+                    "bic_whipple_jacchia": float(jg.attrs.get("bic_whipple_jacchia", np.nan)),
+                    "bic_constant_velocity": float(jg.attrs.get("bic_constant_velocity", np.nan)),
+                    "delta_bic_constant_minus_whipple_jacchia": float(jg.attrs.get("delta_bic_constant_minus_whipple_jacchia", np.nan)),
+                    "initial_dynamic_mass_kg": float(jg.attrs.get("initial_dynamic_mass_kg", np.nan)),
+                    "initial_dynamic_mass_lo95_kg": float(jg.attrs.get("initial_dynamic_mass_lo95_kg", np.nan)),
+                    "initial_dynamic_mass_hi95_kg": float(jg.attrs.get("initial_dynamic_mass_hi95_kg", np.nan)),
+                    "initial_dynamic_mass_bootstrap_samples_successful": float(jg.attrs.get("initial_dynamic_mass_bootstrap_samples_successful", np.nan)),
                 }
         except Exception:
             pass
@@ -311,7 +438,32 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
     reference_itrs = np.asarray(source_joint["x_itrs_m"], dtype=np.float64)
     rho_of_alt_m, _meta = base.density_interpolator(times_ns, reference_itrs)
 
-    best = None
+    constant_fit = None
+    try:
+        constant_fit = fit.fit_joint_delay_doppler(
+            measured,
+            times_ns,
+            rho_of_alt_m,
+            constant_velocity_seed(source_joint),
+            sigma_m,
+            fft_offset_hz,
+            fft_keep,
+            sigma_fft_hz,
+            keep_rows=np.ones(len(times_ns), dtype=bool),
+            epoch_time_ns=int(times_ns[0]),
+            fit_station_bias=bool(source_joint.get("fit_station_bias", True)),
+            fft_model=str(source_joint.get("fft_model", "range_offset_corrected_beat")),
+            reference_chirp_rate_scale=float(source_joint.get("reference_chirp_rate_scale", 1.0)),
+            path_keep=path_keep,
+            model_kind="constant_velocity",
+            residual_likelihood=str(source_joint.get("residual_likelihood", "student_t")),
+            student_t_nu_delay=float(source_joint.get("student_t_nu_delay", fit.DEFAULT_STUDENT_T_NU_DELAY)),
+            student_t_nu_fft=float(source_joint.get("student_t_nu_fft", fit.DEFAULT_STUDENT_T_NU_FFT)),
+        )
+    except Exception as exc:
+        constant_fit = {"constant_velocity_fit_error": str(exc)[:240]}
+
+    best_wj = None
     failures = []
     for p0 in whipple_seed_grid(source_joint, max_starts=max_starts):
         try:
@@ -338,16 +490,55 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
         except Exception as exc:
             failures.append(str(exc)[:160])
             continue
-        if best is None or candidate["weighted_rms"] < best["weighted_rms"]:
-            best = candidate
+        if best_wj is None or candidate["weighted_rms"] < best_wj["weighted_rms"]:
+            best_wj = candidate
 
-    if best is None:
+    if best_wj is None:
         return {
             "event_id": event_id,
             "status": "error",
             "output_base": str(output_base),
             "error": "all_starts_failed:" + ";".join(failures[:5]),
         }
+
+    bic_wj, chi2_wj, n_obs_wj, k_wj = bic_from_joint_fit(best_wj)
+    if isinstance(constant_fit, dict) and "params" in constant_fit:
+        bic_cv, chi2_cv, n_obs_cv, k_cv = bic_from_joint_fit(constant_fit)
+    else:
+        bic_cv, chi2_cv, n_obs_cv, k_cv = np.nan, np.nan, 0, 0
+    delta_bic_constant_minus_wj = float(bic_cv - bic_wj) if np.all(np.isfinite([bic_cv, bic_wj])) else np.nan
+    selected_model = "whipple_speed"
+    if np.isfinite(delta_bic_constant_minus_wj) and delta_bic_constant_minus_wj < 0.0:
+        selected_model = "constant_velocity"
+
+    best = best_wj if selected_model == "whipple_speed" else constant_fit
+    best["bic_whipple_jacchia"] = float(bic_wj)
+    best["bic_constant_velocity"] = float(bic_cv)
+    best["chi2_whipple_jacchia"] = float(chi2_wj)
+    best["chi2_constant_velocity"] = float(chi2_cv)
+    best["n_bic_observations"] = int(max(n_obs_wj, n_obs_cv))
+    best["n_bic_params_whipple_jacchia"] = int(k_wj)
+    best["n_bic_params_constant_velocity"] = int(k_cv)
+    best["delta_bic_constant_minus_whipple_jacchia"] = float(delta_bic_constant_minus_wj)
+    best["bic_selected_model"] = selected_model
+    best["bic_selection_rule"] = (
+        "Dynamic mass is estimated only when BIC favors Whipple-Jacchia over constant velocity "
+        "(delta_bic_constant_minus_whipple_jacchia > 0)."
+    )
+    if selected_model == "constant_velocity":
+        best["whipple_jacchia_weighted_rms"] = float(best_wj.get("weighted_rms", np.nan))
+        best["whipple_jacchia_rms_total_path_residual_m"] = float(best_wj.get("rms_total_path_residual_m", np.nan))
+        best["whipple_jacchia_rms_path_rate_residual_mps"] = float(best_wj.get("rms_path_rate_residual_mps", np.nan))
+        best["dynamic_mass_not_estimated_reason"] = "BIC favors constant velocity over Whipple-Jacchia"
+        best["initial_dynamic_mass_kg"] = np.nan
+        best["initial_dynamic_radius_m"] = np.nan
+        best["initial_dynamic_mass_lo95_kg"] = np.nan
+        best["initial_dynamic_mass_hi95_kg"] = np.nan
+        best["initial_dynamic_radius_lo95_m"] = np.nan
+        best["initial_dynamic_radius_hi95_m"] = np.nan
+        best["initial_dynamic_mass_bootstrap_samples_successful"] = 0
+        best["initial_mass_kg"] = np.nan
+        best["initial_radius_m"] = np.nan
 
     fit_station_bias = bool(source_joint.get("fit_station_bias", True))
     fft_model = str(source_joint.get("fft_model", "range_offset_corrected_beat"))
@@ -357,25 +548,31 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
     student_t_nu_fft = float(source_joint.get("student_t_nu_fft", fit.DEFAULT_STUDENT_T_NU_FFT))
     event_seed_offset = int(hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:8], 16)
     sample_seed = None if bootstrap_seed is None else int(bootstrap_seed) + event_seed_offset
-    best = add_whipple_bootstrap(
-        best,
-        measured,
-        times_ns,
-        rho_of_alt_m,
-        sigma_m,
-        fft_offset_hz,
-        fft_keep,
-        sigma_fft_hz,
-        path_keep,
-        fit_station_bias,
-        fft_model,
-        reference_chirp_rate_scale,
-        residual_likelihood,
-        student_t_nu_delay,
-        student_t_nu_fft,
-        bootstrap_samples,
-        sample_seed,
-    )
+    if selected_model == "whipple_speed":
+        best = add_whipple_bootstrap(
+            best,
+            measured,
+            times_ns,
+            rho_of_alt_m,
+            sigma_m,
+            fft_offset_hz,
+            fft_keep,
+            sigma_fft_hz,
+            path_keep,
+            fit_station_bias,
+            fft_model,
+            reference_chirp_rate_scale,
+            residual_likelihood,
+            student_t_nu_delay,
+            student_t_nu_fft,
+            bootstrap_samples,
+            sample_seed,
+        )
+        best = add_dynamic_mass_summary(best, times_ns, rho_of_alt_m)
+    else:
+        best["bootstrap_enabled"] = False
+        best["bootstrap_samples_requested"] = 0
+        best["bootstrap_samples_successful"] = 0
     state0 = np.concatenate(
         [
             np.asarray(best["x_gcrs_m"], dtype=np.float64)[0],
@@ -393,6 +590,9 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
 
     best["surrogate_model_family"] = "Whipple-Jacchia fixed-direction exponential deceleration"
     best["surrogate_model_equation"] = "v(t) = (v0 - a exp(b t)) u0; x(t) is the analytic time integral"
+    if selected_model == "constant_velocity":
+        best["surrogate_model_family"] = "constant velocity"
+        best["surrogate_model_equation"] = "x(t) = x0 + v0 t"
     best["source_event_h5"] = str(source_h5)
     best["source_catalog_dir"] = str(source_h5.parent)
     best["n_whipple_jacchia_starts"] = int(len(whipple_seed_grid(source_joint, max_starts=max_starts)))
@@ -430,6 +630,7 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
 
     params = np.asarray(best["params"], dtype=np.float64)
     speed = np.asarray(best["speed_km_s"], dtype=np.float64)
+    is_wj_selected = str(best.get("bic_selected_model", best.get("dynamical_model", ""))) == "whipple_speed"
     return {
         "event_id": event_id,
         "status": "ok",
@@ -447,9 +648,19 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
         "n_fft_observations": float(best["n_fft_observations"]),
         "start_speed_km_s": float(speed[0]) if speed.size else np.nan,
         "end_speed_km_s": float(speed[-1]) if speed.size else np.nan,
-        "a_mps": float(10.0 ** params[6]),
-        "b_s_inv": float(10.0 ** params[7]),
+        "a_mps": float(10.0 ** params[6]) if is_wj_selected and params.size >= 8 else np.nan,
+        "b_s_inv": float(10.0 ** params[7]) if is_wj_selected and params.size >= 8 else np.nan,
         "heliocentric_eccentricity": float(best.get("heliocentric_eccentricity", np.nan)),
+        "bic_whipple_jacchia": float(best.get("bic_whipple_jacchia", np.nan)),
+        "bic_constant_velocity": float(best.get("bic_constant_velocity", np.nan)),
+        "delta_bic_constant_minus_whipple_jacchia": float(best.get("delta_bic_constant_minus_whipple_jacchia", np.nan)),
+        "selected_model_is_whipple_jacchia": float(1.0 if is_wj_selected else 0.0),
+        "initial_dynamic_mass_kg": float(best.get("initial_dynamic_mass_kg", np.nan)),
+        "initial_dynamic_mass_lo95_kg": float(best.get("initial_dynamic_mass_lo95_kg", np.nan)),
+        "initial_dynamic_mass_hi95_kg": float(best.get("initial_dynamic_mass_hi95_kg", np.nan)),
+        "initial_dynamic_mass_bootstrap_samples_successful": float(
+            best.get("initial_dynamic_mass_bootstrap_samples_successful", np.nan)
+        ),
         "n_starts": float(best["n_whipple_jacchia_starts"]),
         "n_failures": float(best["n_whipple_jacchia_failures"]),
         "bootstrap_samples_requested": float(best.get("bootstrap_samples_requested", np.nan)),
@@ -490,6 +701,14 @@ def write_summary(path, rows, args):
         "a_mps",
         "b_s_inv",
         "heliocentric_eccentricity",
+        "bic_whipple_jacchia",
+        "bic_constant_velocity",
+        "delta_bic_constant_minus_whipple_jacchia",
+        "selected_model_is_whipple_jacchia",
+        "initial_dynamic_mass_kg",
+        "initial_dynamic_mass_lo95_kg",
+        "initial_dynamic_mass_hi95_kg",
+        "initial_dynamic_mass_bootstrap_samples_successful",
         "n_starts",
         "n_failures",
         "bootstrap_samples_requested",
