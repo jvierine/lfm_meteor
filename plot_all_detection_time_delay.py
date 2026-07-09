@@ -26,10 +26,9 @@ UTC8_NS = int(8 * 3600 * 1e9)
 SANYA_RANGE_CORRECTION_KM = -16.0186
 SITE_ORDER = ("sanya", "danzhou", "wenchang")
 SITE_LABEL = {"sanya": "Sanya monostatic", "danzhou": "Danzhou bistatic", "wenchang": "Wenchang bistatic"}
-SITE_MARKER = {"sanya": "o", "danzhou": "^", "wenchang": "s"}
 SITE_COLOR = {"sanya": "#1f77b4", "danzhou": "#d95f02", "wenchang": "#2ca02c"}
 NOISE_SITE_LABEL = {"sanya": "Sanya", "danzhou": "Danzhou", "wenchang": "Wenchang"}
-NOISE_SITE_COLOR = {"sanya": "#1f77b4", "danzhou": "#2ca02c", "wenchang": "#d62728"}
+NOISE_SITE_COLOR = SITE_COLOR
 SANYA_AZ_DEG = 15.0
 SANYA_EL_DEG = 75.0
 SANYA_LOW_HEIGHT_KM = 80.0
@@ -414,19 +413,19 @@ def make_plot(path: str, pdf_path: str, rows: list[dict], summaries: list[dict],
         fig, (ax, ax_count, ax_noise) = plt.subplots(
             3,
             1,
-            figsize=(8.4, 8.0),
+            figsize=(8.4, 5.55),
             sharex=True,
             constrained_layout=True,
-            gridspec_kw={"height_ratios": [1.0, 1.0, 1.0]},
+            gridspec_kw={"height_ratios": [1.12, 0.78, 0.82]},
         )
     else:
         fig, (ax, ax_count) = plt.subplots(
             2,
             1,
-            figsize=(8.4, 5.8),
+            figsize=(8.4, 4.25),
             sharex=True,
             constrained_layout=True,
-            gridspec_kw={"height_ratios": [1.0, 1.0]},
+            gridspec_kw={"height_ratios": [1.12, 0.82]},
         )
         ax_noise = None
     ax_count.set_axisbelow(True)
@@ -441,18 +440,15 @@ def make_plot(path: str, pdf_path: str, rows: list[dict], summaries: list[dict],
             times,
             delays,
             color=SITE_COLOR[site],
-            s=7.0 if site == "sanya" else 13.0,
-            marker=SITE_MARKER[site],
-            alpha=0.58 if site == "sanya" else 0.74,
+            s=8.0,
+            marker="o",
+            alpha=0.62,
             linewidths=0,
-            label=f"{SITE_LABEL[site]} ({len(subset)})",
         )
-    ax.set_title("Head-echo detections through the Sanya tri-static experiment")
     if ax_noise is None:
         ax.set_xlabel("")
     ax.set_ylabel("Delay (us)")
     ax.grid(True, alpha=0.22)
-    ax.legend(loc="upper left", frameon=True)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     ax_solar = ax.twiny()
     ax_solar.set_xlim(ax.get_xlim())
@@ -489,7 +485,10 @@ def make_plot(path: str, pdf_path: str, rows: list[dict], summaries: list[dict],
     ax_count.set_ylabel("Events\nper hour")
     ax_count.set_yscale("log")
     ax_count.grid(True, which="both", alpha=0.22)
-    ax_count.legend(loc="upper left", ncol=1, frameon=True)
+    handles, labels = ax_count.get_legend_handles_labels()
+    tri_handles = [handle for handle, label in zip(handles, labels) if label == "Tri-static candidates"]
+    if tri_handles:
+        ax_count.legend(tri_handles, ["Tri-static candidates"], loc="upper left", frameon=True)
     ax_count.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
 
     if ax_noise is not None:
@@ -509,8 +508,9 @@ def make_plot(path: str, pdf_path: str, rows: list[dict], summaries: list[dict],
                 monitor["floor_time"],
                 y_k,
                 color=color,
-                s=12.0,
-                alpha=0.72,
+                s=8.0,
+                marker="o",
+                alpha=0.62,
                 linewidths=0,
                 label=NOISE_SITE_LABEL[site],
                 zorder=3,
@@ -538,7 +538,7 @@ def make_plot(path: str, pdf_path: str, rows: list[dict], summaries: list[dict],
         ax_noise.set_xlabel("UTC time")
         ax_noise.set_ylabel("Noise\ntemperature (K)")
         ax_noise.grid(True, alpha=0.22)
-        ax_noise.legend(loc="upper right", ncol=3, frameon=True, fontsize=8.5)
+        ax_noise.legend(loc="upper left", ncol=3, frameon=True, fontsize=8.5)
         ax_noise.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     else:
         ax_count.set_xlabel("UTC time")
