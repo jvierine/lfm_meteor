@@ -5,6 +5,7 @@ import h5py
 import jcoord
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
 from matplotlib.colors import LogNorm
 
 from grid_search_delays_beam_axis import DAN_CENTER_US, MAX_LAT_DEG, WEN_CENTER_US, build_trajectories, solve_trajectory_points
@@ -18,7 +19,10 @@ OUTPUT_PDF = os.path.join("results", "meteor_height_histogram.pdf")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_height_histogram.png"
 PAPER_OUTPUT_PDF = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_height_histogram.pdf"
 INPUT_H5 = os.path.join("results", "all_tristatic_ceplecha_snr_weighted_v20260616d.h5")
-INPUT_CATALOG_DIR = os.path.join("results", "tristatic")
+INPUT_CATALOG_DIR = os.path.join("results", "tristatic_shrinking_radius_profile_fixedmask_capped_logr61_20260708")
+FALLBACK_CATALOG_DIR = os.path.join("results", "tristatic_whipple_jacchia_monotonic_bootstrap_orbit100_20260702")
+BEAM_TRACE_CATALOG_DIR = FALLBACK_CATALOG_DIR
+SANYA_CONTAINMENT_AREA_H5 = os.path.join("results", "sanya_gain_containment_area_v20260703b.h5")
 BIN_SIZE_KM = 1.0
 COMMON_VOLUME_ALT_KM = 94.988
 MONOSTATIC_SANYA_H5 = os.path.join("results", "sanya_monostatic_ranges_v20260613b.h5")
@@ -148,8 +152,17 @@ def receiver_gain_profiles(height_grid_km):
     }
 
 
-def joint_fit_paths(catalog_dir):
-    return sorted(glob.glob(os.path.join(catalog_dir, "joint_delay_doppler_fft_tri_*.h5")))
+def event_id_from_path(path):
+    return os.path.splitext(os.path.basename(path))[0].replace("joint_delay_doppler_fft_", "")
+
+
+def joint_fit_paths(catalog_dir, fallback_catalog_dir=FALLBACK_CATALOG_DIR):
+    paths = sorted(glob.glob(os.path.join(catalog_dir, "joint_delay_doppler_fft_tri_*.h5")))
+    by_event = {event_id_from_path(path): path for path in paths}
+    if fallback_catalog_dir:
+        for path in sorted(glob.glob(os.path.join(fallback_catalog_dir, "joint_delay_doppler_fft_tri_*.h5"))):
+            by_event.setdefault(event_id_from_path(path), path)
+    return [by_event[event_id] for event_id in sorted(by_event)]
 
 
 def collect_joint_heights(catalog_dir):
@@ -211,16 +224,44 @@ def collect_joint_positions(catalog_dir):
     return np.vstack(chunks), len(paths)
 
 
+def collect_joint_position_traces(catalog_dir):
+    traces = []
+    paths = joint_fit_paths(catalog_dir, fallback_catalog_dir=None)
+    for path in paths:
+        with h5py.File(path, "r") as h:
+            if "joint_fit" not in h or "x_itrs_m" not in h["joint_fit"]:
+                continue
+            x_itrs_m = np.asarray(h["joint_fit"]["x_itrs_m"][:], dtype=np.float64)
+            finite = np.all(np.isfinite(x_itrs_m), axis=1)
+            if np.count_nonzero(finite) >= 2:
+                traces.append(x_itrs_m[finite])
+    if not traces:
+        raise RuntimeError(f"No finite joint-fit x_itrs_m traces found in {catalog_dir}")
+    return traces, len(paths)
+
+
 def beam_panel_data(catalog_dir):
-    positions_ecef_m, n_events = collect_joint_positions(catalog_dir)
+    traces_ecef_m, n_events = collect_joint_position_traces(catalog_dir)
+    positions_ecef_m = np.vstack(traces_ecef_m)
     sanya_lat_deg, sanya_lon_deg, _sanya_alt_m = jcoord.ecef2geodetic(*beam_hist.gfit.LINK_TX_POSITIONS_M[0])
-    los_ecef = beam_hist.unit(positions_ecef_m - beam_hist.gfit.LINK_TX_POSITIONS_M[0][None, :])
-    los_enu = beam_hist.ecef_to_enu_vectors(los_ecef, sanya_lat_deg, sanya_lon_deg)
 
     site = gain_model.SITES[0]
     pointing = gain_model.unit(gain_model.azel_to_enu(site.pointing_az_deg, site.pointing_el_deg))
     east_axis, north_axis = beam_hist.local_sky_axes(pointing)
-    east_deg, north_deg = beam_hist.angular_offsets_deg(los_enu, pointing, east_axis, north_axis)
+
+    def offsets_for_positions(x_itrs_m):
+        los_ecef = beam_hist.unit(x_itrs_m - beam_hist.gfit.LINK_TX_POSITIONS_M[0][None, :])
+        los_enu = beam_hist.ecef_to_enu_vectors(los_ecef, sanya_lat_deg, sanya_lon_deg)
+        return beam_hist.angular_offsets_deg(los_enu, pointing, east_axis, north_axis)
+
+    east_deg, north_deg = offsets_for_positions(positions_ecef_m)
+    angular_traces = []
+    for trace_ecef_m in traces_ecef_m:
+        trace_east_deg, trace_north_deg = offsets_for_positions(trace_ecef_m)
+        finite_trace = np.isfinite(trace_east_deg) & np.isfinite(trace_north_deg)
+        if np.count_nonzero(finite_trace) >= 2:
+            angular_traces.append(np.column_stack([trace_east_deg[finite_trace], trace_north_deg[finite_trace]]))
+
     finite = np.isfinite(east_deg) & np.isfinite(north_deg)
     east_deg = east_deg[finite]
     north_deg = north_deg[finite]
@@ -250,7 +291,19 @@ def beam_panel_data(catalog_dir):
         "gain_db": gain_db,
         "n_events": n_events,
         "n_positions": len(east_deg),
+        "traces": angular_traces,
     }
+
+
+def load_sanya_containment_contour(path=SANYA_CONTAINMENT_AREA_H5):
+    if not os.path.exists(path):
+        return None
+    with h5py.File(path, "r") as h:
+        return {
+            "cutoff_relative_gain_db": float(h.attrs["cutoff_relative_gain_db"]),
+            "containment_fraction": float(h.attrs["containment_fraction"]),
+            "area_horizontal_km2": float(h.attrs["area_horizontal_km2"]),
+        }
 
 
 def collect_sanya_monostatic_heights():
@@ -315,7 +368,8 @@ def main():
     bins = np.arange(bin_start, bin_stop + BIN_SIZE_KM, BIN_SIZE_KM)
     gain_height_km = np.linspace(HEIGHT_MIN_KM, HEIGHT_MAX_KM, 401)
     receiver_gain_dbi = receiver_gain_profiles(gain_height_km)
-    beam = beam_panel_data(INPUT_CATALOG_DIR)
+    beam = beam_panel_data(BEAM_TRACE_CATALOG_DIR)
+    containment = load_sanya_containment_contour()
 
     fig, (ax, ax_gain, ax_beam) = plt.subplots(
         1,
@@ -324,39 +378,34 @@ def main():
         gridspec_kw={"width_ratios": [1.18, 0.92, 1.08], "wspace": 0.22},
     )
 
-    tri_weights = np.ones_like(alt_km_for_plot, dtype=np.float64)
-    tri_counts, _, _ = ax.hist(
-        alt_km_for_plot,
-        bins=bins,
-        weights=tri_weights,
-        orientation="horizontal",
+    tri_counts, _ = np.histogram(alt_km_for_plot, bins=bins)
+    mono_counts = np.histogram(mono_alt_km_for_plot, bins=bins)[0] if mono_alt_km_for_plot.size > 0 else None
+    bin_centers = 0.5 * (bins[:-1] + bins[1:])
+    ax.barh(
+        bin_centers,
+        tri_counts,
+        height=np.diff(bins),
+        align="center",
         color="#315f72",
         edgecolor="white",
         linewidth=0.6,
         alpha=0.9,
         label=f"Tri-static ({alt_km_for_plot.size})",
     )
-
-    mono_counts = None
-    if mono_alt_km_for_plot.size > 0:
-        ax_mono = ax.twiny()
-        mono_weights = np.ones_like(mono_alt_km_for_plot, dtype=np.float64)
-        mono_counts, _, _ = ax_mono.hist(
-            mono_alt_km_for_plot,
-            bins=bins,
-            weights=mono_weights,
+    if mono_counts is not None:
+        ax.stairs(
+            mono_counts,
+            bins,
             orientation="horizontal",
-            histtype="step",
             color="#b34a2e",
             linewidth=1.8,
             label=f"Sanya monostatic ({mono_alt_km_for_plot.size})",
         )
-        ax_mono.set_xlabel("Sanya monostatic count", color="#b34a2e")
-        ax_mono.tick_params(axis="x", colors="#b34a2e")
-    else:
-        ax_mono = None
-
-    ax.set_xlabel("Tri-static count")
+    max_count = float(np.nanmax(tri_counts)) if tri_counts.size else 1.0
+    if mono_counts is not None and mono_counts.size:
+        max_count = max(max_count, float(np.nanmax(mono_counts)))
+    ax.set_xlim(0.0, max(1.0, 1.08 * max_count))
+    ax.set_xlabel("Count per 1 km height bin")
     ax.set_ylabel("Height (km)")
     ax.grid(True, axis="x", alpha=0.25)
     ax.set_ylim(HEIGHT_MIN_KM, HEIGHT_MAX_KM)
@@ -372,12 +421,7 @@ def main():
     ax_gain.legend(loc="lower right", frameon=False)
     add_panel_label(ax_gain, "(b)")
 
-    handles, labels = ax.get_legend_handles_labels()
-    if ax_mono is not None:
-        mono_handles, mono_labels = ax_mono.get_legend_handles_labels()
-        handles.extend(mono_handles)
-        labels.extend(mono_labels)
-    ax.legend(handles, labels, loc="upper right", frameon=False)
+    ax.legend(loc="upper right", frameon=False)
 
     hist = ax_beam.pcolormesh(
         beam["east_edges"],
@@ -389,6 +433,15 @@ def main():
         alpha=0.82,
         rasterized=True,
     )
+    if beam["traces"]:
+        trace_collection = LineCollection(
+            beam["traces"],
+            colors=[(0.96, 0.96, 0.96, 0.42)],
+            linewidths=0.45,
+            zorder=3,
+            rasterized=True,
+        )
+        ax_beam.add_collection(trace_collection)
     ax_beam.contour(
         beam["east_grid"],
         beam["north_grid"],
@@ -398,6 +451,44 @@ def main():
         linewidths=[0.7, 0.8, 0.9, 1.0, 1.25],
         linestyles=[":", "--", "-.", "-", "-"],
     )
+    if containment is not None:
+        containment_level = containment["cutoff_relative_gain_db"]
+        containment_contour = ax_beam.contour(
+            beam["east_grid"],
+            beam["north_grid"],
+            beam["gain_db"],
+            levels=[containment_level],
+            colors=["#00a6d6"],
+            linewidths=[1.8],
+            linestyles=["-"],
+        )
+        ax_beam.clabel(
+            containment_contour,
+            fmt={containment_level: f"95% event contour ({containment_level:.1f} dB)"},
+            inline=True,
+            fontsize=7.5,
+            colors=["#006d8f"],
+        )
+        ax_beam.text(
+            0.03,
+            0.06,
+            (
+                "95% event contour\n"
+                f"{containment_level:.1f} dB, "
+                f"{containment['area_horizontal_km2']:.1f} km$^2$"
+            ),
+            transform=ax_beam.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=7.6,
+            color="#006d8f",
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.72,
+                "boxstyle": "square,pad=0.18",
+            },
+        )
     ax_beam.axhline(0.0, color="0.2", lw=0.7, alpha=0.6)
     ax_beam.axvline(0.0, color="0.2", lw=0.7, alpha=0.6)
     ax_beam.set_aspect("equal", adjustable="box")
@@ -441,6 +532,12 @@ def main():
     print(f"bins: {bin_start:.0f} to {bin_stop:.0f} km in {BIN_SIZE_KM:.0f} km steps")
     print(INPUT_CATALOG_DIR if joint_fit_paths(INPUT_CATALOG_DIR) else (INPUT_H5 if os.path.exists(INPUT_H5) else "legacy point solver"))
     print(f"beam positions: {beam['n_positions']} from {beam['n_events']} events")
+    if containment is not None:
+        print(
+            "sanya 95% event containment contour: "
+            f"{containment['cutoff_relative_gain_db']:.3f} dB, "
+            f"{containment['area_horizontal_km2']:.3f} km^2 horizontal area"
+        )
     print(OUTPUT_PNG)
     print(OUTPUT_PDF)
     print(PAPER_OUTPUT_PNG)
