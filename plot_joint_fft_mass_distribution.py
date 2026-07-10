@@ -18,6 +18,7 @@ DEFAULT_MAX_SYNTHETIC_VELOCITY_RMS_MPS = 3000.0
 DEFAULT_MAX_SYNTHETIC_VELOCITY_MAX_MPS = 5000.0
 DEFAULT_MAX_SYNTHETIC_PATH_RATE_RMS_MPS = 3000.0
 DEFAULT_MAX_SYNTHETIC_PATH_RMS_M = 10.0
+RADIUS_START_GRID_UM = np.asarray([1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0], dtype=np.float64)
 
 
 def decode(value):
@@ -61,9 +62,46 @@ def radius_mass_95_bounds(radius_m, log10_radius_std):
     )
 
 
+def radius_profile_marginal_mass_bounds(group):
+    radius_m = finite_attr(group, "radius_profile_median_radius_m")
+    radius_95_lo_m = finite_attr(group, "radius_profile_lo95_radius_m")
+    radius_95_hi_m = finite_attr(group, "radius_profile_hi95_radius_m")
+    if (
+        not np.isfinite(radius_m)
+        or not np.isfinite(radius_95_lo_m)
+        or not np.isfinite(radius_95_hi_m)
+        or radius_m <= 0.0
+        or radius_95_lo_m <= 0.0
+        or radius_95_hi_m <= radius_95_lo_m
+        or radius_95_lo_m >= radius_m
+        or radius_95_hi_m <= radius_m
+    ):
+        return np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
+    return (
+        radius_m,
+        radius_95_lo_m,
+        radius_95_hi_m,
+        float(mass_from_radius(radius_m)),
+        float(mass_from_radius(radius_95_lo_m)),
+        float(mass_from_radius(radius_95_hi_m)),
+    )
+
+
 def finite_attr(group, name):
     value = float(group.attrs.get(name, np.nan))
     return value if np.isfinite(value) else np.nan
+
+
+def radius_grid_pin_fraction(group, radius_m, tolerance_fraction=0.005):
+    if "bootstrap_initial_radius_samples_m" not in group or not np.isfinite(radius_m) or radius_m <= 0.0:
+        return np.nan
+    samples_um = np.asarray(group["bootstrap_initial_radius_samples_m"][()], dtype=np.float64) * 1e6
+    samples_um = samples_um[np.isfinite(samples_um) & (samples_um > 0.0)]
+    if samples_um.size == 0:
+        return np.nan
+    radius_um = float(radius_m) * 1e6
+    nearest_grid_um = float(RADIUS_START_GRID_UM[np.argmin(np.abs(RADIUS_START_GRID_UM - radius_um))])
+    return float(np.mean(np.abs(samples_um - nearest_grid_um) / nearest_grid_um <= float(tolerance_fraction)))
 
 
 def load_joint_rows(catalog_dir):
@@ -72,17 +110,45 @@ def load_joint_rows(catalog_dir):
         with h5py.File(path, "r") as h:
             j = h["joint_fit"]
             radius_m = float(j.attrs["initial_radius_m"])
+            mass_kg = float(j.attrs["initial_mass_kg"])
             log10_radius_std = float(j.attrs.get("log10_radius_std", np.nan))
             radius_95_lo_m, radius_95_hi_m, mass_95_lo_kg, mass_95_hi_kg = radius_mass_95_bounds(
                 radius_m,
                 log10_radius_std,
             )
+            uncertainty_source = 0
+            (
+                profile_radius_m,
+                profile_radius_95_lo_m,
+                profile_radius_95_hi_m,
+                profile_mass_kg,
+                profile_mass_95_lo_kg,
+                profile_mass_95_hi_kg,
+            ) = radius_profile_marginal_mass_bounds(j)
+            if (
+                np.isfinite(profile_mass_kg)
+                and np.isfinite(profile_mass_95_lo_kg)
+                and np.isfinite(profile_mass_95_hi_kg)
+                and profile_mass_kg > 0.0
+                and profile_mass_95_lo_kg > 0.0
+                and profile_mass_95_lo_kg < profile_mass_kg
+                and profile_mass_95_hi_kg > profile_mass_95_lo_kg
+                and profile_mass_95_hi_kg > profile_mass_kg
+            ):
+                mass_kg = profile_mass_kg
+                mass_95_lo_kg = profile_mass_95_lo_kg
+                mass_95_hi_kg = profile_mass_95_hi_kg
+                radius_m = profile_radius_m
+                radius_95_lo_m = profile_radius_95_lo_m
+                radius_95_hi_m = profile_radius_95_hi_m
+                uncertainty_source = 2
             bootstrap_radius_95_lo_m = finite_attr(j, "bootstrap_radius0_lo95_m")
             bootstrap_radius_95_hi_m = finite_attr(j, "bootstrap_radius0_hi95_m")
             bootstrap_mass_95_lo_kg = finite_attr(j, "bootstrap_mass0_lo95_kg")
             bootstrap_mass_95_hi_kg = finite_attr(j, "bootstrap_mass0_hi95_kg")
             if (
-                np.isfinite(bootstrap_mass_95_lo_kg)
+                uncertainty_source == 0
+                and np.isfinite(bootstrap_mass_95_lo_kg)
                 and np.isfinite(bootstrap_mass_95_hi_kg)
                 and bootstrap_mass_95_lo_kg > 0.0
                 and bootstrap_mass_95_hi_kg > bootstrap_mass_95_lo_kg
@@ -92,13 +158,11 @@ def load_joint_rows(catalog_dir):
                 radius_95_lo_m = bootstrap_radius_95_lo_m
                 radius_95_hi_m = bootstrap_radius_95_hi_m
                 uncertainty_source = 1
-            else:
-                uncertainty_source = 0
             rows.append(
                 {
                     "event_id": decode(h.attrs["event_id"]),
                     "initial_radius_m": radius_m,
-                    "initial_mass_kg": float(j.attrs["initial_mass_kg"]),
+                    "initial_mass_kg": mass_kg,
                     "radius_95_lo_m": radius_95_lo_m,
                     "radius_95_hi_m": radius_95_hi_m,
                     "mass_95_lo_kg": mass_95_lo_kg,
@@ -155,6 +219,7 @@ def load_shrinking_radius_to_whipple_rows(catalog_dir, whipple_dir):
                     "uncertainty_source": 1,
                     "optimizer_success": float(bool(h.attrs.get("optimizer_success", False))),
                     "bootstrap_samples_successful": int(h.attrs.get("bootstrap_samples_successful", 0)),
+                    "radius_grid_pin_fraction": radius_grid_pin_fraction(h, finite_attr(h, "initial_radius_m")),
                     "synthetic_velocity_rms_mps": finite_attr(h, "synthetic_velocity_rms_mps"),
                     "synthetic_velocity_max_mps": synthetic_velocity_max_mps,
                     "synthetic_path_rms_m": finite_attr(h, "synthetic_path_rms_m"),
@@ -201,6 +266,7 @@ def selected_mask(rows, args):
         dtype=np.float64,
     )
     mass_95_width_dex = np.log10(mass_hi) - np.log10(mass_lo)
+    radius_grid_pin = np.asarray([r.get("radius_grid_pin_fraction", np.nan) for r in rows], dtype=np.float64)
     mask = (
         np.isfinite(radius)
         & np.isfinite(mass_lo)
@@ -232,9 +298,14 @@ def selected_mask(rows, args):
             | (synthetic_path_rate_rms <= float(args.max_synthetic_path_rate_rms_mps))
         )
         & (mass_95_width_dex <= args.max_mass_95_width_dex)
+        & (mass_95_width_dex >= args.min_mass_95_width_dex)
+        & (
+            ~np.isfinite(radius_grid_pin)
+            | (radius_grid_pin <= float(args.max_radius_grid_pin_fraction))
+        )
     )
     if np.isfinite(args.max_log10_radius_std):
-        mask &= (uncertainty_source == 1.0) | (np.isfinite(log10_std) & (log10_std <= args.max_log10_radius_std))
+        mask &= (uncertainty_source > 0.0) | (np.isfinite(log10_std) & (log10_std <= args.max_log10_radius_std))
     if args.min_fft_observations > 0:
         mask &= n_fft >= args.min_fft_observations
     if np.isfinite(args.max_fft_rms_hz):
@@ -257,6 +328,9 @@ def write_h5(output_base, rows, mask, args):
         h.attrs["max_path_rms_m"] = float(args.max_path_rms_m)
         h.attrs["max_log10_radius_std"] = float(args.max_log10_radius_std)
         h.attrs["max_mass_95_width_dex"] = float(args.max_mass_95_width_dex)
+        h.attrs["min_mass_95_width_dex"] = float(args.min_mass_95_width_dex)
+        h.attrs["max_radius_grid_pin_fraction"] = float(args.max_radius_grid_pin_fraction)
+        h.attrs["radius_grid_pin_tolerance_fraction"] = 0.005
         h.attrs["max_synthetic_velocity_rms_mps"] = float(args.max_synthetic_velocity_rms_mps)
         h.attrs["max_synthetic_velocity_max_mps"] = float(args.max_synthetic_velocity_max_mps)
         h.attrs["max_synthetic_path_rms_m"] = float(args.max_synthetic_path_rms_m)
@@ -297,7 +371,7 @@ def plot(output_base, rows, mask, args):
     log_mass_min = float(np.nanmin(log_mass))
     log_mass_max = float(np.nanmax(log_mass))
     log_mass_pad = max(0.05, 0.02 * (log_mass_max - log_mass_min))
-    bins = np.linspace(log_mass_min - log_mass_pad, log_mass_max + log_mass_pad, 25)
+    bins = np.linspace(log_mass_min - log_mass_pad, log_mass_max + log_mass_pad, 9)
     n_mass, _bins, mass_patches = ax.hist(
         log_mass,
         bins=bins,
@@ -311,8 +385,10 @@ def plot(output_base, rows, mask, args):
     ax.axvline(np.nanmedian(log_mass), color="#17463d", lw=1.8, ls="--")
     ax.set_xlabel(r"$\log_{10}(m_0)$, initial mass in kg")
     ax.set_ylabel("Number of fitted trajectories")
-    ax.set_title(r"Initial-mass distribution", pad=42)
-    ax.set_ylim(0.0, float(np.nanmax(n_mass)) / 0.45)
+    max_count = float(np.nanmax(n_mass))
+    ax.set_ylim(0.0, max_count / 0.45)
+    count_ticks = ax.get_yticks()
+    ax.set_yticks(count_ticks[(count_ticks >= 0.0) & (count_ticks <= max_count)])
 
     ax_diameter = ax.secondary_xaxis(
         "top",
@@ -365,12 +441,9 @@ def plot(output_base, rows, mask, args):
     ax.legend(
         [mass_patches[0], mass_err],
         [rf"Mass histogram, $n={len(masses)}$", r"Individual $m_0$ estimates"],
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.18),
+        loc="center right",
         ncol=1,
-        frameon=True,
-        framealpha=0.92,
-        edgecolor="0.82",
+        frameon=False,
         fontsize=9.2,
     )
     fig.savefig(output_base + ".png", dpi=300, bbox_inches="tight", pad_inches=0.03)
@@ -402,6 +475,8 @@ def main():
     parser.add_argument("--max-path-rms-m", type=float, default=np.inf)
     parser.add_argument("--max-log10-radius-std", type=float, default=0.5)
     parser.add_argument("--max-mass-95-width-dex", type=float, default=1.0)
+    parser.add_argument("--min-mass-95-width-dex", type=float, default=0.0)
+    parser.add_argument("--max-radius-grid-pin-fraction", type=float, default=0.5)
     parser.add_argument("--max-synthetic-velocity-rms-mps", type=float, default=DEFAULT_MAX_SYNTHETIC_VELOCITY_RMS_MPS)
     parser.add_argument("--max-synthetic-velocity-max-mps", type=float, default=DEFAULT_MAX_SYNTHETIC_VELOCITY_MAX_MPS)
     parser.add_argument("--max-synthetic-path-rms-m", type=float, default=DEFAULT_MAX_SYNTHETIC_PATH_RMS_M)
