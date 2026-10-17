@@ -28,15 +28,15 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             &mut p,
             [0., tc[i]],
             [edges[i] + 0.1, edges[i + 1] - 0.1],
-            "#456e7d",
+            "#7b3294",
             0.95,
         );
         step.extend([[mc[i], edges[i]], [mc[i], edges[i + 1]]]);
     }
-    p.push(Layer::Line(Line::new(step, "#b34a2e")));
+    p.push(Layer::Line(Line::new(step, COLORS[0])));
     let mut l = Legend::new(vec![
-        LegendEntry::line("Monostatic", "#b34a2e"),
-        LegendEntry::line("Tri-static", "#456e7d"),
+        LegendEntry::line("Monostatic", COLORS[0]),
+        LegendEntry::line("Tri-static", "#7b3294"),
     ]);
     l.position = LegendPosition::AboveCenter;
     l.padding_mm = 0.;
@@ -51,7 +51,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let mut p = Panel::new(Rect::new(80., 15., 51., 59.), a);
     p.major_grid("#e4e4e4", 0.4);
     let height = array(h, "gain_height_km")?;
-    for (site, color) in [("Danzhou", "#b34a2e"), ("Wenchang", "#2f7d4b")] {
+    for (site, color) in [("Danzhou", COLORS[1]), ("Wenchang", COLORS[2])] {
         curve(
             &mut p,
             &array(h, &format!("gain_{site}"))?,
@@ -61,8 +61,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         );
     }
     let mut l = Legend::new(vec![
-        LegendEntry::line("Danzhou", "#b34a2e"),
-        LegendEntry::line("Wenchang", "#2f7d4b"),
+        LegendEntry::line("Danzhou", COLORS[1]),
+        LegendEntry::line("Wenchang", COLORS[2]),
     ]);
     l.columns = 1;
     l.position = LegendPosition::AboveCenter;
