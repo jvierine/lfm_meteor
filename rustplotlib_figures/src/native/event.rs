@@ -33,7 +33,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let speed_scale = Scale::new(
         limits(&snr.iter().step_by(3).copied().collect::<Vec<_>>(), 0.01),
         Normalization::Linear,
-        ColorMap::turbo(),
+        ColorMap::plasma(),
     )?;
     let cid = f.scale(speed_scale.clone());
     let mut a = Axes::new(
