@@ -29,9 +29,12 @@ def main():
     parser.add_argument('--output',type=Path,default=DATA/'rcs_mass_fits.h5')
     parser.add_argument('--input-dir',type=Path,default=DATA)
     parser.add_argument('--rcs-input',type=Path,default=ROOT/'results/sanya_rcs_from_snr.h5')
+    parser.add_argument('--density-kg-m3',type=float,default=3300.)
     args=parser.parse_args()
+    if args.density_kg_m3<=0:parser.error('Bulk density must be positive')
     from sweep_sanya_ablation_detectability import collision_lengths,source_quantities
     material=metablate.material.get('asteroidal',as_dict=False)
+    material.bulk_density=args.density_kg_m3
     with h5py.File(args.input_dir/'detectability.h5') as f:critical=f.attrs['critical_density_m3']
     with h5py.File(args.input_dir/'ablation_mass_sweep.h5') as f:
         rad=f['contour_dimensionless_radius'][:];shape=f['contour_max_shape'][:]
@@ -39,7 +42,8 @@ def main():
     with h5py.File(args.rcs_input) as rcs, h5py.File(args.input_dir/'rcs_mass_inversion_inputs.h5') as states, h5py.File(args.output,'w') as out:
         out.attrs.update(status='running',objective='dBsm RCS weighted least squares',
             scope='all tri-static events, independent of dynamic-mass quality',
-            material='asteroidal 3300 kg/m3; all plasma-producing mass treated as Si',
+            material='asteroidal thermal/composition parameters; only bulk density varied; plasma source treated as Si',
+            bulk_density_kg_m3=material.bulk_density,
             rcs_input=str(rcs.filename),trajectory_input=str(states.filename),
             uncertainty='none yet; weights describe ideal single-pulse power noise only, not systematics',
             speed_convention='first-detection ITRS speed used as approximate speed at 150 km',
