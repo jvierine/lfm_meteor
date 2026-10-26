@@ -38,7 +38,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         let x:Vec<_>=array(&g,"ablation_rate_particles_s")?.iter().map(|v|v.log10()).collect();
         let y:Vec<_>=array(&g,"rcs_m2")?.iter().map(|v|10.*v.log10()).collect();
         dots(&mut p,&x,&y,"#007aaf",5.,1.,false)?;
-        entries.push(LegendEntry::line("Independent Maxwell solve (pilot)","#007aaf"));
+        entries.push(LegendEntry::circle("Independent Maxwell solve (pilot)","#007aaf"));
     }
     let mut legend=Legend::new(entries);
     legend.position=LegendPosition::AboveCenter;legend.columns=1;legend.avoid_data=false;
