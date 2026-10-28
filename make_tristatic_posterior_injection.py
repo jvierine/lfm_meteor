@@ -1,5 +1,6 @@
 """One end-to-end synthetic recovery case, not a coverage certification."""
 from pathlib import Path
+import argparse
 import h5py
 import numpy as np
 from scipy import stats
@@ -10,8 +11,7 @@ from fit_whipple_jacchia_catalog_from_h5 import load_group
 from refit_tristatic_mass_posterior import attach_geodetic_height, save_group
 
 
-def main():
-    source_path = Path('results/rcs_integrated_mass_fdtd_20261028/wj_bootstrap_sources/joint_delay_doppler_fft_tri_0010_1713798090639350891.h5')
+def make_injection(source_path, out, radius_um=30., seed=34522):
     with h5py.File(source_path) as h:
         source = load_group(h['joint_fit'])
         fft = load_group(h['fft_observations'])
@@ -20,7 +20,8 @@ def main():
     density, _ = base.density_interpolator(times, source['x_itrs_m'])
     attach_geodetic_height(density, times)
     density.ceplecha_sigma_kg_j = 1e-8
-    p = np.r_[source['params'][:3], source['v_gcrs_mps'][0], np.log10(30e-6)]
+    radius = radius_um * 1e-6
+    p = np.r_[source['params'][:3], source['v_gcrs_mps'][0], np.log10(radius)]
     model = fit.forward_model_for_kind(p, t, times, density, 'ceplecha')
     assert model['ceplecha_success']
     source['params'] = p
@@ -32,7 +33,7 @@ def main():
     source['fft_sigma_hz'] = np.full((len(t), 3), 300.)
     source['path_keep'] = np.ones((len(t), 3), bool)
     source['fft_keep'] = np.ones((len(t), 3), bool)
-    rng = np.random.default_rng(34522)
+    rng = np.random.default_rng(seed)
     gaussian = np.empty((len(t), 3, 2))
     chol = np.linalg.cholesky([[1., .8], [.8, 1.]])
     gaussian[0] = rng.normal(size=(3, 2)) @ chol.T
@@ -46,16 +47,27 @@ def main():
     source['measured_total_paths_m'] = measured
     source['observed_fft_beat_hz'] = beat
     source['fft_model'] = 'range_offset_corrected_beat'
-    out = Path('results/tristatic_posterior_injection_20261028/joint_delay_doppler_fft_tri_synthetic_30um.h5')
+    out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(out, 'w') as h:
         save_group(h.create_group('joint_fit'), source)
         save_group(h.create_group('fft_observations'), fft)
         h['truth_params'] = p
-        h.attrs['true_radius_m'] = 30e-6
-        h.attrs['true_mass_kg'] = 4 * np.pi * 3000 * (30e-6)**3 / 3
+        h.attrs['true_radius_m'] = radius
+        h.attrs['true_mass_kg'] = 4 * np.pi * 3000 * radius**3 / 3
+        h.attrs['injection_seed'] = seed
         h.attrs['purpose'] = 'Single recovery test; not frequentist coverage validation'
     print(out)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--source', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--radius-um', type=float, default=30.)
+    parser.add_argument('--seed', type=int, default=34522)
+    args = parser.parse_args()
+    make_injection(args.source, args.output, args.radius_um, args.seed)
 
 
 if __name__ == '__main__':

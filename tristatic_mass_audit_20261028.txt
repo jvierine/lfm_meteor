@@ -68,3 +68,22 @@ Remaining publication gates
 Independent-chain checks; multi-event synthetic coverage; sensitivity to the
 radius prior, temporal correlation, inherited clipping, and atmosphere; inspect
 event residuals and model mismatch. No automatic manuscript replacement.
+
+Automated rerun validation gate
+------------------------------
+run_validated_tristatic_mass_catalog.py first runs three independent synthetic
+recovery cases (20, 30, 60 micrometre radii) and two independently seeded
+ensembles for each of tri_0010 and tri_0162. Each ensemble has 40 walkers,
+4000-step blocks, and a 32000-step limit. Retained half-chains must span at
+least 50 estimated autocorrelation times, estimates must change by less than
+10 percent between blocks, and the two half-chain median log radii must
+agree within 0.1 dex. Acceptance below 0.05 is flagged.
+
+The synthetic truths must fall inside their conditional 95 percent intervals,
+and the strong-event independent 2.5/50/97.5 percent mass quantiles must agree
+within 0.15 dex. These are sanity and reproducibility checks, not a coverage
+certification. The weak event may remain unidentifiable; its failed diagnostics
+remain explicit and do not certify its mass. Failure of a required gate stops
+the batch for inspection. Success automatically starts all 234 cached events
+with at most 100 workers, preserving the same diagnostics and output plots.
+New HDF5 progress files identify sampling stage without copying large chains.

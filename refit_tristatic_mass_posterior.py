@@ -28,7 +28,7 @@ import fit_event_joint_delay_doppler_fft as fit
 from fit_whipple_jacchia_catalog_from_h5 import load_group, event_id_from_path, whipple_seed_grid
 
 
-VERSION = 'correlated_mass_posterior_v1_20261028'
+VERSION = 'correlated_mass_posterior_v2_20261028'
 LOG_RADIUS_BOUNDS = (-7., -2.)
 SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 ODE_SHA256 = hashlib.sha256(Path(ode.__file__).read_bytes()).hexdigest()
@@ -313,14 +313,33 @@ def process_event(source_path, output, steps, walkers, seed, max_steps):
         sampler = emcee.EnsembleSampler(walkers, 16, like)
         sampler.random_state = np.random.RandomState(seed).get_state()
         sampler.run_mcmc(np.asarray(positions), steps, progress=False)
+        previous_tau = None
         while True:
             check_chain = sampler.get_chain(discard=sampler.iteration // 2)
             check_tau = emcee.autocorr.integrated_time(check_chain, quiet=True, tol=0)
-            enough = np.all(np.isfinite(check_tau)) and len(check_chain) >= 50 * np.max(check_tau)
+            tau_stable = (previous_tau is not None and np.all(np.isfinite(check_tau))
+                          and np.all(np.abs(check_tau - previous_tau) / np.maximum(check_tau, 1.) < .1))
+            enough = np.all(np.isfinite(check_tau)) and len(check_chain) >= 50 * np.max(check_tau) and tau_stable
+            radius_chain = check_chain[:, :, 6]
+            half = len(radius_chain) // 2
+            stationary = abs(np.median(radius_chain[:half]) - np.median(radius_chain[half:])) <= .1
+            enough = enough and stationary
+            # Small progress snapshots allow inspection without copying chains.
+            progress_path = out.with_suffix('.progress.h5')
+            with h5py.File(out.with_suffix('.progress.partial.h5'), 'w') as h:
+                h.attrs['n_steps'] = sampler.iteration
+                h.attrs['elapsed_s'] = time.monotonic() - start
+                h.attrs['long_enough'] = bool(enough)
+                h.attrs['tau_stable'] = bool(tau_stable)
+                h['tau'] = check_tau
+                h['last_positions'] = sampler.get_last_sample().coords
+                h['log_radius_quantiles'] = np.percentile(radius_chain, [2.5, 50, 97.5])
+            out.with_suffix('.progress.partial.h5').replace(progress_path)
             print(json.dumps({'event_id': event, 'stage': 'sampling', 'steps': sampler.iteration,
                               'max_tau': float(np.nanmax(check_tau)), 'long_enough': bool(enough)}), flush=True)
             if enough or sampler.iteration >= max_steps:
                 break
+            previous_tau = check_tau
             sampler.run_mcmc(None, min(steps, max_steps - sampler.iteration), progress=False)
         steps = sampler.iteration
         burn = steps // 2
@@ -329,6 +348,10 @@ def process_event(source_path, output, steps, walkers, seed, max_steps):
         samples = chain[::max(1, len(chain) // 100)].reshape(-1, 16)
         mass = 4 * np.pi * cepl.METEOROID_DENSITY_KG_M3 * 10 ** (3 * samples[:, 6]) / 3
         flags = posterior_flags(chain, tau, mass, samples[:, 6])
+        if not tau_stable:
+            flags.append('autocorrelation_estimate_unstable')
+        if np.any(sampler.acceptance_fraction < .05):
+            flags.append('low_walker_acceptance')
         if not solutions[0].success:
             flags.append('map_optimizer_not_converged')
         # Compare halves of each chain to catch obvious persistent mass drift.
@@ -348,6 +371,7 @@ def process_event(source_path, output, steps, walkers, seed, max_steps):
         posterior = dict(samples=samples, mass_kg=mass, radius_m=10 ** samples[:, 6],
                          mass_quantiles_kg=np.percentile(mass, [2.5, 50, 97.5]),
                          autocorrelation_time_steps=tau, acceptance_fraction=sampler.acceptance_fraction,
+                         tau_stable=bool(tau_stable),
                          noise_correlation=np.asarray([(b[2], b[3]) for b in like.blocks]),
                          flags=';'.join(flags), n_steps=steps, n_walkers=walkers,
                          rms_path_residual_m=path_rms, rms_beat_residual_hz=beat_rms,
