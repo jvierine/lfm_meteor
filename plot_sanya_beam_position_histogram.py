@@ -4,10 +4,7 @@ import shutil
 
 import h5py
 import jcoord
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LogNorm
-from matplotlib.lines import Line2D
 
 import fit_gcrs_trajectories_lfm_ambiguity as gfit
 import plot_memo09_antenna_gain_patterns as gain_model
@@ -107,6 +104,9 @@ def sanya_beam_relative_gain_db(east_grid_deg, north_grid_deg):
 
 
 def make_plot(input_h5, output_base, copy_to_article=False):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+    from matplotlib.lines import Line2D
     positions_ecef_m, n_events = collect_positions(input_h5)
     sanya_lat_deg, sanya_lon_deg, _sanya_alt_m = jcoord.ecef2geodetic(*gfit.LINK_TX_POSITIONS_M[0])
     los_ecef = unit(positions_ecef_m - gfit.LINK_TX_POSITIONS_M[0][None, :])

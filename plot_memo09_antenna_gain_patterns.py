@@ -7,7 +7,6 @@ import math
 import os
 from dataclasses import dataclass
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 import sanya_opts as sc
@@ -210,6 +209,7 @@ def write_summary(rows: list[dict[str, float | str]]) -> None:
 
 
 def main() -> None:
+    import matplotlib.pyplot as plt
     summaries = [site_summary(site) for site in SITES]
     write_summary(summaries)
 

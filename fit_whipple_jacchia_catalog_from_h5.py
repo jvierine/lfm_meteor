@@ -14,6 +14,9 @@ import fit_event_joint_delay_doppler_fft as fit
 DEFAULT_INPUT_DIR = Path("results/tristatic_student_t_bootstrap_orbit100_20260630")
 DEFAULT_OUTPUT_DIR = Path("results/tristatic_whipple_jacchia_20260701")
 EVENT_PREFIX = "joint_delay_doppler_fft_"
+MIN_WJ_MULTILINK_ROW_FRACTION = 0.70
+MIN_WJ_MULTILINK_ROWS = 6
+MAX_WJ_SINGLE_LINK_RUN = 8
 
 
 def load_group(group):
@@ -69,27 +72,112 @@ def finite_percentile(values, q, axis=0):
     return np.nanpercentile(arr, q, axis=axis)
 
 
-def bic_from_joint_fit(joint_fit):
+def bic_residual_score(path_residuals, fft_residuals, residual_likelihood, student_t_nu_delay, student_t_nu_fft):
+    path_residuals = np.asarray(path_residuals, dtype=np.float64)
+    fft_residuals = np.asarray(fft_residuals, dtype=np.float64)
+    path_residuals = path_residuals[np.isfinite(path_residuals)]
+    fft_residuals = fft_residuals[np.isfinite(fft_residuals)]
+    if str(residual_likelihood) == "student_t":
+        path_score = np.sum(fit.student_t_least_squares_residual(path_residuals, student_t_nu_delay) ** 2.0)
+        fft_score = np.sum(fit.student_t_least_squares_residual(fft_residuals, student_t_nu_fft) ** 2.0)
+        return float(path_score + fft_score), "student_t_minus_2_log_kernel"
+    return float(np.sum(path_residuals**2.0) + np.sum(fft_residuals**2.0)), "gaussian_chi2"
+
+
+def bic_from_joint_fit(joint_fit, path_mask=None, fft_mask=None):
     path_keep = np.asarray(joint_fit.get("path_keep", []), dtype=bool)
     fft_keep = np.asarray(joint_fit.get("fft_keep", []), dtype=bool)
+    if path_mask is not None:
+        path_mask = np.asarray(path_mask, dtype=bool)
+        if path_mask.shape == path_keep.shape:
+            path_keep = path_keep & path_mask
+    if fft_mask is not None:
+        fft_mask = np.asarray(fft_mask, dtype=bool)
+        if fft_mask.shape == fft_keep.shape:
+            fft_keep = fft_keep & fft_mask
     path_resid = np.asarray(joint_fit.get("normalized_path_residuals", []), dtype=np.float64)
     fft_resid = np.asarray(joint_fit.get("normalized_fft_residuals", []), dtype=np.float64)
-    values = []
-    if path_resid.shape == path_keep.shape:
-        values.append(path_resid[path_keep])
-    if fft_resid.shape == fft_keep.shape:
-        values.append(fft_resid[fft_keep])
-    if not values:
-        return np.nan, np.nan, 0, 0
-    residuals = np.concatenate([np.ravel(v) for v in values])
-    residuals = residuals[np.isfinite(residuals)]
-    n_obs = int(residuals.size)
+    path_values = path_resid[path_keep] if path_resid.shape == path_keep.shape else np.asarray([], dtype=np.float64)
+    fft_values = fft_resid[fft_keep] if fft_resid.shape == fft_keep.shape else np.asarray([], dtype=np.float64)
+    n_obs = int(np.count_nonzero(np.isfinite(path_values)) + np.count_nonzero(np.isfinite(fft_values)))
     k_params = int(np.asarray(joint_fit.get("full_params", joint_fit.get("params", [])), dtype=np.float64).size)
     if n_obs <= 0 or k_params <= 0:
-        return np.nan, np.nan, n_obs, k_params
-    chi2 = float(np.sum(residuals**2.0))
-    bic = float(chi2 + k_params * np.log(n_obs))
-    return bic, chi2, n_obs, k_params
+        return np.nan, np.nan, n_obs, k_params, "none"
+    score, score_type = bic_residual_score(
+        path_values,
+        fft_values,
+        joint_fit.get("residual_likelihood", "scipy_robust_lsq"),
+        float(joint_fit.get("student_t_nu_delay", fit.DEFAULT_STUDENT_T_NU_DELAY)),
+        float(joint_fit.get("student_t_nu_fft", fit.DEFAULT_STUDENT_T_NU_FFT)),
+    )
+    bic = float(score + k_params * np.log(n_obs))
+    return bic, score, n_obs, k_params, score_type
+
+
+def longest_true_run(mask):
+    mask = np.asarray(mask, dtype=bool)
+    best = 0
+    current = 0
+    for value in mask:
+        if value:
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return int(best)
+
+
+def whipple_acceptance(best_wj):
+    """Return whether a WJ fit is acceptable for model selection and mass."""
+
+    reasons = []
+    speed_km_s = np.asarray(best_wj.get("speed_km_s", []), dtype=np.float64)
+    if speed_km_s.size == 0 or not np.all(np.isfinite(speed_km_s)):
+        reasons.append("speed_unavailable")
+    else:
+        min_speed = float(np.nanmin(speed_km_s))
+        if min_speed < fit.DEFAULT_WHIPPLE_MIN_SPEED_KM_S:
+            reasons.append(f"min_speed={min_speed:.2f}km/s")
+        t_rel_s = np.asarray(best_wj.get("t_rel_s", []), dtype=np.float64)
+        if t_rel_s.shape == speed_km_s.shape and speed_km_s.size > 1:
+            dt = np.diff(t_rel_s)
+            ds = np.diff(speed_km_s * 1e3)
+            good = np.isfinite(dt) & (dt > 0.0) & np.isfinite(ds)
+            if np.any(good):
+                max_decel = float(np.nanmax(-ds[good] / dt[good]))
+                if max_decel > fit.DEFAULT_WHIPPLE_MAX_DECEL_MPS2:
+                    reasons.append(f"max_decel={max_decel:.3g}m/s2")
+
+    path_keep = np.asarray(best_wj.get("path_keep", []), dtype=bool)
+    if path_keep.ndim != 2 or path_keep.shape[1] < 2:
+        reasons.append("path_link_mask_unavailable")
+    else:
+        row_counts = np.count_nonzero(path_keep, axis=1)
+        retained_rows = row_counts > 0
+        multilink_rows = row_counts >= 2
+        n_retained = int(np.count_nonzero(retained_rows))
+        n_multilink = int(np.count_nonzero(multilink_rows))
+        fraction = float(n_multilink / n_retained) if n_retained else 0.0
+        single_link_run = longest_true_run(row_counts == 1)
+        if n_multilink < MIN_WJ_MULTILINK_ROWS:
+            reasons.append(f"multi_link_rows={n_multilink}")
+        if fraction < MIN_WJ_MULTILINK_ROW_FRACTION:
+            reasons.append(f"multi_link_fraction={fraction:.2f}")
+        if single_link_run > MAX_WJ_SINGLE_LINK_RUN:
+            reasons.append(f"single_link_run={single_link_run}")
+        best_wj["wj_multilink_rows"] = n_multilink
+        best_wj["wj_retained_delay_rows"] = n_retained
+        best_wj["wj_multilink_row_fraction"] = fraction
+        best_wj["wj_max_single_link_run"] = single_link_run
+
+    best_wj["whipple_acceptance_min_speed_km_s"] = float(fit.DEFAULT_WHIPPLE_MIN_SPEED_KM_S)
+    best_wj["whipple_acceptance_max_decel_mps2"] = float(fit.DEFAULT_WHIPPLE_MAX_DECEL_MPS2)
+    best_wj["whipple_acceptance_min_multilink_row_fraction"] = float(MIN_WJ_MULTILINK_ROW_FRACTION)
+    best_wj["whipple_acceptance_min_multilink_rows"] = int(MIN_WJ_MULTILINK_ROWS)
+    best_wj["whipple_acceptance_max_single_link_run"] = int(MAX_WJ_SINGLE_LINK_RUN)
+    best_wj["whipple_acceptance_ok"] = len(reasons) == 0
+    best_wj["whipple_rejection_reasons"] = ";".join(reasons)
+    return len(reasons) == 0, reasons
 
 
 def constant_velocity_seed(source_joint):
@@ -395,10 +483,27 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
                     "bootstrap_interstellar_fraction_e_gt_1": float(jg.attrs.get("bootstrap_interstellar_fraction_e_gt_1", np.nan)),
                     "bootstrap_samples_successful": float(jg.attrs.get("bootstrap_samples_successful", np.nan)),
                     "bootstrap_log10_a_log10_b_corr": float(jg.attrs.get("bootstrap_log10_a_log10_b_corr", np.nan)),
-                    "bic_whipple_jacchia": float(jg.attrs.get("bic_whipple_jacchia", np.nan)),
-                    "bic_constant_velocity": float(jg.attrs.get("bic_constant_velocity", np.nan)),
-                    "delta_bic_constant_minus_whipple_jacchia": float(jg.attrs.get("delta_bic_constant_minus_whipple_jacchia", np.nan)),
-                    "initial_dynamic_mass_kg": float(jg.attrs.get("initial_dynamic_mass_kg", np.nan)),
+	                    "bic_whipple_jacchia": float(jg.attrs.get("bic_whipple_jacchia", np.nan)),
+	                    "bic_constant_velocity": float(jg.attrs.get("bic_constant_velocity", np.nan)),
+	                    "delta_bic_constant_minus_whipple_jacchia": float(jg.attrs.get("delta_bic_constant_minus_whipple_jacchia", np.nan)),
+	                    "selected_model_is_whipple_jacchia": float(
+	                        1.0 if str(jg.attrs.get("bic_selected_model", jg.attrs.get("dynamical_model", ""))) == "whipple_speed" else 0.0
+	                    ),
+	                    "whipple_acceptance_ok": float(1.0 if bool(jg.attrs.get("whipple_acceptance_ok", False)) else 0.0),
+	                    "whipple_rejection_reasons": str(jg.attrs.get("whipple_rejection_reasons", "")),
+	                    "dynamic_mass_not_estimated_reason": str(jg.attrs.get("dynamic_mass_not_estimated_reason", "")),
+	                    "wj_multilink_rows": float(jg.attrs.get("wj_multilink_rows", np.nan)),
+	                    "wj_retained_delay_rows": float(jg.attrs.get("wj_retained_delay_rows", np.nan)),
+	                    "wj_multilink_row_fraction": float(jg.attrs.get("wj_multilink_row_fraction", np.nan)),
+	                    "wj_max_single_link_run": float(jg.attrs.get("wj_max_single_link_run", np.nan)),
+	                    "whipple_acceptance_min_speed_km_s": float(jg.attrs.get("whipple_acceptance_min_speed_km_s", np.nan)),
+	                    "whipple_acceptance_max_decel_mps2": float(jg.attrs.get("whipple_acceptance_max_decel_mps2", np.nan)),
+	                    "whipple_acceptance_min_multilink_row_fraction": float(
+	                        jg.attrs.get("whipple_acceptance_min_multilink_row_fraction", np.nan)
+	                    ),
+	                    "whipple_acceptance_min_multilink_rows": float(jg.attrs.get("whipple_acceptance_min_multilink_rows", np.nan)),
+	                    "whipple_acceptance_max_single_link_run": float(jg.attrs.get("whipple_acceptance_max_single_link_run", np.nan)),
+	                    "initial_dynamic_mass_kg": float(jg.attrs.get("initial_dynamic_mass_kg", np.nan)),
                     "initial_dynamic_mass_lo95_kg": float(jg.attrs.get("initial_dynamic_mass_lo95_kg", np.nan)),
                     "initial_dynamic_mass_hi95_kg": float(jg.attrs.get("initial_dynamic_mass_hi95_kg", np.nan)),
                     "initial_dynamic_mass_bootstrap_samples_successful": float(jg.attrs.get("initial_dynamic_mass_bootstrap_samples_successful", np.nan)),
@@ -501,35 +606,86 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
             "error": "all_starts_failed:" + ";".join(failures[:5]),
         }
 
-    bic_wj, chi2_wj, n_obs_wj, k_wj = bic_from_joint_fit(best_wj)
+    bic_path_mask = np.asarray(path_keep, dtype=bool).copy()
+    bic_fft_mask = np.asarray(fft_keep, dtype=bool).copy()
     if isinstance(constant_fit, dict) and "params" in constant_fit:
-        bic_cv, chi2_cv, n_obs_cv, k_cv = bic_from_joint_fit(constant_fit)
+        cv_path_keep = np.asarray(constant_fit.get("path_keep", bic_path_mask), dtype=bool)
+        cv_fft_keep = np.asarray(constant_fit.get("fft_keep", bic_fft_mask), dtype=bool)
+        wj_path_keep = np.asarray(best_wj.get("path_keep", bic_path_mask), dtype=bool)
+        wj_fft_keep = np.asarray(best_wj.get("fft_keep", bic_fft_mask), dtype=bool)
+        if cv_path_keep.shape == bic_path_mask.shape and wj_path_keep.shape == bic_path_mask.shape:
+            bic_path_mask &= cv_path_keep & wj_path_keep
+        if cv_fft_keep.shape == bic_fft_mask.shape and wj_fft_keep.shape == bic_fft_mask.shape:
+            bic_fft_mask &= cv_fft_keep & wj_fft_keep
+
+    bic_wj, score_wj, n_obs_wj, k_wj, bic_score_type_wj = bic_from_joint_fit(
+        best_wj,
+        path_mask=bic_path_mask,
+        fft_mask=bic_fft_mask,
+    )
+    if isinstance(constant_fit, dict) and "params" in constant_fit:
+        bic_cv, score_cv, n_obs_cv, k_cv, bic_score_type_cv = bic_from_joint_fit(
+            constant_fit,
+            path_mask=bic_path_mask,
+            fft_mask=bic_fft_mask,
+        )
     else:
-        bic_cv, chi2_cv, n_obs_cv, k_cv = np.nan, np.nan, 0, 0
+        bic_cv, score_cv, n_obs_cv, k_cv, bic_score_type_cv = np.nan, np.nan, 0, 0, "none"
     delta_bic_constant_minus_wj = float(bic_cv - bic_wj) if np.all(np.isfinite([bic_cv, bic_wj])) else np.nan
+    whipple_ok, whipple_reasons = whipple_acceptance(best_wj)
     selected_model = "whipple_speed"
     if np.isfinite(delta_bic_constant_minus_wj) and delta_bic_constant_minus_wj < 0.0:
+        selected_model = "constant_velocity"
+    if not whipple_ok and isinstance(constant_fit, dict) and "params" in constant_fit:
         selected_model = "constant_velocity"
 
     best = best_wj if selected_model == "whipple_speed" else constant_fit
     best["bic_whipple_jacchia"] = float(bic_wj)
     best["bic_constant_velocity"] = float(bic_cv)
-    best["chi2_whipple_jacchia"] = float(chi2_wj)
-    best["chi2_constant_velocity"] = float(chi2_cv)
-    best["n_bic_observations"] = int(max(n_obs_wj, n_obs_cv))
+    best["bic_score_whipple_jacchia"] = float(score_wj)
+    best["bic_score_constant_velocity"] = float(score_cv)
+    best["chi2_whipple_jacchia"] = float(score_wj)
+    best["chi2_constant_velocity"] = float(score_cv)
+    best["bic_score_type_whipple_jacchia"] = str(bic_score_type_wj)
+    best["bic_score_type_constant_velocity"] = str(bic_score_type_cv)
+    best["n_bic_observations_whipple_jacchia"] = int(n_obs_wj)
+    best["n_bic_observations_constant_velocity"] = int(n_obs_cv)
+    best["n_bic_observations"] = int(min(n_obs_wj, n_obs_cv) if n_obs_wj and n_obs_cv else max(n_obs_wj, n_obs_cv))
+    best["n_bic_path_observations"] = int(np.count_nonzero(bic_path_mask))
+    best["n_bic_fft_observations"] = int(np.count_nonzero(bic_fft_mask))
+    best["bic_observation_mask"] = "intersection of source, constant-velocity, and Whipple-Jacchia retained observations"
     best["n_bic_params_whipple_jacchia"] = int(k_wj)
     best["n_bic_params_constant_velocity"] = int(k_cv)
     best["delta_bic_constant_minus_whipple_jacchia"] = float(delta_bic_constant_minus_wj)
     best["bic_selected_model"] = selected_model
+    best["whipple_acceptance_ok"] = bool(whipple_ok)
+    best["whipple_rejection_reasons"] = ";".join(whipple_reasons)
+    for key in (
+        "wj_multilink_rows",
+        "wj_retained_delay_rows",
+        "wj_multilink_row_fraction",
+        "wj_max_single_link_run",
+        "whipple_acceptance_min_speed_km_s",
+        "whipple_acceptance_max_decel_mps2",
+        "whipple_acceptance_min_multilink_row_fraction",
+        "whipple_acceptance_min_multilink_rows",
+        "whipple_acceptance_max_single_link_run",
+    ):
+        if key in best_wj:
+            best[key] = best_wj[key]
     best["bic_selection_rule"] = (
         "Dynamic mass is estimated only when BIC favors Whipple-Jacchia over constant velocity "
-        "(delta_bic_constant_minus_whipple_jacchia > 0)."
+        "(delta_bic_constant_minus_whipple_jacchia > 0) and the Whipple-Jacchia trajectory "
+        "passes physical speed/deceleration and multi-link support checks."
     )
     if selected_model == "constant_velocity":
         best["whipple_jacchia_weighted_rms"] = float(best_wj.get("weighted_rms", np.nan))
         best["whipple_jacchia_rms_total_path_residual_m"] = float(best_wj.get("rms_total_path_residual_m", np.nan))
         best["whipple_jacchia_rms_path_rate_residual_mps"] = float(best_wj.get("rms_path_rate_residual_mps", np.nan))
-        best["dynamic_mass_not_estimated_reason"] = "BIC favors constant velocity over Whipple-Jacchia"
+        if whipple_ok:
+            best["dynamic_mass_not_estimated_reason"] = "BIC favors constant velocity over Whipple-Jacchia"
+        else:
+            best["dynamic_mass_not_estimated_reason"] = "Whipple-Jacchia rejected: " + ";".join(whipple_reasons)
         best["initial_dynamic_mass_kg"] = np.nan
         best["initial_dynamic_radius_m"] = np.nan
         best["initial_dynamic_mass_lo95_kg"] = np.nan
@@ -653,8 +809,30 @@ def fit_one(source_h5, output_dir, overwrite, max_starts, bootstrap_samples, boo
         "heliocentric_eccentricity": float(best.get("heliocentric_eccentricity", np.nan)),
         "bic_whipple_jacchia": float(best.get("bic_whipple_jacchia", np.nan)),
         "bic_constant_velocity": float(best.get("bic_constant_velocity", np.nan)),
+        "bic_score_whipple_jacchia": float(best.get("bic_score_whipple_jacchia", np.nan)),
+        "bic_score_constant_velocity": float(best.get("bic_score_constant_velocity", np.nan)),
+        "n_bic_observations_whipple_jacchia": float(best.get("n_bic_observations_whipple_jacchia", np.nan)),
+        "n_bic_observations_constant_velocity": float(best.get("n_bic_observations_constant_velocity", np.nan)),
+        "n_bic_path_observations": float(best.get("n_bic_path_observations", np.nan)),
+        "n_bic_fft_observations": float(best.get("n_bic_fft_observations", np.nan)),
+        "n_bic_params_whipple_jacchia": float(best.get("n_bic_params_whipple_jacchia", np.nan)),
+        "n_bic_params_constant_velocity": float(best.get("n_bic_params_constant_velocity", np.nan)),
         "delta_bic_constant_minus_whipple_jacchia": float(best.get("delta_bic_constant_minus_whipple_jacchia", np.nan)),
         "selected_model_is_whipple_jacchia": float(1.0 if is_wj_selected else 0.0),
+        "whipple_acceptance_ok": float(1.0 if bool(best.get("whipple_acceptance_ok", False)) else 0.0),
+        "whipple_rejection_reasons": str(best.get("whipple_rejection_reasons", "")),
+        "dynamic_mass_not_estimated_reason": str(best.get("dynamic_mass_not_estimated_reason", "")),
+        "wj_multilink_rows": float(best.get("wj_multilink_rows", np.nan)),
+        "wj_retained_delay_rows": float(best.get("wj_retained_delay_rows", np.nan)),
+        "wj_multilink_row_fraction": float(best.get("wj_multilink_row_fraction", np.nan)),
+        "wj_max_single_link_run": float(best.get("wj_max_single_link_run", np.nan)),
+        "whipple_acceptance_min_speed_km_s": float(best.get("whipple_acceptance_min_speed_km_s", np.nan)),
+        "whipple_acceptance_max_decel_mps2": float(best.get("whipple_acceptance_max_decel_mps2", np.nan)),
+        "whipple_acceptance_min_multilink_row_fraction": float(
+            best.get("whipple_acceptance_min_multilink_row_fraction", np.nan)
+        ),
+        "whipple_acceptance_min_multilink_rows": float(best.get("whipple_acceptance_min_multilink_rows", np.nan)),
+        "whipple_acceptance_max_single_link_run": float(best.get("whipple_acceptance_max_single_link_run", np.nan)),
         "initial_dynamic_mass_kg": float(best.get("initial_dynamic_mass_kg", np.nan)),
         "initial_dynamic_mass_lo95_kg": float(best.get("initial_dynamic_mass_lo95_kg", np.nan)),
         "initial_dynamic_mass_hi95_kg": float(best.get("initial_dynamic_mass_hi95_kg", np.nan)),
@@ -703,8 +881,26 @@ def write_summary(path, rows, args):
         "heliocentric_eccentricity",
         "bic_whipple_jacchia",
         "bic_constant_velocity",
+        "bic_score_whipple_jacchia",
+        "bic_score_constant_velocity",
+        "n_bic_observations_whipple_jacchia",
+        "n_bic_observations_constant_velocity",
+        "n_bic_path_observations",
+        "n_bic_fft_observations",
+        "n_bic_params_whipple_jacchia",
+        "n_bic_params_constant_velocity",
         "delta_bic_constant_minus_whipple_jacchia",
         "selected_model_is_whipple_jacchia",
+        "whipple_acceptance_ok",
+        "wj_multilink_rows",
+        "wj_retained_delay_rows",
+        "wj_multilink_row_fraction",
+        "wj_max_single_link_run",
+        "whipple_acceptance_min_speed_km_s",
+        "whipple_acceptance_max_decel_mps2",
+        "whipple_acceptance_min_multilink_row_fraction",
+        "whipple_acceptance_min_multilink_rows",
+        "whipple_acceptance_max_single_link_run",
         "initial_dynamic_mass_kg",
         "initial_dynamic_mass_lo95_kg",
         "initial_dynamic_mass_hi95_kg",
@@ -739,6 +935,16 @@ def write_summary(path, rows, args):
         h.create_dataset("status", data=np.asarray([row.get("status", "") for row in rows], dtype=object), dtype=string_dtype)
         h.create_dataset("output_base", data=np.asarray([row.get("output_base", "") for row in rows], dtype=object), dtype=string_dtype)
         h.create_dataset("error", data=np.asarray([row.get("error", "") for row in rows], dtype=object), dtype=string_dtype)
+        h.create_dataset(
+            "dynamic_mass_not_estimated_reason",
+            data=np.asarray([row.get("dynamic_mass_not_estimated_reason", "") for row in rows], dtype=object),
+            dtype=string_dtype,
+        )
+        h.create_dataset(
+            "whipple_rejection_reasons",
+            data=np.asarray([row.get("whipple_rejection_reasons", "") for row in rows], dtype=object),
+            dtype=string_dtype,
+        )
         h.create_dataset("loaded_existing", data=np.asarray([bool(row.get("loaded_existing", False)) for row in rows], dtype=bool))
         for key in numeric_keys:
             h.create_dataset(key, data=np.asarray([float(row.get(key, np.nan)) for row in rows], dtype=np.float64))

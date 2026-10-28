@@ -4,7 +4,6 @@ import os
 import astropy.units as u
 import h5py
 import jcoord
-import matplotlib.pyplot as plt
 import numpy as np
 import scipy.optimize as so
 import scipy.signal as sig
@@ -441,6 +440,7 @@ def fit_trajectory(measured_total_paths_m, times_ns, san_az_deg, san_el_deg, san
 
 
 def plot_summary(rows):
+    import matplotlib.pyplot as plt
     factors = np.asarray([row["upsample_factor"] for row in rows], dtype=np.float64)
     const_rms = np.asarray([row["constant_velocity"]["rms_total_path_residual_m"] for row in rows])
     accel_rms = np.asarray([row["constant_acceleration"]["rms_total_path_residual_m"] for row in rows])

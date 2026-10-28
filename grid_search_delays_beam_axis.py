@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 import h5py
 import jcoord
-import matplotlib.pyplot as plt
 import numpy as np
 import scipy.optimize as so
 
@@ -310,6 +309,7 @@ def score_grid(trajectories, axis_origin, axis_direction, dan_delay0_us, wen_del
 
 
 def main():
+    import matplotlib.pyplot as plt
     trajectories = build_trajectories()
     axis_origin, axis_direction = beam_axis()
     dan_grid = np.arange(DAN_CENTER_US - DELTA_US, DAN_CENTER_US + DELTA_US + 0.5 * STEP_US, STEP_US)

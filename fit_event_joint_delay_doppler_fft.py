@@ -4,7 +4,6 @@ import os
 
 import h5py
 import jcoord
-import matplotlib.pyplot as plt
 import numpy as np
 import scipy.optimize as so
 import scipy.signal as sig
@@ -13,8 +12,6 @@ from astropy import units as u
 from astropy.constants import GM_sun
 from astropy.coordinates import get_body_barycentric_posvel
 from astropy.time import Time
-from matplotlib.lines import Line2D
-from matplotlib.colors import LogNorm
 
 import fit_all_ballistic_snr_weighted as base
 import fit_all_ceplecha_snr_weighted as cepl
@@ -52,6 +49,11 @@ EMPIRICAL_PATH_RATE_SCALE = {
 }
 DEFAULT_STUDENT_T_NU_DELAY = 1.5
 DEFAULT_STUDENT_T_NU_FFT = 3.0
+DEFAULT_USE_TX_RETARDED_TIME = True
+DEFAULT_TX_RETARDED_TIME_ITERATIONS = 2
+DEFAULT_WHIPPLE_MIN_SPEED_KM_S = 10.0
+DEFAULT_WHIPPLE_MAX_DECEL_MPS2 = 2.5e5
+_GCRS_TO_ITRS_LINEAR_CACHE = {}
 BOOTSTRAP_PARAM_NAMES = (
     "x0_gcrs_m",
     "y0_gcrs_m",
@@ -71,6 +73,128 @@ MODEL_PARAMETER_COUNT = {
 }
 DYNAMIC_MASS_DRAG_COEFFICIENT = 1.0
 DYNAMIC_MASS_AREA_FACTOR = 1.0
+
+
+def _time_cache_key(times_ns):
+    times = np.asarray(times_ns, dtype=np.int64)
+    digest = hashlib.sha1(times.tobytes()).hexdigest()
+    return times.shape, digest
+
+
+def precomputed_gcrs_to_itrs_linear(times_ns):
+    times = np.asarray(times_ns, dtype=np.int64)
+    key = _time_cache_key(times)
+    cached = _GCRS_TO_ITRS_LINEAR_CACHE.get(key)
+    if cached is not None:
+        return cached
+    n = times.size
+    zero_x = np.zeros((n, 3), dtype=np.float64)
+    zero_v = np.zeros((n, 3), dtype=np.float64)
+    x0, v0 = base.gcrs_state_samples_to_itrs(zero_x, zero_v, times)
+    r_pos = np.empty((n, 3, 3), dtype=np.float64)
+    v_pos = np.empty((n, 3, 3), dtype=np.float64)
+    r_vel = np.empty((n, 3, 3), dtype=np.float64)
+    v_vel = np.empty((n, 3, 3), dtype=np.float64)
+    for idx in range(3):
+        basis_x = zero_x.copy()
+        basis_x[:, idx] = 1.0
+        xp, vp = base.gcrs_state_samples_to_itrs(basis_x, zero_v, times)
+        r_pos[:, :, idx] = xp - x0
+        v_pos[:, :, idx] = vp - v0
+        basis_v = zero_v.copy()
+        basis_v[:, idx] = 1.0
+        xv, vv = base.gcrs_state_samples_to_itrs(zero_x, basis_v, times)
+        r_vel[:, :, idx] = xv - x0
+        v_vel[:, :, idx] = vv - v0
+    cached = (x0, v0, r_pos, v_pos, r_vel, v_vel)
+    _GCRS_TO_ITRS_LINEAR_CACHE[key] = cached
+    return cached
+
+
+def fast_gcrs_state_samples_to_itrs(positions_gcrs_m, velocities_gcrs_mps, times_ns):
+    x = np.asarray(positions_gcrs_m, dtype=np.float64)
+    v = np.asarray(velocities_gcrs_mps, dtype=np.float64)
+    if x.ndim != 2 or v.shape != x.shape or x.shape[1] != 3:
+        return base.gcrs_state_samples_to_itrs(x, v, times_ns)
+    x0, v0, r_pos, v_pos, r_vel, v_vel = precomputed_gcrs_to_itrs_linear(times_ns)
+    x_itrs = x0 + np.einsum("nij,nj->ni", r_pos, x) + np.einsum("nij,nj->ni", r_vel, v)
+    v_itrs = v0 + np.einsum("nij,nj->ni", v_pos, x) + np.einsum("nij,nj->ni", v_vel, v)
+    return x_itrs, v_itrs
+
+
+def retarded_tx_state_samples_to_itrs(
+    x_gcrs_m,
+    v_gcrs_mps,
+    times_ns,
+    tx_position_m=sc.p_san,
+    n_iter=DEFAULT_TX_RETARDED_TIME_ITERATIONS,
+):
+    """Evaluate target state at the transmit-retarded illumination time.
+
+    The pulse samples are time tagged at the nominal measurement epoch used by
+    the existing catalogue.  The scattering point, however, was illuminated
+    earlier by the Sanya-to-target group delay.  Over the sub-millisecond delay
+    the first-order trajectory shift, x(t - tau_tx) = x(t) - v(t) tau_tx, is the
+    metre-scale correction; acceleration terms are negligible for the present
+    residual budget.
+    """
+
+    x_nom = np.asarray(x_gcrs_m, dtype=np.float64)
+    v_nom = np.asarray(v_gcrs_mps, dtype=np.float64)
+    times = np.asarray(times_ns, dtype=np.int64)
+    if x_nom.shape != v_nom.shape or x_nom.ndim != 2 or x_nom.shape[1] != 3:
+        x_itrs, v_itrs = fast_gcrs_state_samples_to_itrs(x_nom, v_nom, times)
+        tau = np.full(x_nom.shape[0] if x_nom.ndim else 0, np.nan, dtype=np.float64)
+        return x_itrs, v_itrs, tau, np.full_like(x_nom, np.nan, dtype=np.float64)
+
+    tau_s = np.zeros(x_nom.shape[0], dtype=np.float64)
+    x_ret = x_nom.copy()
+    tx_position = np.asarray(tx_position_m, dtype=np.float64)
+    for _idx in range(max(1, int(n_iter))):
+        x_itrs, _v_itrs = fast_gcrs_state_samples_to_itrs(x_ret, v_nom, times)
+        tx_range_m = np.linalg.norm(x_itrs - tx_position[None, :], axis=1)
+        tau_s = tx_range_m / gfit.C
+        x_ret = x_nom - v_nom * tau_s[:, None]
+    x_itrs, v_itrs = fast_gcrs_state_samples_to_itrs(x_ret, v_nom, times)
+    return x_itrs, v_itrs, tau_s, x_ret - x_nom
+
+
+def link_observables_from_gcrs_state(x_gcrs_m, v_gcrs_mps, times_ns, use_tx_retarded_time=DEFAULT_USE_TX_RETARDED_TIME):
+    x_gcrs = np.asarray(x_gcrs_m, dtype=np.float64)
+    v_gcrs = np.asarray(v_gcrs_mps, dtype=np.float64)
+    if use_tx_retarded_time:
+        x_itrs, v_itrs, tx_group_delay_s, tx_retarded_offset_gcrs_m = retarded_tx_state_samples_to_itrs(
+            x_gcrs,
+            v_gcrs,
+            times_ns,
+        )
+    else:
+        x_itrs, v_itrs = fast_gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
+        tx_group_delay_s = np.full(x_gcrs.shape[0], np.nan, dtype=np.float64)
+        tx_retarded_offset_gcrs_m = np.zeros_like(x_gcrs)
+    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
+        x_itrs,
+        v_itrs,
+        gfit.LINK_TX_POSITIONS_M,
+        gfit.LINK_RX_POSITIONS_M,
+    )
+    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
+    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    return {
+        "apparent_path_length_m": apparent_path_length_m,
+        "path_length_m": path_length_m,
+        "path_rate_mps": path_rate_mps,
+        "doppler_hz": doppler_hz,
+        "x_gcrs_m": x_gcrs + tx_retarded_offset_gcrs_m,
+        "nominal_time_x_gcrs_m": x_gcrs,
+        "x_itrs_m": x_itrs,
+        "v_itrs_mps": v_itrs,
+        "tx_group_delay_s": tx_group_delay_s,
+        "tx_retarded_offset_gcrs_m": tx_retarded_offset_gcrs_m,
+        "tx_retarded_time_enabled": bool(use_tx_retarded_time),
+        "tx_retarded_time_iterations": int(DEFAULT_TX_RETARDED_TIME_ITERATIONS),
+        "tx_retarded_time_model": "target state evaluated at t - R_tx/c using first-order x-v*tau correction",
+    }
 
 
 def choose_triplet(event_id, triplets, ref_fits):
@@ -287,6 +411,63 @@ def finite_percentile(values, q, axis=0):
     if arr.size == 0:
         return np.asarray([], dtype=np.float64)
     return np.nanpercentile(arr, q, axis=axis)
+
+
+def weighted_nanpercentile_1d(values, weights, q):
+    values = np.asarray(values, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    good = np.isfinite(values) & np.isfinite(weights) & (weights > 0.0)
+    if np.count_nonzero(good) == 0:
+        return np.nan
+    values = values[good]
+    weights = weights[good]
+    order = np.argsort(values)
+    values = values[order]
+    weights = weights[order]
+    total = float(np.sum(weights))
+    if total <= 0.0:
+        return np.nan
+    cdf = (np.cumsum(weights) - 0.5 * weights) / total
+    return float(np.interp(float(q) / 100.0, cdf, values, left=values[0], right=values[-1]))
+
+
+def weighted_nanpercentile_axis0(samples, weights, q):
+    samples = np.asarray(samples, dtype=np.float64)
+    if samples.ndim != 2 or samples.shape[0] == 0:
+        return np.asarray([], dtype=np.float64)
+    return np.asarray([weighted_nanpercentile_1d(samples[:, idx], weights, q) for idx in range(samples.shape[1])], dtype=np.float64)
+
+
+def radius_profile_sampling_inputs(joint_fit, n_params):
+    profile_params = np.asarray(joint_fit.get("radius_profile_params", []), dtype=np.float64)
+    profile_log10_radius = np.asarray(joint_fit.get("radius_profile_log10_radius_m", []), dtype=np.float64)
+    probability_density = np.asarray(joint_fit.get("radius_profile_probability_density", []), dtype=np.float64)
+    if (
+        profile_params.ndim != 2
+        or profile_params.shape[1] < n_params
+        or profile_log10_radius.ndim != 1
+        or probability_density.ndim != 1
+        or profile_log10_radius.shape[0] != profile_params.shape[0]
+        or probability_density.shape[0] != profile_params.shape[0]
+    ):
+        return None, None
+    weights = probability_density.copy()
+    if profile_log10_radius.size > 1:
+        dlog = np.gradient(profile_log10_radius)
+        weights = weights * np.where(np.isfinite(dlog) & (dlog > 0.0), dlog, np.nanmedian(dlog[dlog > 0.0]))
+    good = (
+        np.isfinite(profile_log10_radius)
+        & np.isfinite(weights)
+        & (weights > 0.0)
+        & np.all(np.isfinite(profile_params[:, :n_params]), axis=1)
+    )
+    if np.count_nonzero(good) < 2:
+        return None, None
+    weights = weights[good]
+    total = float(np.sum(weights))
+    if not np.isfinite(total) or total <= 0.0:
+        return None, None
+    return profile_params[good, :n_params], weights / total
 
 
 def heliocentric_eccentricity_from_gcrs_state(params, epoch_time_ns):
@@ -632,24 +813,11 @@ def forward_model_link_observables(params, t_rel_s, times_ns, rho_of_alt_m):
     """
 
     x_gcrs, v_gcrs, radius_m, mass_kg, success, message = cepl.propagate_ceplecha(params, t_rel_s, rho_of_alt_m)
-    x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
-    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
-        x_itrs,
-        v_itrs,
-        gfit.LINK_TX_POSITIONS_M,
-        gfit.LINK_RX_POSITIONS_M,
-    )
-    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
-    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    observables = link_observables_from_gcrs_state(x_gcrs, v_gcrs, times_ns)
     return {
-        "apparent_path_length_m": apparent_path_length_m,
-        "path_length_m": path_length_m,
-        "path_rate_mps": path_rate_mps,
-        "doppler_hz": doppler_hz,
-        "x_gcrs_m": x_gcrs,
+        **observables,
+        "nominal_time_x_gcrs_m": x_gcrs,
         "v_gcrs_mps": v_gcrs,
-        "x_itrs_m": x_itrs,
-        "v_itrs_mps": v_itrs,
         "radius_m": radius_m,
         "mass_kg": mass_kg,
         "ceplecha_success": success,
@@ -683,24 +851,11 @@ def forward_model_ceplecha_ablation_sigma_link_observables(params, t_rel_s, time
     v_gcrs = np.column_stack([np.interp(t_rel, result.time_s, result.velocity_mps[:, dim]) for dim in range(3)])
     radius_m = np.interp(t_rel, result.time_s, result.radius_m)
     mass_kg = np.interp(t_rel, result.time_s, result.mass_kg)
-    x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
-    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
-        x_itrs,
-        v_itrs,
-        gfit.LINK_TX_POSITIONS_M,
-        gfit.LINK_RX_POSITIONS_M,
-    )
-    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
-    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    observables = link_observables_from_gcrs_state(x_gcrs, v_gcrs, times_ns)
     return {
-        "apparent_path_length_m": apparent_path_length_m,
-        "path_length_m": path_length_m,
-        "path_rate_mps": path_rate_mps,
-        "doppler_hz": doppler_hz,
-        "x_gcrs_m": x_gcrs,
+        **observables,
+        "nominal_time_x_gcrs_m": x_gcrs,
         "v_gcrs_mps": v_gcrs,
-        "x_itrs_m": x_itrs,
-        "v_itrs_mps": v_itrs,
         "radius_m": radius_m,
         "mass_kg": mass_kg,
         "ablation_sigma_kg_j": ablation_sigma_kg_j,
@@ -716,24 +871,11 @@ def forward_model_constant_velocity_link_observables(params, t_rel_s, times_ns, 
     t_rel_s = np.asarray(t_rel_s, dtype=np.float64)
     x_gcrs = params[:3][None, :] + t_rel_s[:, None] * params[3:6][None, :]
     v_gcrs = np.repeat(params[3:6][None, :], len(t_rel_s), axis=0)
-    x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
-    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
-        x_itrs,
-        v_itrs,
-        gfit.LINK_TX_POSITIONS_M,
-        gfit.LINK_RX_POSITIONS_M,
-    )
-    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
-    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    observables = link_observables_from_gcrs_state(x_gcrs, v_gcrs, times_ns)
     return {
-        "apparent_path_length_m": apparent_path_length_m,
-        "path_length_m": path_length_m,
-        "path_rate_mps": path_rate_mps,
-        "doppler_hz": doppler_hz,
-        "x_gcrs_m": x_gcrs,
+        **observables,
+        "nominal_time_x_gcrs_m": x_gcrs,
         "v_gcrs_mps": v_gcrs,
-        "x_itrs_m": x_itrs,
-        "v_itrs_mps": v_itrs,
         "radius_m": np.full(len(t_rel_s), np.nan, dtype=np.float64),
         "mass_kg": np.full(len(t_rel_s), np.nan, dtype=np.float64),
         "ceplecha_success": True,
@@ -763,24 +905,11 @@ def forward_model_exponential_speed_link_observables(params, t_rel_s, times_ns, 
         distance_m = speed0 * (1.0 - exp_term) / a_s_inv
         x_gcrs = x0[None, :] + distance_m[:, None] * direction[None, :]
         v_gcrs = speed0 * exp_term[:, None] * direction[None, :]
-    x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
-    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
-        x_itrs,
-        v_itrs,
-        gfit.LINK_TX_POSITIONS_M,
-        gfit.LINK_RX_POSITIONS_M,
-    )
-    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
-    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    observables = link_observables_from_gcrs_state(x_gcrs, v_gcrs, times_ns)
     return {
-        "apparent_path_length_m": apparent_path_length_m,
-        "path_length_m": path_length_m,
-        "path_rate_mps": path_rate_mps,
-        "doppler_hz": doppler_hz,
-        "x_gcrs_m": x_gcrs,
+        **observables,
+        "nominal_time_x_gcrs_m": x_gcrs,
         "v_gcrs_mps": v_gcrs,
-        "x_itrs_m": x_itrs,
-        "v_itrs_mps": v_itrs,
         "radius_m": np.full(len(t_rel_s), np.nan, dtype=np.float64),
         "mass_kg": np.full(len(t_rel_s), np.nan, dtype=np.float64),
         "ceplecha_success": True,
@@ -817,35 +946,29 @@ def forward_model_whipple_speed_link_observables(params, t_rel_s, times_ns, rho_
         b_s_inv = float(10.0 ** params[7])
         exp_term = np.exp(np.clip(b_s_inv * t_rel_s, -80.0, 80.0))
         speed_mps = speed0_const - a_mps * exp_term
-        if np.any(~np.isfinite(speed_mps)) or np.any(speed_mps <= 0.0) or np.any(np.diff(speed_mps) > 1e-6):
+        decel_mps2 = a_mps * b_s_inv * exp_term
+        if (
+            np.any(~np.isfinite(speed_mps))
+            or np.any(speed_mps < DEFAULT_WHIPPLE_MIN_SPEED_KM_S * 1e3)
+            or np.any(np.diff(speed_mps) > 1e-6)
+            or np.any(~np.isfinite(decel_mps2))
+            or np.nanmax(decel_mps2) > DEFAULT_WHIPPLE_MAX_DECEL_MPS2
+        ):
             x_gcrs = np.full((len(t_rel_s), 3), np.nan, dtype=np.float64)
             v_gcrs = np.full((len(t_rel_s), 3), np.nan, dtype=np.float64)
             success = False
-            message = "whipple_speed_nonpositive_or_increasing_speed"
+            message = "whipple_speed_outside_physical_acceptance"
         else:
             distance_m = speed0_const * t_rel_s - (a_mps / b_s_inv) * (exp_term - 1.0)
             x_gcrs = x0[None, :] + distance_m[:, None] * direction[None, :]
             v_gcrs = speed_mps[:, None] * direction[None, :]
             success = True
             message = "whipple_speed"
-    x_itrs, v_itrs = base.gcrs_state_samples_to_itrs(x_gcrs, v_gcrs, times_ns)
-    path_length_m, path_rate_mps = gfit.link_total_paths_and_rates_m(
-        x_itrs,
-        v_itrs,
-        gfit.LINK_TX_POSITIONS_M,
-        gfit.LINK_RX_POSITIONS_M,
-    )
-    doppler_hz = gfit.doppler_from_path_length_rate_hz(path_rate_mps)
-    apparent_path_length_m = path_length_m + gfit.lfm_total_path_bias_m(path_rate_mps)
+    observables = link_observables_from_gcrs_state(x_gcrs, v_gcrs, times_ns)
     return {
-        "apparent_path_length_m": apparent_path_length_m,
-        "path_length_m": path_length_m,
-        "path_rate_mps": path_rate_mps,
-        "doppler_hz": doppler_hz,
-        "x_gcrs_m": x_gcrs,
+        **observables,
+        "nominal_time_x_gcrs_m": x_gcrs,
         "v_gcrs_mps": v_gcrs,
-        "x_itrs_m": x_itrs,
-        "v_itrs_mps": v_itrs,
         "radius_m": np.full(len(t_rel_s), np.nan, dtype=np.float64),
         "mass_kg": np.full(len(t_rel_s), np.nan, dtype=np.float64),
         "ceplecha_success": bool(locals().get("success", False)),
@@ -920,6 +1043,9 @@ def fit_joint_delay_doppler(
     residual_likelihood="scipy_robust_lsq",
     student_t_nu_delay=DEFAULT_STUDENT_T_NU_DELAY,
     student_t_nu_fft=DEFAULT_STUDENT_T_NU_FFT,
+    fixed_log10_radius_m=None,
+    max_nfev_override=None,
+    fixed_station_bias_hz=None,
 ):
     chirp_rate_hz_per_s = gfit.NOMINAL_CHIRP_RATE_HZ_PER_S * float(reference_chirp_rate_scale)
     measured = np.asarray(measured_paths_m, dtype=np.float64)
@@ -946,11 +1072,32 @@ def fit_joint_delay_doppler(
     sigma_fft_fit = np.where(np.isfinite(sigma_fft_fit) & (sigma_fft_fit > 0.0), sigma_fft_fit, np.nan)
     t_rel_s = (times_fit.astype(np.float64) - float(epoch_time_ns)) / 1e9
     n_dyn = MODEL_PARAMETER_COUNT[str(model_kind)]
+    fixed_ceplecha_radius = model_kind == "ceplecha" and fixed_log10_radius_m is not None
+    n_opt_dyn = n_dyn - 1 if fixed_ceplecha_radius else n_dyn
+    fixed_log10_radius_m = float(fixed_log10_radius_m) if fixed_ceplecha_radius else np.nan
+    fixed_station_bias = fixed_station_bias_hz is not None
+    fixed_station_bias_hz = np.asarray(fixed_station_bias_hz if fixed_station_bias else np.zeros(3), dtype=np.float64)
+    if fixed_station_bias_hz.size != 3 or not np.all(np.isfinite(fixed_station_bias_hz)):
+        raise ValueError("fixed_station_bias_hz must contain three finite values")
+    if fixed_station_bias:
+        fit_station_bias = False
+
+    def pack_dyn_params(opt_dyn):
+        opt_dyn = np.asarray(opt_dyn, dtype=np.float64)
+        if fixed_ceplecha_radius:
+            return np.concatenate([opt_dyn[:6], [fixed_log10_radius_m]])
+        return opt_dyn[:n_dyn]
+
+    def unpack_dyn_params(dyn_params):
+        dyn_params = np.asarray(dyn_params, dtype=np.float64)[:n_dyn]
+        if fixed_ceplecha_radius:
+            return dyn_params[:6]
+        return dyn_params
 
     def split_params(x):
         if fit_station_bias:
-            return x[:n_dyn], x[n_dyn : n_dyn + 3]
-        return x[:n_dyn], np.zeros(3, dtype=np.float64)
+            return pack_dyn_params(x[:n_opt_dyn]), x[n_opt_dyn : n_opt_dyn + 3]
+        return pack_dyn_params(x[:n_opt_dyn]), fixed_station_bias_hz
 
     def residual(x):
         dyn_params, station_bias_hz = split_params(x)
@@ -980,7 +1127,9 @@ def fit_joint_delay_doppler(
         return np.concatenate([path_resid, beat_resid])
 
     if fit_station_bias:
-        p0_dyn = np.asarray(p0, dtype=np.float64)[:n_dyn]
+        p0_dyn = np.asarray(p0, dtype=np.float64)[:n_dyn].copy()
+        if fixed_ceplecha_radius:
+            p0_dyn[6] = fixed_log10_radius_m
         model0 = forward_model_for_kind(p0_dyn, t_rel_s, times_fit, rho_of_alt_m, model_kind)
         geo0 = model0["path_length_m"]
         doppler0 = model0["doppler_hz"]
@@ -995,7 +1144,7 @@ def fit_joint_delay_doppler(
             good = fft_keep_fit[:, col]
             if np.any(good):
                 bias0[col] = float(np.nanmedian(fft_fit[good, col] - beat0[good, col]))
-        x0 = np.concatenate([p0_dyn, bias0])
+        x0 = np.concatenate([unpack_dyn_params(p0_dyn), bias0])
         if model_kind == "ceplecha":
             dyn_lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, np.log10(cepl.MIN_RADIUS_M)])
             dyn_upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, np.log10(cepl.MAX_RADIUS_M)])
@@ -1016,15 +1165,26 @@ def fit_joint_delay_doppler(
             dyn_lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4])
             dyn_upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4])
             dyn_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4])
+        if fixed_ceplecha_radius:
+            dyn_lower = dyn_lower[:6]
+            dyn_upper = dyn_upper[:6]
+            dyn_scale = dyn_scale[:6]
         lower = np.concatenate([dyn_lower, np.full(3, -500e3)])
         upper = np.concatenate([dyn_upper, np.full(3, 500e3)])
         x_scale = np.concatenate([dyn_scale, np.full(3, 5e4)])
     else:
-        x0 = np.asarray(p0, dtype=np.float64)[:n_dyn]
+        p0_dyn = np.asarray(p0, dtype=np.float64)[:n_dyn].copy()
+        if fixed_ceplecha_radius:
+            p0_dyn[6] = fixed_log10_radius_m
+        x0 = unpack_dyn_params(p0_dyn)
         if model_kind == "ceplecha":
             lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, np.log10(cepl.MIN_RADIUS_M)])
             upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, np.log10(cepl.MAX_RADIUS_M)])
             x_scale = np.array([6.4e6, 6.4e6, 6.4e6, 5e4, 5e4, 5e4, 1.0])
+            if fixed_ceplecha_radius:
+                lower = lower[:6]
+                upper = upper[:6]
+                x_scale = x_scale[:6]
         elif model_kind == "ceplecha_ablation_sigma":
             lower = np.array([-np.inf, -np.inf, -np.inf, -8e4, -8e4, -8e4, np.log10(cepl.MIN_RADIUS_M), -11.0])
             upper = np.array([np.inf, np.inf, np.inf, 8e4, 8e4, 8e4, np.log10(cepl.MAX_RADIUS_M), -6.0])
@@ -1057,6 +1217,8 @@ def fit_joint_delay_doppler(
         max_nfev = 110
     else:
         max_nfev = 360
+    if max_nfev_override is not None:
+        max_nfev = int(max(1, max_nfev_override))
     result = so.least_squares(
         residual,
         x0,
@@ -1109,6 +1271,7 @@ def fit_joint_delay_doppler(
         "params": dyn_params,
         "full_params": result.x,
         "station_fft_bias_hz": station_bias_hz,
+        "station_fft_bias_fixed": bool(fixed_station_bias),
         "keep_rows": row_keep,
         "time_ns": times_fit,
         "fit_epoch_time_ns": int(epoch_time_ns),
@@ -1135,9 +1298,15 @@ def fit_joint_delay_doppler(
         "path_sigma_m": sigma_fit,
         "fft_sigma_hz": sigma_fft_fit,
         "x_gcrs_m": model["x_gcrs_m"],
+        "nominal_time_x_gcrs_m": model.get("nominal_time_x_gcrs_m", model["x_gcrs_m"]),
         "v_gcrs_mps": model["v_gcrs_mps"],
         "x_itrs_m": model["x_itrs_m"],
         "v_itrs_mps": model["v_itrs_mps"],
+        "tx_group_delay_s": model.get("tx_group_delay_s", np.full(len(t_rel_s), np.nan, dtype=np.float64)),
+        "tx_retarded_offset_gcrs_m": model.get("tx_retarded_offset_gcrs_m", np.zeros_like(model["x_gcrs_m"])),
+        "tx_retarded_time_enabled": bool(model.get("tx_retarded_time_enabled", False)),
+        "tx_retarded_time_iterations": int(model.get("tx_retarded_time_iterations", 0)),
+        "tx_retarded_time_model": str(model.get("tx_retarded_time_model", "none")),
         "lat_deg": llh[:, 0],
         "lon_deg": llh[:, 1],
         "alt_km": llh[:, 2] / 1e3,
@@ -1158,6 +1327,8 @@ def fit_joint_delay_doppler(
         "parameter_covariance": covariance["parameter_covariance"],
         "parameter_std": covariance["parameter_std"],
         "log10_radius_std": float(covariance["parameter_std"][6]) if model_kind == "ceplecha" and len(covariance["parameter_std"]) > 6 else np.nan,
+        "fixed_log10_radius_m": float(fixed_log10_radius_m) if fixed_ceplecha_radius else np.nan,
+        "radius_fixed_in_fit": bool(fixed_ceplecha_radius),
         "covariance_available": bool(covariance["covariance_available"]),
         "covariance_degrees_of_freedom": int(covariance["covariance_degrees_of_freedom"]),
         "covariance_residual_variance": float(covariance["covariance_residual_variance"]),
@@ -1773,14 +1944,13 @@ def radius_mass_interval_text(joint_fit):
         return "constant velocity model\nr0, m0 not fitted"
     if model_kind == "whipple_speed":
         params = np.asarray(joint_fit["params"], dtype=np.float64)
-        v0_km_s = float(np.linalg.norm(params[3:6]) / 1e3)
         a_mps = float(10.0 ** params[6])
         b_s_inv = float(10.0 ** params[7])
         speed = np.asarray(joint_fit.get("speed_km_s", []), dtype=np.float64)
         if speed.size:
             speed_text = f"v: {speed[0]:.2f} to {speed[-1]:.2f} km/s"
         else:
-            speed_text = f"v0 = {v0_km_s:.2f} km/s"
+            speed_text = "v: unavailable"
         mass_kg = float(joint_fit.get("initial_dynamic_mass_kg", joint_fit.get("initial_mass_kg", np.nan)))
         radius_m = float(joint_fit.get("initial_dynamic_radius_m", joint_fit.get("initial_radius_m", np.nan)))
         mass_lo_kg = float(joint_fit.get("initial_dynamic_mass_lo95_kg", np.nan))
@@ -1799,7 +1969,6 @@ def radius_mass_interval_text(joint_fit):
         dynamic_text = "\n" + "\n".join(dynamic_lines) if dynamic_lines else ""
         return (
             r"$v(t)=(v_\infty-ae^{bt})\hat{u}_0$" "\n"
-            f"v_inf = {v0_km_s:.2f} km/s\n"
             f"a = {a_mps:.1f} m/s, b = {b_s_inv:.3g} 1/s\n"
             f"{speed_text}"
             f"{dynamic_text}"
@@ -1818,6 +1987,21 @@ def radius_mass_interval_text(joint_fit):
     sigma_line = ""
     if model_kind == "ceplecha_ablation_sigma":
         sigma_line = f"\nsigma = {compact_sci(float(joint_fit.get('ablation_sigma_kg_j', np.nan)))} kg/J"
+    profile_r = float(joint_fit.get("radius_profile_best_radius_m", np.nan))
+    profile_lo_r = float(joint_fit.get("radius_profile_lo95_radius_m", np.nan))
+    profile_hi_r = float(joint_fit.get("radius_profile_hi95_radius_m", np.nan))
+    if np.isfinite(profile_r) and profile_r > 0.0:
+        profile_m = mass_from_radius(profile_r)
+        lines = [
+            f"r0 = {profile_r * 1e6:.3g} um (profile)",
+            f"m0 = {compact_sci(profile_m)} kg",
+        ]
+        if np.isfinite(profile_lo_r) and np.isfinite(profile_hi_r) and profile_lo_r > 0.0 and profile_hi_r >= profile_lo_r:
+            lines.insert(1, f"95% profile r0: {profile_lo_r * 1e6:.3g} - {profile_hi_r * 1e6:.3g} um")
+            lines.append(f"95% profile m0: {compact_sci(mass_from_radius(profile_lo_r))} - {compact_sci(mass_from_radius(profile_hi_r))} kg")
+        if sigma_line:
+            lines.append(sigma_line.strip())
+        return "\n".join(lines)
     if bool(joint_fit.get("bootstrap_enabled", False)):
         lo_r = float(joint_fit.get("bootstrap_radius0_lo95_m", np.nan))
         hi_r = float(joint_fit.get("bootstrap_radius0_hi95_m", np.nan))
@@ -1954,24 +2138,6 @@ def solve_measured_positions_itrs(measured_total_paths_m, fitted_positions_itrs_
 
 def fit_quality_annotation(joint_fit):
     v0_km_s, v0_sigma_km_s = initial_speed_uncertainty_km_s(joint_fit)
-    delay_keep = np.asarray(joint_fit["path_keep"], dtype=bool)
-    delay_abs_m = np.abs(np.asarray(joint_fit["path_residuals_m"], dtype=np.float64)[delay_keep])
-    delay_mean_abs_m = (
-        float(np.nanmean(delay_abs_m[np.isfinite(delay_abs_m)]))
-        if np.any(np.isfinite(delay_abs_m))
-        else np.nan
-    )
-    fft_keep = np.asarray(joint_fit["fft_keep"], dtype=bool)
-    doppler_abs_mps = np.abs(
-        beat_residual_hz_to_total_path_rate_mps(
-            np.asarray(joint_fit["fft_residuals_hz"], dtype=np.float64)[fft_keep]
-        )
-    )
-    doppler_mean_abs_mps = (
-        float(np.nanmean(doppler_abs_mps[np.isfinite(doppler_abs_mps)]))
-        if np.any(np.isfinite(doppler_abs_mps))
-        else np.nan
-    )
     v0_label = "boot" if bool(joint_fit.get("bootstrap_enabled", False)) else "local"
     if np.isfinite(v0_km_s) and np.isfinite(v0_sigma_km_s):
         v0_text = f"v0 = {v0_km_s:.2f} +/- {v0_sigma_km_s:.2f} km/s ({v0_label})"
@@ -1987,12 +2153,40 @@ def fit_quality_annotation(joint_fit):
             bic_text = f"\nBIC selects constant velocity; no dynamic mass\nDelta BIC const-WJ = {delta_bic:.1f}"
         elif selected:
             bic_text = f"\nBIC selects Whipple-Jacchia\nDelta BIC const-WJ = {delta_bic:.1f}"
-    return (
-        f"mean |delay residual| = {delay_mean_abs_m:.1f} m\n"
-        f"mean |Doppler residual| = {doppler_mean_abs_mps:.0f} m/s\n"
-        f"{v0_text}"
-        f"{bic_text}"
+    rejection = str(joint_fit.get("whipple_rejection_reasons", ""))
+    if rejection and rejection.lower() != "none":
+        bic_text += f"\nWJ rejected: {rejection}"
+    return f"{v0_text}{bic_text}"
+
+
+def delay_residual_annotation(joint_fit):
+    delay_keep = np.asarray(joint_fit["path_keep"], dtype=bool)
+    delay_abs_m = np.abs(np.asarray(joint_fit["path_residuals_m"], dtype=np.float64)[delay_keep])
+    delay_mean_abs_m = (
+        float(np.nanmean(delay_abs_m[np.isfinite(delay_abs_m)]))
+        if np.any(np.isfinite(delay_abs_m))
+        else np.nan
     )
+    if np.isfinite(delay_mean_abs_m):
+        return f"mean |delay residual| = {delay_mean_abs_m:.1f} m"
+    return "mean |delay residual| unavailable"
+
+
+def doppler_residual_annotation(joint_fit):
+    fft_keep = np.asarray(joint_fit["fft_keep"], dtype=bool)
+    doppler_abs_mps = np.abs(
+        beat_residual_hz_to_total_path_rate_mps(
+            np.asarray(joint_fit["fft_residuals_hz"], dtype=np.float64)[fft_keep]
+        )
+    )
+    doppler_mean_abs_mps = (
+        float(np.nanmean(doppler_abs_mps[np.isfinite(doppler_abs_mps)]))
+        if np.any(np.isfinite(doppler_abs_mps))
+        else np.nan
+    )
+    if np.isfinite(doppler_mean_abs_mps):
+        return f"mean |Doppler residual| = {doppler_mean_abs_mps:.0f} m/s"
+    return "mean |Doppler residual| unavailable"
 
 
 def segmented_radius_interval_text(joint_fit):
@@ -2077,8 +2271,14 @@ def dynamic_mass_from_whipple_state(params, t_rel_s, x_itrs_m, v_gcrs_mps, rho_o
 
 
 def dynamic_mass_kg(joint_fit, rho_of_alt_m):
-    """Instantaneous dynamic mass from the WJ fit."""
+    """Instantaneous mass curve for the selected dynamic model."""
 
+    if str(joint_fit.get("dynamical_model", "")) == "ceplecha":
+        mass_kg = np.asarray(joint_fit.get("mass_kg", []), dtype=np.float64)
+        radius_m = np.asarray(joint_fit.get("radius_m", []), dtype=np.float64)
+        area = np.pi * radius_m**2.0
+        area_per_mass_m2_kg = np.divide(area, mass_kg, out=np.full_like(mass_kg, np.nan), where=mass_kg > 0.0)
+        return mass_kg, area_per_mass_m2_kg
     if str(joint_fit.get("dynamical_model", "")) != "whipple_speed":
         return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
     mass_kg, _radius_m, area_per_mass_m2_kg = dynamic_mass_from_whipple_state(
@@ -2091,36 +2291,265 @@ def dynamic_mass_kg(joint_fit, rho_of_alt_m):
     return mass_kg, area_per_mass_m2_kg
 
 
+def dynamic_mass_bootstrap_interval_kg(joint_fit, rho_of_alt_m, max_samples=96):
+    """Pointwise mass interval from bootstrap dynamic-model draws."""
+
+    model_kind = str(joint_fit.get("dynamical_model", ""))
+    if model_kind not in {"ceplecha", "whipple_speed"}:
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty
+    bootstrap_params = np.asarray(joint_fit.get("bootstrap_params", []), dtype=np.float64)
+    t_rel_s = np.asarray(joint_fit.get("t_rel_s", []), dtype=np.float64)
+    times_ns = np.asarray(joint_fit.get("time_ns", []), dtype=np.int64)
+    n_params = MODEL_PARAMETER_COUNT[model_kind]
+    if (
+        bootstrap_params.ndim != 2
+        or bootstrap_params.shape[1] < n_params
+        or bootstrap_params.shape[0] < 8
+        or t_rel_s.ndim != 1
+        or times_ns.shape[0] != t_rel_s.size
+    ):
+        nan = np.full(t_rel_s.shape, np.nan, dtype=np.float64)
+        return nan, nan
+    if bootstrap_params.shape[0] > max_samples:
+        draw_idx = np.linspace(0, bootstrap_params.shape[0] - 1, int(max_samples), dtype=np.int64)
+        draws = bootstrap_params[draw_idx]
+    else:
+        draws = bootstrap_params
+    samples = []
+    for trial in draws:
+        try:
+            params = np.asarray(trial[:n_params], dtype=np.float64)
+            model = forward_model_for_kind(params, t_rel_s, times_ns, rho_of_alt_m, model_kind)
+            if not bool(model.get("ceplecha_success", False)):
+                continue
+            if model_kind == "ceplecha":
+                mass_kg = np.asarray(model.get("mass_kg", []), dtype=np.float64)
+            else:
+                mass_kg, _radius_m, _area_per_mass = dynamic_mass_from_whipple_state(
+                    params,
+                    t_rel_s,
+                    model.get("x_itrs_m", []),
+                    model.get("v_gcrs_mps", []),
+                    rho_of_alt_m,
+                )
+        except Exception:
+            continue
+        if mass_kg.shape == t_rel_s.shape and np.count_nonzero(np.isfinite(mass_kg) & (mass_kg > 0.0)) >= 2:
+            samples.append(mass_kg)
+    if len(samples) < 8:
+        nan = np.full(t_rel_s.shape, np.nan, dtype=np.float64)
+        return nan, nan
+    samples = np.asarray(samples, dtype=np.float64)
+    return finite_percentile(samples, 2.5, axis=0), finite_percentile(samples, 97.5, axis=0)
+
+
 def add_dynamic_mass_scatter(fig, ax, t_rel_s, along_velocity_km_s, joint_fit, rho_of_alt_m):
     mass_kg, area_per_mass_m2_kg = dynamic_mass_kg(joint_fit, rho_of_alt_m)
     if mass_kg.size != len(t_rel_s):
         return None
-    finite = np.isfinite(mass_kg) & (mass_kg > 0.0) & np.isfinite(along_velocity_km_s)
+    lo_kg, hi_kg = dynamic_mass_bootstrap_interval_kg(joint_fit, rho_of_alt_m)
+    finite = np.isfinite(mass_kg) & (mass_kg > 0.0) & np.isfinite(t_rel_s)
     if np.count_nonzero(finite) < 2:
         return None
-    vmin = float(np.nanpercentile(mass_kg[finite], 5.0))
-    vmax = float(np.nanpercentile(mass_kg[finite], 95.0))
-    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
-        vmin = float(np.nanmin(mass_kg[finite]))
-        vmax = float(np.nanmax(mass_kg[finite]))
-    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+    if lo_kg.shape != mass_kg.shape or hi_kg.shape != mass_kg.shape:
+        lo_kg = np.full_like(mass_kg, np.nan)
+        hi_kg = np.full_like(mass_kg, np.nan)
+    err_good = finite & np.isfinite(lo_kg) & np.isfinite(hi_kg) & (lo_kg > 0.0) & (hi_kg >= lo_kg)
+    if np.any(err_good):
+        ax.fill_between(
+            t_rel_s[err_good],
+            lo_kg[err_good],
+            hi_kg[err_good],
+            color="0.72",
+            alpha=0.42,
+            lw=0,
+            label="95%",
+            zorder=1,
+        )
+    ax.plot(t_rel_s[finite], mass_kg[finite], color="black", lw=1.9, label="fit", zorder=3)
+    mass_for_limits = mass_kg[finite]
+    if np.any(err_good):
+        mass_for_limits = np.concatenate([mass_for_limits, lo_kg[err_good], hi_kg[err_good]])
+    mass_for_limits = mass_for_limits[np.isfinite(mass_for_limits) & (mass_for_limits > 0.0)]
+    if mass_for_limits.size:
+        ymin = float(np.nanmin(mass_for_limits))
+        ymax = float(np.nanmax(mass_for_limits))
+        if np.isfinite(ymin) and np.isfinite(ymax) and ymax > ymin:
+            ax.set_ylim(ymin / 1.8, ymax * 1.8)
+    ax.set_yscale("log")
+    ax.set_xlabel("Time since fit epoch (s)")
+    ax.set_ylabel("Mass (kg)")
+    ax.set_title("Model mass along trajectory")
+    ax.grid(True, alpha=0.25, which="both")
+    return ax
+
+
+def add_radius_profile_probability_panel(ax, joint_fit):
+    radius_m = np.asarray(joint_fit.get("radius_profile_radius_m", []), dtype=np.float64)
+    prob = np.asarray(joint_fit.get("radius_profile_probability_density", []), dtype=np.float64)
+    if radius_m.ndim != 1 or prob.ndim != 1 or radius_m.shape != prob.shape:
         return None
-    sc = ax.scatter(
-        t_rel_s[finite],
-        along_velocity_km_s[finite],
-        c=mass_kg[finite],
-        s=24,
-        cmap="magma",
-        norm=LogNorm(vmin=max(vmin, 1e-30), vmax=vmax),
-        edgecolors="white",
-        linewidths=0.25,
-        alpha=0.9,
-        label="dynamic mass",
-        zorder=8,
-    )
-    cb = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
-    cb.set_label(r"Dynamic mass (kg)")
-    return sc
+    finite = np.isfinite(radius_m) & (radius_m > 0.0) & np.isfinite(prob) & (prob >= 0.0)
+    if np.count_nonzero(finite) < 3:
+        return None
+    radius_um = radius_m[finite] * 1e6
+    prob = prob[finite]
+    if np.nanmax(prob) > 0.0:
+        prob_plot = prob / np.nanmax(prob)
+        ylabel = "Relative probability"
+    else:
+        prob_plot = prob
+        ylabel = "Probability density"
+    ax.plot(radius_um, prob_plot, color="black", lw=1.9, label="profile")
+    ax.fill_between(radius_um, 0.0, prob_plot, color="0.72", alpha=0.42, lw=0)
+    best = float(joint_fit.get("radius_profile_best_radius_m", np.nan)) * 1e6
+    lo = float(joint_fit.get("radius_profile_lo95_radius_m", np.nan)) * 1e6
+    hi = float(joint_fit.get("radius_profile_hi95_radius_m", np.nan)) * 1e6
+    if np.isfinite(best) and best > 0.0:
+        ax.axvline(best, color="black", lw=1.1, ls="-")
+    if np.isfinite(lo) and np.isfinite(hi) and lo > 0.0 and hi >= lo:
+        ax.axvspan(lo, hi, color="0.5", alpha=0.18, lw=0, label="95%")
+    ax.set_xscale("log")
+    ax.set_xlabel(r"Initial radius $r_0$ (um)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(r"Profile likelihood for $r_0$")
+    ax.set_ylim(bottom=0.0)
+    ax.grid(True, alpha=0.25, which="both")
+    if np.isfinite(best):
+        lines = [rf"$r_0$ = {best:.3g} um"]
+        if np.isfinite(lo) and np.isfinite(hi):
+            lines.append(rf"95%: {lo:.3g} - {hi:.3g} um")
+        best_m = mass_from_radius(best * 1e-6)
+        lines.append(rf"$m_0$ = {compact_sci(best_m)} kg")
+        if np.isfinite(lo) and np.isfinite(hi) and lo > 0.0 and hi >= lo:
+            lo_m = mass_from_radius(lo * 1e-6)
+            hi_m = mass_from_radius(hi * 1e-6)
+            lines.append(rf"95% $m_0$: {compact_sci(lo_m)} - {compact_sci(hi_m)} kg")
+        ax.text(
+            0.04,
+            0.95,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8.0,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.0},
+        )
+    ax.legend(loc="upper right", fontsize=7.4, framealpha=0.78, borderpad=0.35, labelspacing=0.35)
+    return ax
+
+
+def altitude_km_from_itrs(x_itrs_m):
+    x_itrs_m = np.asarray(x_itrs_m, dtype=np.float64)
+    if x_itrs_m.ndim != 2 or x_itrs_m.shape[1] != 3:
+        return np.asarray([], dtype=np.float64)
+    llh = np.asarray([jcoord.ecef2geodetic(*point) for point in x_itrs_m], dtype=np.float64)
+    return llh[:, 2] / 1e3
+
+
+def add_altitude_context_panel(ax, t_rel_s, joint_fit, rho_of_alt_m, bands=None):
+    x_itrs_m = np.asarray(joint_fit.get("x_itrs_m", []), dtype=np.float64)
+    if x_itrs_m.ndim != 2 or x_itrs_m.shape[0] != len(t_rel_s) or x_itrs_m.shape[1] != 3:
+        ax.axis("off")
+        return
+    alt_km = altitude_km_from_itrs(x_itrs_m)
+    finite_alt = np.isfinite(t_rel_s) & np.isfinite(alt_km)
+    if not np.any(finite_alt):
+        ax.axis("off")
+        return
+    if bands is not None and "alt_lo_km" in bands and "alt_hi_km" in bands:
+        alt_lo = np.asarray(bands["alt_lo_km"], dtype=np.float64)
+        alt_hi = np.asarray(bands["alt_hi_km"], dtype=np.float64)
+        good_band = finite_alt & np.isfinite(alt_lo) & np.isfinite(alt_hi)
+        if np.any(good_band):
+            ax.fill_between(
+                t_rel_s[good_band],
+                alt_lo[good_band],
+                alt_hi[good_band],
+                color="0.72",
+                alpha=0.42,
+                lw=0,
+                label="95%",
+            )
+    ax.plot(t_rel_s[finite_alt], alt_km[finite_alt], color="black", lw=1.9, label="fit")
+    ax.set_xlabel("Time since fit epoch (s)")
+    ax.set_ylabel("Altitude (km)")
+    ax.set_title("Model altitude")
+    ax.ticklabel_format(axis="y", style="plain", useOffset=False)
+    ax.grid(True, alpha=0.25)
+
+
+def full_event_beam_bootstrap_band(joint_fit, rho_of_alt_m, max_samples=96):
+    all_t_rel_s = np.asarray(joint_fit.get("all_t_rel_s", []), dtype=np.float64)
+    all_time_ns = np.asarray(joint_fit.get("all_time_ns", []), dtype=np.int64)
+    model_kind = str(joint_fit.get("dynamical_model", "ceplecha"))
+    n_params = MODEL_PARAMETER_COUNT.get(model_kind, 0)
+    profile_params, profile_weights = radius_profile_sampling_inputs(joint_fit, n_params)
+    if model_kind == "ceplecha" and profile_params is not None and all_t_rel_s.ndim == 1 and all_time_ns.shape[0] == all_t_rel_s.size:
+        east_samples = []
+        north_samples = []
+        weights_used = []
+        for trial, weight in zip(profile_params, profile_weights):
+            try:
+                model = forward_model_for_kind(trial, all_t_rel_s, all_time_ns, rho_of_alt_m, model_kind)
+            except Exception:
+                continue
+            if not bool(model.get("ceplecha_success", False)):
+                continue
+            east_deg, north_deg = sanya_beam_offsets_deg(model["x_itrs_m"])
+            if east_deg.shape == all_t_rel_s.shape and np.all(np.isfinite(east_deg)) and np.all(np.isfinite(north_deg)):
+                east_samples.append(east_deg)
+                north_samples.append(north_deg)
+                weights_used.append(weight)
+        if east_samples:
+            east_samples = np.asarray(east_samples, dtype=np.float64)
+            north_samples = np.asarray(north_samples, dtype=np.float64)
+            weights_used = np.asarray(weights_used, dtype=np.float64)
+            return {
+                "east_lo_deg": weighted_nanpercentile_axis0(east_samples, weights_used, 2.5),
+                "east_hi_deg": weighted_nanpercentile_axis0(east_samples, weights_used, 97.5),
+                "north_lo_deg": weighted_nanpercentile_axis0(north_samples, weights_used, 2.5),
+                "north_hi_deg": weighted_nanpercentile_axis0(north_samples, weights_used, 97.5),
+                "source": "radius_profile_weighted",
+            }
+    bootstrap_params = np.asarray(joint_fit.get("bootstrap_params", []), dtype=np.float64)
+    if (
+        bootstrap_params.ndim != 2
+        or bootstrap_params.shape[0] < 8
+        or bootstrap_params.shape[1] < n_params
+        or all_t_rel_s.ndim != 1
+        or all_time_ns.shape[0] != all_t_rel_s.size
+    ):
+        return None
+    if bootstrap_params.shape[0] > max_samples:
+        draw_idx = np.linspace(0, bootstrap_params.shape[0] - 1, int(max_samples), dtype=np.int64)
+        draws = bootstrap_params[draw_idx]
+    else:
+        draws = bootstrap_params
+    east_samples = []
+    north_samples = []
+    for trial in draws:
+        try:
+            model = forward_model_for_kind(trial[:n_params], all_t_rel_s, all_time_ns, rho_of_alt_m, model_kind)
+        except Exception:
+            continue
+        if not bool(model.get("ceplecha_success", False)):
+            continue
+        east_deg, north_deg = sanya_beam_offsets_deg(model["x_itrs_m"])
+        if east_deg.shape == all_t_rel_s.shape and np.all(np.isfinite(east_deg)) and np.all(np.isfinite(north_deg)):
+            east_samples.append(east_deg)
+            north_samples.append(north_deg)
+    if len(east_samples) < 8:
+        return None
+    east_samples = np.asarray(east_samples, dtype=np.float64)
+    north_samples = np.asarray(north_samples, dtype=np.float64)
+    return {
+        "east_lo_deg": finite_percentile(east_samples, 2.5, axis=0),
+        "east_hi_deg": finite_percentile(east_samples, 97.5, axis=0),
+        "north_lo_deg": finite_percentile(north_samples, 2.5, axis=0),
+        "north_hi_deg": finite_percentile(north_samples, 97.5, axis=0),
+    }
 
 
 def add_segmented_radius_velocity_fit(ax, t_rel_s, along_axis, joint_fit):
@@ -2219,10 +2648,59 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
     along_axis = np.nanmean(nominal_v_gcrs, axis=0)
     along_axis = along_axis / max(float(np.linalg.norm(along_axis)), 1e-30)
     nominal_along_velocity = (nominal_v_gcrs @ along_axis) / 1e3
+    nominal_alt_km = altitude_km_from_itrs(nominal_x_itrs)
     nominal_beam_east, nominal_beam_north = sanya_beam_offsets_deg(nominal_x_itrs)
+    profile_params, profile_weights = radius_profile_sampling_inputs(joint_fit, len(params))
+    if model_kind == "ceplecha" and profile_params is not None:
+        path_samples = []
+        along_velocity_samples = []
+        alt_samples = []
+        beam_east_samples = []
+        beam_north_samples = []
+        weights_used = []
+        for trial, weight in zip(profile_params, profile_weights):
+            try:
+                model = forward_model_for_kind(trial, joint_fit["t_rel_s"], joint_fit["time_ns"], rho_of_alt_m, model_kind)
+            except Exception:
+                continue
+            if not model["ceplecha_success"]:
+                continue
+            path = np.asarray(model["apparent_path_length_m"], dtype=np.float64)
+            along_velocity = (np.asarray(model["v_gcrs_mps"], dtype=np.float64) @ along_axis) / 1e3
+            alt_km = altitude_km_from_itrs(model["x_itrs_m"])
+            beam_east_deg, beam_north_deg = sanya_beam_offsets_deg(model["x_itrs_m"])
+            if np.all(np.isfinite(path)) and np.all(np.isfinite(along_velocity)) and np.all(np.isfinite(alt_km)):
+                path_samples.append(path)
+                along_velocity_samples.append(along_velocity)
+                alt_samples.append(alt_km)
+                beam_east_samples.append(beam_east_deg)
+                beam_north_samples.append(beam_north_deg)
+                weights_used.append(weight)
+        if path_samples:
+            path_samples = np.asarray(path_samples, dtype=np.float64)
+            along_velocity_samples = np.asarray(along_velocity_samples, dtype=np.float64)
+            alt_samples = np.asarray(alt_samples, dtype=np.float64)
+            beam_east_samples = np.asarray(beam_east_samples, dtype=np.float64)
+            beam_north_samples = np.asarray(beam_north_samples, dtype=np.float64)
+            weights_used = np.asarray(weights_used, dtype=np.float64)
+            return {
+                "path_lo_m": weighted_nanpercentile_axis0(path_samples, weights_used, 2.5),
+                "path_hi_m": weighted_nanpercentile_axis0(path_samples, weights_used, 97.5),
+                "along_velocity_lo_km_s": weighted_nanpercentile_axis0(along_velocity_samples, weights_used, 2.5),
+                "along_velocity_hi_km_s": weighted_nanpercentile_axis0(along_velocity_samples, weights_used, 97.5),
+                "alt_lo_km": weighted_nanpercentile_axis0(alt_samples, weights_used, 2.5),
+                "alt_hi_km": weighted_nanpercentile_axis0(alt_samples, weights_used, 97.5),
+                "beam_east_lo_deg": weighted_nanpercentile_axis0(beam_east_samples, weights_used, 2.5),
+                "beam_east_hi_deg": weighted_nanpercentile_axis0(beam_east_samples, weights_used, 97.5),
+                "beam_north_lo_deg": weighted_nanpercentile_axis0(beam_north_samples, weights_used, 2.5),
+                "beam_north_hi_deg": weighted_nanpercentile_axis0(beam_north_samples, weights_used, 97.5),
+                "n_draws": int(len(path_samples)),
+                "source": "radius_profile_weighted",
+            }
     if bool(joint_fit.get("bootstrap_enabled", False)) and bootstrap_params.ndim == 2 and bootstrap_params.shape[0] >= 8:
         path_samples = []
         along_velocity_samples = []
+        alt_samples = []
         beam_east_samples = []
         beam_north_samples = []
         if bootstrap_params.shape[0] > n_draws:
@@ -2245,19 +2723,23 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
                 continue
             path = np.asarray(model["apparent_path_length_m"], dtype=np.float64)
             along_velocity = (np.asarray(model["v_gcrs_mps"], dtype=np.float64) @ along_axis) / 1e3
+            alt_km = altitude_km_from_itrs(model["x_itrs_m"])
             beam_east_deg, beam_north_deg = sanya_beam_offsets_deg(model["x_itrs_m"])
-            if np.all(np.isfinite(path)) and np.all(np.isfinite(along_velocity)):
+            if np.all(np.isfinite(path)) and np.all(np.isfinite(along_velocity)) and np.all(np.isfinite(alt_km)):
                 path_samples.append(path)
                 along_velocity_samples.append(along_velocity)
+                alt_samples.append(alt_km)
                 beam_east_samples.append(beam_east_deg)
                 beam_north_samples.append(beam_north_deg)
         if len(path_samples) >= 8:
             path_samples = np.asarray(path_samples, dtype=np.float64)
             along_velocity_samples = np.asarray(along_velocity_samples, dtype=np.float64)
+            alt_samples = np.asarray(alt_samples, dtype=np.float64)
             beam_east_samples = np.asarray(beam_east_samples, dtype=np.float64)
             beam_north_samples = np.asarray(beam_north_samples, dtype=np.float64)
             path_lo, path_hi = centered_percentile_band(path_samples, nominal_path)
             velocity_lo, velocity_hi = centered_percentile_band(along_velocity_samples, nominal_along_velocity)
+            alt_lo, alt_hi = centered_percentile_band(alt_samples, nominal_alt_km)
             beam_east_lo, beam_east_hi = centered_percentile_band(beam_east_samples, nominal_beam_east)
             beam_north_lo, beam_north_hi = centered_percentile_band(beam_north_samples, nominal_beam_north)
             return {
@@ -2265,6 +2747,8 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
                 "path_hi_m": path_hi,
                 "along_velocity_lo_km_s": velocity_lo,
                 "along_velocity_hi_km_s": velocity_hi,
+                "alt_lo_km": alt_lo,
+                "alt_hi_km": alt_hi,
                 "beam_east_lo_deg": beam_east_lo,
                 "beam_east_hi_deg": beam_east_hi,
                 "beam_north_lo_deg": beam_north_lo,
@@ -2287,6 +2771,7 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
     rng = deterministic_rng(event_id)
     path_samples = []
     along_velocity_samples = []
+    alt_samples = []
     beam_east_samples = []
     beam_north_samples = []
     n_try = 0
@@ -2309,20 +2794,24 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
             continue
         path = np.asarray(model["apparent_path_length_m"], dtype=np.float64)
         along_velocity = (np.asarray(model["v_gcrs_mps"], dtype=np.float64) @ along_axis) / 1e3
+        alt_km = altitude_km_from_itrs(model["x_itrs_m"])
         beam_east_deg, beam_north_deg = sanya_beam_offsets_deg(model["x_itrs_m"])
-        if np.all(np.isfinite(path)) and np.all(np.isfinite(along_velocity)):
+        if np.all(np.isfinite(path)) and np.all(np.isfinite(along_velocity)) and np.all(np.isfinite(alt_km)):
             path_samples.append(path)
             along_velocity_samples.append(along_velocity)
+            alt_samples.append(alt_km)
             beam_east_samples.append(beam_east_deg)
             beam_north_samples.append(beam_north_deg)
     if len(path_samples) < max(12, n_draws // 4):
         return None
     path_samples = np.asarray(path_samples, dtype=np.float64)
     along_velocity_samples = np.asarray(along_velocity_samples, dtype=np.float64)
+    alt_samples = np.asarray(alt_samples, dtype=np.float64)
     beam_east_samples = np.asarray(beam_east_samples, dtype=np.float64)
     beam_north_samples = np.asarray(beam_north_samples, dtype=np.float64)
     path_lo, path_hi = centered_percentile_band(path_samples, nominal_path)
     velocity_lo, velocity_hi = centered_percentile_band(along_velocity_samples, nominal_along_velocity)
+    alt_lo, alt_hi = centered_percentile_band(alt_samples, nominal_alt_km)
     beam_east_lo, beam_east_hi = centered_percentile_band(beam_east_samples, nominal_beam_east)
     beam_north_lo, beam_north_hi = centered_percentile_band(beam_north_samples, nominal_beam_north)
     return {
@@ -2330,6 +2819,8 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
         "path_hi_m": path_hi,
         "along_velocity_lo_km_s": velocity_lo,
         "along_velocity_hi_km_s": velocity_hi,
+        "alt_lo_km": alt_lo,
+        "alt_hi_km": alt_hi,
         "beam_east_lo_deg": beam_east_lo,
         "beam_east_hi_deg": beam_east_hi,
         "beam_north_lo_deg": beam_north_lo,
@@ -2340,25 +2831,74 @@ def model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m, n_draws=96):
 
 
 def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, snr_db=None):
-    fig, axes = plt.subplots(2, 2, figsize=(9.2, 7.0), constrained_layout=True)
+    global plt, Line2D, LogNorm
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.colors import LogNorm
+    with plt.rc_context(
+        {
+            "font.size": 9.6,
+            "axes.titlesize": 10.6,
+            "axes.labelsize": 9.8,
+            "xtick.labelsize": 8.8,
+            "ytick.labelsize": 8.8,
+            "legend.fontsize": 8.0,
+            "figure.titlesize": 11.0,
+        }
+    ):
+        fig, axes = plt.subplots(3, 2, figsize=(8.25, 9.55), constrained_layout=True)
+        fig.set_constrained_layout_pads(w_pad=0.004, h_pad=0.014, wspace=0.002, hspace=0.03)
+        _plot_joint_fit_into_figure(fig, axes, event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, snr_db=snr_db)
+
+
+def _plot_joint_fit_into_figure(fig, axes, event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, snr_db=None):
     t = joint_fit["t_rel_s"]
+    finite_t = np.asarray(t, dtype=np.float64)[np.isfinite(t)]
+    if finite_t.size:
+        time_xlim = (float(np.nanmin(finite_t)), float(np.nanmax(finite_t)))
+        if time_xlim[1] <= time_xlim[0]:
+            time_xlim = (time_xlim[0] - 0.5, time_xlim[1] + 0.5)
+    else:
+        time_xlim = None
     colors = {"sanya": "#4c78a8", "danzhou": "#f58518", "wenchang": "#54a24b"}
     bands = model_uncertainty_bands(event_id, joint_fit, rho_of_alt_m)
+    display_x_itrs = np.asarray(joint_fit.get("all_x_itrs_m", joint_fit["x_itrs_m"]), dtype=np.float64)
+    display_t = np.asarray(joint_fit.get("all_t_rel_s", t), dtype=np.float64)
+    display_path_keep = np.asarray(
+        joint_fit.get("all_path_keep", joint_fit.get("path_keep", np.ones_like(joint_fit["measured_total_paths_m"], dtype=bool))),
+        dtype=bool,
+    )
+    display_fit_mask = np.asarray(joint_fit.get("all_main_lobe_fit_mask", np.ones(len(display_t), dtype=bool)), dtype=bool)
+    display_snr_db = np.asarray(joint_fit.get("all_snr_db", snr_db if snr_db is not None else []), dtype=np.float64)
+    if display_snr_db.ndim != 2 or display_snr_db.shape[0] != len(display_t):
+        display_snr_db = np.asarray(snr_db if snr_db is not None else [], dtype=np.float64)
 
     ax = axes[0, 0]
-    fit_east_deg, fit_north_deg = sanya_beam_offsets_deg(joint_fit["x_itrs_m"])
+    fit_east_deg, fit_north_deg = sanya_beam_offsets_deg(display_x_itrs)
     path_keep = np.asarray(joint_fit.get("path_keep", np.ones_like(joint_fit["measured_total_paths_m"], dtype=bool)), dtype=bool)
     sanya_snr = None
-    if snr_db is not None:
-        snr_arr = np.asarray(snr_db, dtype=np.float64)
+    if display_snr_db.size:
+        snr_arr = np.asarray(display_snr_db, dtype=np.float64)
         if snr_arr.ndim == 2 and snr_arr.shape[0] == len(fit_east_deg):
             sanya_snr = snr_arr[:, 0]
     if sanya_snr is None:
-        position_keep = path_keep[:, 0] & np.isfinite(fit_east_deg) & np.isfinite(fit_north_deg)
-        position_excluded = (~path_keep[:, 0]) & np.isfinite(fit_east_deg) & np.isfinite(fit_north_deg)
+        position_keep = display_path_keep[:, 0] & display_fit_mask & np.isfinite(fit_east_deg) & np.isfinite(fit_north_deg)
+        position_excluded = display_path_keep[:, 0] & ~display_fit_mask & np.isfinite(fit_east_deg) & np.isfinite(fit_north_deg)
     else:
-        position_keep = path_keep[:, 0] & np.isfinite(sanya_snr) & np.isfinite(fit_east_deg) & np.isfinite(fit_north_deg)
-        position_excluded = (~path_keep[:, 0]) & np.isfinite(sanya_snr) & np.isfinite(fit_east_deg) & np.isfinite(fit_north_deg)
+        position_keep = (
+            display_path_keep[:, 0]
+            & display_fit_mask
+            & np.isfinite(sanya_snr)
+            & np.isfinite(fit_east_deg)
+            & np.isfinite(fit_north_deg)
+        )
+        position_excluded = (
+            display_path_keep[:, 0]
+            & ~display_fit_mask
+            & np.isfinite(sanya_snr)
+            & np.isfinite(fit_east_deg)
+            & np.isfinite(fit_north_deg)
+        )
     grid_limit = 2.6
     grid = np.linspace(-grid_limit, grid_limit, 240)
     east_grid, north_grid = np.meshgrid(grid, grid)
@@ -2372,20 +2912,21 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
         linewidths=[0.6, 0.7, 0.8, 0.9, 1.1],
         linestyles=[":", "--", "-.", "-", "-"],
     )
-    if bands is not None:
+    full_beam_band = full_event_beam_bootstrap_band(joint_fit, rho_of_alt_m)
+    if full_beam_band is not None:
         step = max(1, len(fit_east_deg) // 12)
         idx = np.arange(0, len(fit_east_deg), step)
         xerr = np.maximum(
             np.vstack([
-                fit_east_deg[idx] - bands["beam_east_lo_deg"][idx],
-                bands["beam_east_hi_deg"][idx] - fit_east_deg[idx],
+                fit_east_deg[idx] - full_beam_band["east_lo_deg"][idx],
+                full_beam_band["east_hi_deg"][idx] - fit_east_deg[idx],
             ]),
             0.0,
         )
         yerr = np.maximum(
             np.vstack([
-                fit_north_deg[idx] - bands["beam_north_lo_deg"][idx],
-                bands["beam_north_hi_deg"][idx] - fit_north_deg[idx],
+                fit_north_deg[idx] - full_beam_band["north_lo_deg"][idx],
+                full_beam_band["north_hi_deg"][idx] - fit_north_deg[idx],
             ]),
             0.0,
         )
@@ -2395,13 +2936,15 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             xerr=xerr,
             yerr=yerr,
             fmt="none",
-            ecolor="#1b7837",
-            elinewidth=0.9,
-            alpha=0.35,
-            capsize=0,
+            ecolor="0.55",
+            elinewidth=1.2,
+            alpha=0.55,
+            capsize=2.5,
+            capthick=0.9,
+            label="95%",
             zorder=1,
         )
-    ax.plot(fit_east_deg, fit_north_deg, color="#1b7837", lw=1.8, label="fit", zorder=2)
+    ax.plot(fit_east_deg, fit_north_deg, color="#1b7837", lw=1.8, label="extrapolated fit", zorder=2)
     snr_color = sanya_snr
     if np.any(position_excluded):
         ax.scatter(
@@ -2412,7 +2955,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             edgecolors="0.45",
             linewidths=0.8,
             alpha=0.35,
-            label="excluded",
+            label="outside fit mask",
             zorder=2,
         )
     if snr_color is None:
@@ -2422,7 +2965,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             s=22,
             color="#4c78a8",
             alpha=0.85,
-            label="Sanya echo",
+            label="Sanya echo in fit",
             zorder=3,
         )
     else:
@@ -2447,11 +2990,13 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             edgecolors="none",
             linewidths=0.0,
             alpha=0.9,
-            label="Sanya echo",
+            label="Sanya echo in fit",
             zorder=3,
         )
-        cb = fig.colorbar(sc_meas, ax=ax, fraction=0.046, pad=0.03)
-        cb.set_label("Sanya matched-filter SNR (dB)")
+        cax = ax.inset_axes([0.045, 0.06, 0.035, 0.42])
+        cb = fig.colorbar(sc_meas, cax=cax)
+        cb.set_label("Sanya SNR (dB)")
+        cb.ax.tick_params(labelsize=7.4, length=2.2)
     ax.axhline(0.0, color="0.35", lw=0.7, alpha=0.6)
     ax.axvline(0.0, color="0.35", lw=0.7, alpha=0.6)
     ax.set_aspect("equal", adjustable="box")
@@ -2462,16 +3007,6 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
     ax.set_title("Head positions in Sanya TX beam")
     ax.grid(True, alpha=0.25)
     ax.legend(loc="best", fontsize=8)
-    ax.text(
-        0.04,
-        0.05,
-        fit_quality_annotation(joint_fit),
-        transform=ax.transAxes,
-        ha="left",
-        va="bottom",
-        fontsize=8.0,
-        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.0},
-    )
 
     ax = axes[0, 1]
     along_axis = np.nanmean(np.asarray(joint_fit["v_gcrs_mps"], dtype=np.float64), axis=0)
@@ -2485,11 +3020,15 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             color="0.72",
             alpha=0.42,
             lw=0,
-            label="Whipple-Jacchia 95%",
+            label="95%",
         )
-    ax.plot(t, along_velocity_km_s, color="black", lw=1.9, label="Whipple-Jacchia")
-    add_dynamic_mass_scatter(fig, ax, t, along_velocity_km_s, joint_fit, rho_of_alt_m)
+    ax.plot(t, along_velocity_km_s, color="black", lw=1.9, label="fit")
     ax.set_ylabel("Along-track velocity (km/s)")
+    ax.yaxis.set_label_position("right")
+    ax.yaxis.tick_right()
+    ax.set_xlabel("Time since fit epoch (s)")
+    if time_xlim is not None:
+        ax.set_xlim(*time_xlim)
     ax.set_title("Model along-track velocity")
     ax.ticklabel_format(axis="y", style="plain", useOffset=False)
     ax.grid(True, alpha=0.25)
@@ -2498,7 +3037,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
     ax.text(
         0.04,
         0.05,
-        radius_mass_orbit_interval_text(joint_fit),
+        fit_quality_annotation(joint_fit),
         transform=ax.transAxes,
         ha="left",
         va="bottom",
@@ -2507,6 +3046,33 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
     )
 
     ax = axes[1, 0]
+    profile_panel = add_radius_profile_probability_panel(ax, joint_fit)
+    mass_panel = profile_panel if profile_panel is not None else add_dynamic_mass_scatter(fig, ax, t, along_velocity_km_s, joint_fit, rho_of_alt_m)
+    if mass_panel is None:
+        ax.axis("off")
+        no_mass_reason = str(joint_fit.get("dynamic_mass_not_estimated_reason", ""))
+        no_mass_text = "No BIC-supported dynamic mass"
+        if no_mass_reason:
+            no_mass_text += "\n" + no_mass_reason
+        ax.text(
+            0.5,
+            0.5,
+            no_mass_text,
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=9.0,
+            color="0.3",
+        )
+
+    ax = axes[1, 1]
+    add_altitude_context_panel(ax, t, joint_fit, rho_of_alt_m, bands=bands)
+    if time_xlim is not None:
+        ax.set_xlim(*time_xlim)
+    ax.yaxis.set_label_position("right")
+    ax.yaxis.tick_right()
+
+    ax = axes[2, 0]
     path_sigma_m = np.asarray(
         joint_fit.get(
             "path_measurement_sigma_m",
@@ -2538,7 +3104,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             ax.scatter(
                 t[excluded],
                 joint_fit["path_residuals_m"][excluded, col],
-                s=20,
+                s=14,
                 facecolors="none",
                 edgecolors=colors[site],
                 linewidths=0.8,
@@ -2554,26 +3120,40 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
                 ecolor=colors[site],
                 elinewidth=0.75,
                 alpha=0.42,
-                capsize=0,
+                capsize=2.0,
+                capthick=0.7,
                 zorder=1,
             )
         ax.scatter(
             t[keep],
             joint_fit["path_residuals_m"][keep, col],
-            s=22,
+            s=15,
             color=colors[site],
             label=SITE_LABELS[col],
             alpha=0.85,
         )
     ax.axhline(0, color="0.25", lw=1.0)
     ax.set_xlabel("Time since fit epoch (s)")
+    if time_xlim is not None:
+        ax.set_xlim(*time_xlim)
     ax.set_ylabel("Delay residual (m)")
     ax.set_title("Delay residuals")
     ax.set_ylim(-100.0, 100.0)
     ax.grid(True, alpha=0.25)
-    if snr_db is not None:
-        snr_arr = np.asarray(snr_db, dtype=np.float64)
-        if snr_arr.ndim == 2 and snr_arr.shape[0] == len(t):
+    ax.text(
+        0.04,
+        0.94,
+        delay_residual_annotation(joint_fit),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.8,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.0},
+        zorder=10,
+    )
+    if display_snr_db.size:
+        snr_arr = np.asarray(display_snr_db, dtype=np.float64)
+        if snr_arr.ndim == 2 and snr_arr.shape[0] == len(display_t):
             if np.any(np.isfinite(snr_arr)):
                 ax_snr = ax.twinx()
                 finite_snr = snr_arr[np.isfinite(snr_arr)]
@@ -2588,7 +3168,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
                     if not np.any(good):
                         continue
                     (snr_handle,) = ax_snr.plot(
-                        t[good],
+                        display_t[good],
                         snr_arr[good, col],
                         color=colors[site],
                         lw=1.1,
@@ -2600,7 +3180,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
                 ax_snr.set_ylim(lo - pad, hi + pad)
                 ax_snr.grid(False)
 
-    ax = axes[1, 1]
+    ax = axes[2, 1]
     fft_sigma_hz = np.asarray(
         joint_fit.get(
             "fft_event_sigma_hz",
@@ -2632,7 +3212,7 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
             ax.scatter(
                 t[excluded],
                 joint_fit["fft_residuals_hz"][excluded, col] / 1e3,
-                s=20,
+                s=14,
                 facecolors="none",
                 edgecolors=colors[site],
                 linewidths=0.8,
@@ -2648,26 +3228,41 @@ def plot_joint_fit(event_id, delay_fit, joint_fit, output_base, rho_of_alt_m, sn
                 ecolor=colors[site],
                 elinewidth=0.75,
                 alpha=0.42,
-                capsize=0,
+                capsize=2.0,
+                capthick=0.7,
                 zorder=1,
             )
         ax.scatter(
             t[keep],
             joint_fit["fft_residuals_hz"][keep, col] / 1e3,
-            s=22,
+            s=15,
             color=colors[site],
             label=SITE_LABELS[col],
             alpha=0.85,
         )
     ax.axhline(0, color="0.25", lw=1.0)
     ax.set_xlabel("Time since fit epoch (s)")
-    ax.set_ylabel("Beat residual (kHz)")
+    if time_xlim is not None:
+        ax.set_xlim(*time_xlim)
+    ax.set_ylabel("")
+    ax.tick_params(axis="y", labelleft=False, left=False)
     ax.set_title("Beat-frequency residuals")
     ax.set_ylim(
         total_path_rate_mps_to_beat_residual_khz(1000.0),
         total_path_rate_mps_to_beat_residual_khz(-1000.0),
     )
     ax.grid(True, alpha=0.25)
+    ax.text(
+        0.04,
+        0.94,
+        doppler_residual_annotation(joint_fit),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.8,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.0},
+        zorder=10,
+    )
     handles, labels = ax.get_legend_handles_labels()
     handles.append(Line2D([0], [0], marker="o", linestyle="none", markerfacecolor="none", markeredgecolor="0.35", label="excluded"))
     labels.append("excluded")

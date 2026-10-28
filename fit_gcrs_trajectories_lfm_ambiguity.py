@@ -5,7 +5,6 @@ import h5py
 import jcoord
 import numpy as np
 import scipy.optimize as so
-import stuffr
 from astropy.coordinates import GCRS, ITRS, CartesianDifferential, CartesianRepresentation
 from astropy.time import Time
 
@@ -200,6 +199,7 @@ def solve_position_from_total_paths_m(measured_total_paths_m, x0, tx_positions_m
 
 
 def solve_triplet(event_id, san_event, dan_event, wen_event):
+    import stuffr
     matches = match_pulses_with_time(san_event, dan_event, wen_event)
     if len(matches) < MIN_POINTS:
         return None

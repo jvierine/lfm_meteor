@@ -265,6 +265,7 @@ def propagate_ceplecha(params, t_rel_s, rho_of_alt_m):
     radius0_m = 10.0 ** float(params[6])
     t1 = float(np.max(t_rel)) if len(t_rel) else 0.0
     t1 = max(t1, CEPLECHA_SAMPLE_DT_S)
+    mass0_kg = 4.0 * np.pi * METEOROID_DENSITY_KG_M3 * radius0_m**3 / 3.0
 
     result = integrate_ceplecha(
         params[:3],
@@ -275,7 +276,12 @@ def propagate_ceplecha(params, t_rel_s, rho_of_alt_m):
         ablation_sigma_kg_j=ABLATION_SIGMA_KG_J,
         t_span_s=(0.0, t1),
         sample_dt_s=min(CEPLECHA_SAMPLE_DT_S, max(t1 / 5.0, 1e-6)),
-        height_function=lambda r: float(np.linalg.norm(r) - SPHERICAL_EARTH_RADIUS_M),
+        rtol=1e-9,
+        atol=np.r_[np.full(3, 1e-4), np.full(3, 1e-5), max(mass0_kg * 1e-10, 1e-35)],
+        height_function=getattr(
+            rho_of_alt_m, "height_from_gcrs",
+            lambda r: float(np.linalg.norm(r) - SPHERICAL_EARTH_RADIUS_M),
+        ),
     )
     if result.time_s.size < 2:
         raise RuntimeError(f"Ceplecha integration returned too few samples: {result.message}")
@@ -284,7 +290,9 @@ def propagate_ceplecha(params, t_rel_s, rho_of_alt_m):
     v_gcrs = np.column_stack([np.interp(t_rel, result.time_s, result.velocity_mps[:, dim]) for dim in range(3)])
     radius_m = np.interp(t_rel, result.time_s, result.radius_m)
     mass_kg = np.interp(t_rel, result.time_s, result.mass_kg)
-    return x_gcrs, v_gcrs, radius_m, mass_kg, result.success, result.message
+    complete = bool(result.time_s[-1] >= t1 - 1e-10)
+    message = result.message if complete else "mass depleted before final observation"
+    return x_gcrs, v_gcrs, radius_m, mass_kg, bool(result.success and complete), message
 
 
 def predict_paths(params, t_rel_s, times_ns, rho_of_alt_m):
