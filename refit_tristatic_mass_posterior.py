@@ -19,6 +19,7 @@ import emcee
 import h5py
 import jcoord
 import numpy as np
+import meteor_trajectory_models.ceplecha as ode
 from scipy import linalg, optimize, special, stats
 
 import fit_all_ballistic_snr_weighted as base
@@ -29,6 +30,10 @@ from fit_whipple_jacchia_catalog_from_h5 import load_group, event_id_from_path, 
 
 VERSION = 'correlated_mass_posterior_v1_20261028'
 LOG_RADIUS_BOUNDS = (-7., -2.)
+SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+ODE_SHA256 = hashlib.sha256(Path(ode.__file__).read_bytes()).hexdigest()
+GIT_REVISION = subprocess.check_output(
+    ['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).resolve().parent, text=True).strip()
 
 
 def attach_geodetic_height(density, times):
@@ -361,10 +366,9 @@ def process_event(source_path, output, steps, walkers, seed, max_steps):
             h.attrs['source_event_sha256'] = hashlib.sha256(Path(source_path).read_bytes()).hexdigest()
             h.attrs['observation_provenance'] = 'Cached per-pulse matched-filter delays and dechirped beat frequencies; source acceptance masks preserved. Raw voltages not re-extracted in this validation run.'
             h.attrs['elapsed_s'] = time.monotonic() - start
-            h.attrs['source_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-            h.attrs['git_revision'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-            import meteor_trajectory_models.ceplecha as ode
-            h.attrs['ode_source_sha256'] = hashlib.sha256(Path(ode.__file__).read_bytes()).hexdigest()
+            h.attrs['source_sha256'] = SOURCE_SHA256
+            h.attrs['git_revision'] = GIT_REVISION
+            h.attrs['ode_source_sha256'] = ODE_SHA256
             h.attrs['drag_convention'] = 'free molecular Gamma=1, equivalent aerodynamic Cd=2; spherical acceleration coefficient 3/4'
             save_group(h.create_group('joint_fit'), joint)
             save_group(h.create_group('wj_reference'), reference)
