@@ -91,3 +91,14 @@ def test_ceplecha_sigma_mass_speed_integral():
     assert success, message
     expected = .5 * density.ceplecha_sigma_kg_j * ((v*v).sum(axis=1) - (v[0]*v[0]).sum())
     np.testing.assert_allclose(np.log(mass/mass[0]), expected, atol=1e-5)
+
+
+def test_beat_and_delay_share_the_lfm_ambiguity_combination():
+    import fit_event_joint_delay_doppler_fft as f
+    geometric = np.array([200000., 230000., 290000.])
+    doppler = np.array([-20000., -10000., 4000.])
+    alpha = f.gfit.NOMINAL_CHIRP_RATE_HZ_PER_S / f.gfit.C
+    apparent = geometric + doppler / alpha
+    measured = apparent + np.array([3., -2., 5.])
+    beat = doppler - alpha * (measured - geometric)
+    np.testing.assert_allclose(beat, alpha * (apparent - measured), atol=1e-7)

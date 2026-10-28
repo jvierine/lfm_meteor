@@ -1,0 +1,65 @@
+Tri-static mass inference audit, 2026-10-28
+
+Scope and status
+----------------
+New validation catalogue only. Existing published estimates and event products
+are preserved. The rerun uses cached per-pulse matched-filter delay and
+dechirped beat observations; it does not claim to re-extract the raw voltages.
+Source acceptance masks are preserved. Old clipping can therefore still affect
+coverage; this must be assessed before promoting the validation catalogue.
+
+Confirmed findings
+------------------
+1. The old profile scans refit state with station beat offsets held fixed,
+   retain finite scores from unconverged optimizations, normalize over a finite
+   radius grid, and rescale Student-t deviance by a reduced-score heuristic.
+   This is not full nuisance-parameter marginalization.
+2. The previous RCS comparison used a different WJ bootstrap mass estimator,
+   rather than the saved radius-profile interval. The comparison was corrected
+   separately. Its RCS intervals remain noise-only, not total uncertainties.
+3. Matched-filter apparent path and range-offset-corrected beat share the same
+   model combination: beat = (chirp_rate/c)*(apparent_path - measured_path)+bias.
+   They are correlated estimates, not independent geometric range and Doppler.
+   Controlled 128-draw tests at 15/20/30 dB gave paired-residual correlations
+   0.883/0.876/0.665. The median empirical paired residual correlation in 106
+   cached WJ files was 0.791 (5th/95th percentiles 0.484/0.922).
+4. The old ODE used spherical altitude norm(position)-6371 km to query a
+   geodetic MSIS altitude table. For tri_0010 the discrepancy is 4.99 km.
+   MSIS densities at 91.606 and 96.591 km are respectively 2.379e-6 and
+   1.013e-6 kg/m3. A fixed-deceleration mass scales as density cubed, but a
+   complete refit is required to quantify the event's new mass.
+5. ODE absolute mass tolerance 1e-10 kg can exceed the fitted meteoroid mass.
+   The audited propagator uses component-specific, mass-scaled tolerances and
+   rejects propagation ending before the final measurement instead of holding
+   a depleted terminal state through interpolation.
+6. Free molecular flow is fixed: Gamma=1 in F=Gamma*rho*A*v^2, equivalent to
+   Cd=2 with dynamic pressure. Spherical acceleration coefficient is 3/4.
+   Local and server dependency source hashes were verified identical.
+7. Ceplecha sigma=Lambda/(2*Gamma*Q) implies dm/dt=-sigma*Gamma*rho*A*v^3.
+   The shared integrator legacy argument implements Lambda/Q with a 1/2.
+   The validation run explicitly translates sigma=1e-8 to that argument.
+   The analytic ln(m/m0)=sigma*(v^2-v0^2)/2 invariant is regression-tested.
+   Reference: https://doi.org/10.1051/0004-6361/200811503, equations 1-7.
+
+Validation likelihood and limitations
+------------------------------------
+Refit WJ for a reference trajectory, then estimate within-station delay/beat
+and temporal correlation using Gaussianized Student-t residuals with shrinkage.
+Use a Gaussian copula to preserve Student-t marginal distributions. Sample
+initial state, log radius, three station offsets and six log noise multipliers
+jointly with emcee. Noise multipliers have Normal(0, log(3)^2) log priors;
+log radius is uniform from -7 to -2 in metres. Record the priors, samples,
+autocorrelation diagnostics, boundary-tail flags and model mismatch flags.
+
+These are CONDITIONAL posterior intervals, not proven frequentist 95% coverage.
+The noise correlation estimate is held fixed, stations are assumed independent,
+and MSIS, bulk density (3000 kg/m3), sigma and Gamma are fixed. Winds and changes
+to the existing inertial-speed drag approximation are not included. A broad
+posterior at the maximum radius is prior-limited, not a measured finite upper
+mass bound. An unconverged chain must not be promoted as a reliable mass.
+
+Remaining publication gates
+---------------------------
+Independent-chain checks; multi-event synthetic coverage; sensitivity to the
+radius prior, temporal correlation, inherited clipping, and atmosphere; inspect
+event residuals and model mismatch. No automatic manuscript replacement.

@@ -210,8 +210,16 @@ def event_plot(path, event, like, reference, q, samples, flags, snr):
             axes[0, 0].plot(like.t[k], (like.measured[k, c] - zero) / 1000, '.', color=colors[c])
             axes[0, 0].plot(like.t, (model['apparent_path_length_m'][:, c] - zero) / 1000, color=colors[c], label=fit.SITE_LABELS[c])
             axes[1, 0].plot(like.t[k], path_resid[k, c], '.', color=colors[c])
+            error_rows = np.flatnonzero(k)[::max(1, int(np.sum(k)) // 16)]
+            axes[1, 0].errorbar(like.t[error_rows], path_resid[error_rows, c],
+                               yerr=like.path_sigma[error_rows, c] * scales[c, 0] * stats.t.ppf(.84, like.nu[0]),
+                               fmt='none', color=colors[c], alpha=.4, linewidth=.7)
             k = like.fk[:, c]
             axes[1, 1].plot(like.t[k], beat_resid[k, c] * fit.gfit.RADAR_WAVELENGTH_M, '.', color=colors[c])
+            error_rows = np.flatnonzero(k)[::max(1, int(np.sum(k)) // 16)]
+            axes[1, 1].errorbar(like.t[error_rows], beat_resid[error_rows, c] * fit.gfit.RADAR_WAVELENGTH_M,
+                               yerr=like.fft_sigma[error_rows, c] * scales[c, 1] * stats.t.ppf(.84, like.nu[1]) * fit.gfit.RADAR_WAVELENGTH_M,
+                               fmt='none', color=colors[c], alpha=.4, linewidth=.7)
             if np.shape(snr) == like.measured.shape:
                 axes[2, 1].plot(like.t, snr[:, c], '.', color=colors[c])
         axes[0, 0].legend()
@@ -227,6 +235,8 @@ def event_plot(path, event, like, reference, q, samples, flags, snr):
         axes[1, 1].set_ylabel('Beat-equivalent path-rate residual (m/s)')
         for ax in axes[1]:
             ax.axhline(0, color='.4', linewidth=.7)
+            ax.text(.02, .97, '68% measurement intervals', transform=ax.transAxes, va='top', fontsize=8,
+                    bbox={'facecolor': 'white', 'alpha': .8, 'edgecolor': 'none'})
         bins = np.linspace(*LOG_RADIUS_BOUNDS, 81)
         axes[2, 0].hist(samples[:, 6] + 6, bins=bins + 6, density=True, histtype='step', color='black')
         qmass = np.percentile(mass, [2.5, 50, 97.5])
@@ -321,11 +331,19 @@ def process_event(source_path, output, steps, walkers, seed, max_steps):
         logprob = sampler.get_log_prob(discard=burn)
         q = chain.reshape(-1, 16)[np.argmax(logprob)]
         model, path_resid, beat_resid, scales = like.model(q)
+        if np.max(scales) > 3.:
+            flags.append('noise_scale_above_three_times_reference')
+        path_rms = float(np.sqrt(np.mean(path_resid[like.pk] ** 2)))
+        beat_rms = float(np.sqrt(np.mean(beat_resid[like.fk] ** 2)))
+        if (path_rms > 2 * max(reference['rms_total_path_residual_m'], 1.)
+                or beat_rms > 2 * max(reference['rms_fft_residual_hz'], 1.)):
+            flags.append('shrinking_radius_mismatch_relative_to_wj')
         posterior = dict(samples=samples, mass_kg=mass, radius_m=10 ** samples[:, 6],
                          mass_quantiles_kg=np.percentile(mass, [2.5, 50, 97.5]),
                          autocorrelation_time_steps=tau, acceptance_fraction=sampler.acceptance_fraction,
                          noise_correlation=np.asarray([(b[2], b[3]) for b in like.blocks]),
                          flags=';'.join(flags), n_steps=steps, n_walkers=walkers,
+                         rms_path_residual_m=path_rms, rms_beat_residual_hz=beat_rms,
                          prior='uniform log10 radius [-7,-2] m; broad bounded state/bias; log noise scale Normal(0,log(3)^2)',
                          limitations='Conditional on empirical noise correlation, fixed MSIS density, bulk density 3000 kg/m3, drag Gamma=1 and ablation sigma=1e-8. No unconditional coverage claim.',
                          likelihood='Gaussian copula with Student-t marginals, separable within-station time/channel correlation; independent stations')
@@ -338,6 +356,8 @@ def process_event(source_path, output, steps, walkers, seed, max_steps):
         with h5py.File(out.with_suffix('.partial.h5'), 'w') as h:
             h.attrs['version'] = VERSION
             h.attrs['source_event_h5'] = str(source_path)
+            h.attrs['source_event_sha256'] = hashlib.sha256(Path(source_path).read_bytes()).hexdigest()
+            h.attrs['observation_provenance'] = 'Cached per-pulse matched-filter delays and dechirped beat frequencies; source acceptance masks preserved. Raw voltages not re-extracted in this validation run.'
             h.attrs['elapsed_s'] = time.monotonic() - start
             h.attrs['source_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
             h.attrs['git_revision'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
@@ -348,6 +368,8 @@ def process_event(source_path, output, steps, walkers, seed, max_steps):
             save_group(h.create_group('wj_reference'), reference)
             save_group(h.create_group('mass_posterior'), posterior)
             save_group(h.create_group('msis'), density_meta)
+            h['msis']['altitude_km'] = base.MSIS_ALT_GRID_KM
+            h['msis']['density_kg_m3'] = density(base.MSIS_ALT_GRID_KM * 1000.)
         out.with_suffix('.partial.h5').replace(out.with_suffix('.h5'))
         event_plot(out, event, like, reference, q, samples, flags, fft.get('fft_snr_db', []))
         return {'event_id': event, 'status': 'done', 'flags': ';'.join(flags), 'elapsed_s': time.monotonic() - start}
