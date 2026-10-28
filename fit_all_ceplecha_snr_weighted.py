@@ -273,7 +273,11 @@ def propagate_ceplecha(params, t_rel_s, rho_of_alt_m):
         radius0_m,
         rho_of_alt_m,
         meteoroid_density_kg_m3=METEOROID_DENSITY_KG_M3,
-        ablation_sigma_kg_j=ABLATION_SIGMA_KG_J,
+        # The shared integrator's legacy argument is Lambda/Q. A caller that
+        # supplies the literature sigma=Lambda/(2*Gamma*Q), Gamma=1, needs 2*sigma.
+        ablation_sigma_kg_j=(2.0 * rho_of_alt_m.ceplecha_sigma_kg_j
+                            if hasattr(rho_of_alt_m, "ceplecha_sigma_kg_j")
+                            else ABLATION_SIGMA_KG_J),
         t_span_s=(0.0, t1),
         sample_dt_s=min(CEPLECHA_SAMPLE_DT_S, max(t1 / 5.0, 1e-6)),
         rtol=1e-9,

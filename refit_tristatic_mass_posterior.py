@@ -257,7 +257,9 @@ def process_event(source_path, output, steps, walkers, seed, max_steps):
             fft = load_group(h['fft_observations'])
         density, density_meta = base.density_interpolator(source['time_ns'], source['x_itrs_m'])
         attach_geodetic_height(density, source['time_ns'])
+        density.ceplecha_sigma_kg_j = 1e-8
         density_meta['height_convention'] = 'WGS84 geodetic height using fixed event-epoch GCRS-to-ITRS rotation'
+        density_meta['ablation_convention'] = 'sigma=Lambda/(2*Gamma*Q)=1e-8 kg/J; Gamma=1; dm/dt=-sigma*rho*A*v^3'
         reference = refit_reference(source, density)
         print(json.dumps({'event_id': event, 'stage': 'reference_refit_complete'}), flush=True)
         like = EventLikelihood(source, density, reference)

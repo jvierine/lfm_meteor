@@ -79,3 +79,15 @@ def test_small_mass_ode_is_tolerance_converged():
     assert a.success and b.success
     np.testing.assert_allclose(a.mass_kg, b.mass_kg, rtol=1e-5)
     np.testing.assert_allclose(a.velocity_mps, b.velocity_mps, rtol=1e-6, atol=1e-4)
+
+
+def test_ceplecha_sigma_mass_speed_integral():
+    import fit_all_ceplecha_snr_weighted as cepl
+    density = lambda h: 8e-7
+    density.ceplecha_sigma_kg_j = 1e-8
+    p = np.array([6.47e6, 0., 0., 0., 30000., 0., -4.5])
+    t = np.linspace(0., .03, 15)
+    _, v, _, mass, success, message = cepl.propagate_ceplecha(p, t, density)
+    assert success, message
+    expected = .5 * density.ceplecha_sigma_kg_j * ((v*v).sum(axis=1) - (v[0]*v[0]).sum())
+    np.testing.assert_allclose(np.log(mass/mass[0]), expected, atol=1e-5)
