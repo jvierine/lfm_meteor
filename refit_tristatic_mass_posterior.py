@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import textwrap
 import time
 
 import emcee
@@ -249,7 +250,8 @@ def event_plot(path, event, like, reference, q, samples, flags, snr):
             if i != 4:
                 ax.set_xlabel('Time since first detection (s)')
             ax.grid(alpha=.2)
-        fig.suptitle(event + '\n' + ('; '.join(flags).replace('_', ' ') if flags else 'Conditional posterior; convergence checks passed'), fontsize=10)
+        status = '; '.join(flags).replace('_', ' ') if flags else 'Conditional posterior; chain-length checks passed'
+        fig.suptitle(event + '\n' + textwrap.fill(status, width=95), fontsize=9)
         fig.savefig(path.with_suffix('.pdf'))
         fig.savefig(path.with_suffix('.png'), dpi=130)
         plt.close(fig)

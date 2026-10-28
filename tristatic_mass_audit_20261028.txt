@@ -40,6 +40,11 @@ Confirmed findings
    The validation run explicitly translates sigma=1e-8 to that argument.
    The analytic ln(m/m0)=sigma*(v^2-v0^2)/2 invariant is regression-tested.
    Reference: https://doi.org/10.1051/0004-6361/200811503, equations 1-7.
+8. The old WJ bootstrap perturbs delays and beat frequencies independently
+   about model arrays computed at the old delay anchors. The forward beat model
+   depends explicitly on the measured delay, so the synthetic beat must be
+   recomputed at each synthetic delay anchor. The new injection test does this;
+   it is not the old bootstrap with relabeled error bars.
 
 Validation likelihood and limitations
 ------------------------------------
