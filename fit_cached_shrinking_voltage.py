@@ -137,6 +137,12 @@ def run(args,event):
     if (folder/'fit.h5').exists():seed=folder/'fit.h5'
     seeded=None
     existing_meta=None
+    posterior_seeds=[]
+    if args.posterior_seed:
+        for path in sorted(folder.glob('chain_*.h5')):
+            with h5py.File(path) as h:
+                lp=h['log_probability'][:]
+                if len(lp):posterior_seeds.append(h['samples'][int(np.argmax(lp))])
     if seed.exists():
         with h5py.File(seed) as h:seeded=h['params'][:];existing_meta=dict(h.attrs)
         with h5py.File(seed.parent/'input.h5') as h:old_center=h['center'][:]
@@ -148,6 +154,9 @@ def run(args,event):
     def raw_logp(p):
         p=np.ascontiguousarray(p)
         return lib.voltage_logp(model.handle,p.ctypes.data_as(PTR))
+    for candidate in posterior_seeds:
+        candidate[:6]+=(old_center-d['center'])/1000
+        if raw_logp(candidate)>raw_logp(q):q=candidate.copy()
     if not np.isfinite(raw_logp(q)):
         candidates=[]
         for center in (q,initial):
@@ -244,6 +253,7 @@ def main():
     p.add_argument('--expand',type=float,default=1.);p.add_argument('--validate-only',action='store_true')
     p.add_argument('--budget-generation',default='',help='Explicitly authorized fresh bounded attempt; old timings retained')
     p.add_argument('--uncertainty-only',action='store_true')
+    p.add_argument('--posterior-seed',action='store_true',help='Refine from the best previous posterior state using the exact likelihood')
     args=p.parse_args();comm=MPI.COMM_WORLD
     events=[args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5'))
     for event in events[comm.rank::comm.size]:
