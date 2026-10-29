@@ -115,7 +115,16 @@ def run(args,event):
             with h5py.File(path) as h:previous_seconds+=float(h['elapsed_seconds'][()]) if 'elapsed_seconds' in h else 0.
     if (folder/'uncertainty_budget.h5').exists():
         with h5py.File(folder/'uncertainty_budget.h5') as h:previous_seconds=max(previous_seconds,float(h.attrs['used_seconds']))
-    if previous_seconds>=args.budget-45:raise RuntimeError('Five-minute cumulative uncertainty budget exhausted; preserve existing draws')
+    proposal=None
+    if len(list(folder.glob('chain_*.h5')))==4:
+        draws=[]
+        for path in sorted(folder.glob('chain_*.h5')):
+            with h5py.File(path) as h:
+                x=h['samples'][:]
+                if len(x):draws.append(x[len(x)//2:])
+        if len(draws)==4:
+            proposal=np.cov(np.concatenate(draws).T)
+    if previous_seconds>=args.budget-12:raise RuntimeError('Five-minute cumulative uncertainty budget exhausted; preserve existing draws')
     if (folder/'input.h5').exists():
         archive=folder/'attempts'/str(time.time_ns());archive.mkdir(parents=True)
         for path in folder.glob('*.h5'):shutil.copy2(path,archive/path.name)
@@ -161,9 +170,11 @@ def run(args,event):
          path_measurement_lower95_m=intervals[:,0],path_measurement_upper95_m=intervals[:,1]),dict(confidence=.95,conditional=True))
     print('FIT',event,'radius_m',10**q[6],'elapsed',time.monotonic()-began,flush=True)
     if args.validate_only:return
+    if proposal is not None and np.all(np.isfinite(proposal)):
+        cov=.95*proposal+.05*cov
     started=time.monotonic();chains=[];rng=np.random.default_rng(82304)
     for i in range(4):
-        remaining=args.budget-previous_seconds-(time.monotonic()-started)-40
+        remaining=args.budget-previous_seconds-(time.monotonic()-started)-8
         if remaining<=0:raise RuntimeError('Uncertainty budget exhausted before four chains')
         seconds=remaining/(4-i)
         start=q.copy()
@@ -173,7 +184,7 @@ def run(args,event):
         start=np.ascontiguousarray(start);matrix=np.ascontiguousarray(cov)
         target=folder/f'chain_{i}.h5'
         ok=lib.voltage_cache_sample(cache.handle,model.handle,start.ctypes.data_as(PTR),matrix.ctypes.data_as(PTR),
-                                    args.warmup,args.draws,seconds,20262000+i,os.fsencode(str(target)+'.partial'))
+                                    min(args.warmup,500) if proposal is not None else args.warmup,args.draws,seconds,20262000+i,os.fsencode(str(target)+'.partial'))
         if not ok:raise RuntimeError('Native cached MH failed')
         os.replace(str(target)+'.partial',target)
         with h5py.File(target) as h:chains.append(h['samples'][:])

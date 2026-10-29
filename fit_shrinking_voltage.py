@@ -102,6 +102,11 @@ def optimize(model,initial):
 
 
 def export(folder,model,q,fit,chains=None):
+    if chains is not None and (folder/'plot.h5').exists():
+        with h5py.File(folder/'plot.h5') as h:
+            if float(h.attrs.get('fit_unix_time',-1))==fit['fit_unix_time']:
+                fields={k:h[k][:] for k in h};attrs=dict(h.attrs)
+                return finish_export(folder,model,fields,attrs,chains)
     d=model.d;s=model.states(q);pred=model.prediction(q);raw=d['real']+1j*d['imag']
     beats=[];std=[];rng=np.random.default_rng(20261029)
     for i,(row,reference) in enumerate(zip(raw,pred)):
@@ -122,6 +127,11 @@ def export(folder,model,q,fit,chains=None):
                fit_unix_time=fit['fit_unix_time'],fit_timestamp_source='recorded fit completion',fit_flag_revision=flags['manual_flag_revision'],
                fit_excluded_count=flags['manually_excluded_count'],best_initial_mass_kg=mass,best_initial_radius_m=radius,
                uncertainty_status='Uncertainty pending; four physical-model chains required',mass_status='Direct shrinking-radius mass; posterior sampling pending')
+    return finish_export(folder,model,fields,attrs,chains)
+
+
+def finish_export(folder,model,fields,attrs,chains):
+    order=np.argsort(model.d['time_s'])
     if chains is not None:
         a=chains.transpose(2,0,1)
         rh=float(np.max(array_stats.rhat(a,chain_axis=1,draw_axis=2)));ess=float(np.min(array_stats.ess(a,chain_axis=1,draw_axis=2)))
