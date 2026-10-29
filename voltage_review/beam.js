@@ -14,8 +14,9 @@ export function beamPanels(container,onSelect){
   const axes=document.createElement('canvas'),canvas=document.createElement('canvas');canvas.className='gpu';canvas.tabIndex=0;
   canvas.setAttribute('aria-label',j?'Sanya transverse beam and SNR':'Sanya gain and radar cross section');
   const extra=document.createElement('div');extra.className='beam-scale';
-  box.append(axes,canvas,extra);container.append(box);
-  const panel={j,box,axesCanvas:axes,canvas,axes:new SeriesView(axes),gpu:new LinePlot(canvas),extra,bounds:null,points:[]};panels.push(panel);
+  const rightCanvas=document.createElement('canvas');rightCanvas.style.cssText='left:auto;right:0;width:84px;pointer-events:none';rightCanvas.hidden=!!j;
+  box.append(axes,canvas,extra,rightCanvas);container.append(box);
+  const panel={j,box,axesCanvas:axes,canvas,axes:new SeriesView(axes),rightAxes:new SeriesView(rightCanvas),gpu:new LinePlot(canvas),extra,bounds:null,points:[]};panels.push(panel);
   const navigate=(method,args)=>{if(!panel.bounds)return;const v=new PlotViewport(),b=panel.bounds,f=panel.full;
    v.zoom_box((b[0]-f[0])/(f[1]-f[0]),(b[2]-f[2])/(f[3]-f[2]),(b[1]-f[0])/(f[1]-f[0]),(b[3]-f[2])/(f[3]-f[2]));v[method](...args);const z=v.bounds();v.free();panel.bounds=[f[0]+z[0]*(f[1]-f[0]),f[0]+z[2]*(f[1]-f[0]),f[2]+z[1]*(f[3]-f[2]),f[2]+z[3]*(f[3]-f[2])];};
   bindPlotNavigation(canvas,{zoom:(...a)=>navigate('zoom',a),pan:(...a)=>navigate('pan',a),zoom_box:(...a)=>navigate('zoom_box',a),reset:()=>{panel.bounds=null;}},()=>draw(),()=>({x:70,y:30,width:box.clientWidth-153,height:box.clientHeight-78}));
@@ -58,7 +59,7 @@ export function beamPanels(container,onSelect){
     line([b[0],-20,b[1],-20],[.65,.68,.7],1);
     const r=limits(d.rcs_dbsm,3);const map=y=>b[2]+(y-r[0])/(r[1]-r[0])*(b[3]-b[2]);
     d.rcs_dbsm.forEach((y,i)=>{if(Number.isFinite(y))marker(i,d.time_s[i],map(y),[.72,.25,.07]);});
-    scale(v,r,'RCS (dBsm)',true);
+    v.rightAxes.right_axis(84,h,devicePixelRatio,...r,'RCS (dBsm)');
    }
   }
  }
