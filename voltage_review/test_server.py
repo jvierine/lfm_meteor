@@ -81,3 +81,21 @@ def test_excluded_point_remains_selectable_after_refit(store):
     p=payload(d);p['excluded']=[]
     assert reviewed.save(e,p)['excluded']==[]
     with h5py.File(store.flags/(e+'.h5')) as h:assert len(h['manual_reject_mask'])==2
+
+
+def test_save_retains_omitted_flags_without_original_catalogue(store):
+    e='tri_0003_1713794570204349518'
+    folder=store.path(e)
+    with h5py.File(folder/'excluded_measurements.h5','w') as h:
+        h['station']=[0];h['time_ns']=np.array([1713794570204349510],dtype=np.int64)
+        for key in ('time_s','path_m','modeled_path_m','residual_beat_hz'):h[key]=[0.]
+    reviewed=Store(store.root.parent/'missing_original',store.flags,latest=store.root)
+    d=reviewed.data(e);ghost=d['omitted_measurements'][0]['id']
+    p=payload(d);p['excluded']=[ghost]
+    reviewed.save(e,p)
+    d=reviewed.data(e);p=payload(d);p['excluded']=[ghost,d['ids'][0]]
+    reviewed.save(e,p)
+    fresh=Store(reviewed.root,reviewed.flags,latest=store.root).data(e)
+    assert set(fresh['annotation']['excluded'])==set(p['excluded'])
+    p=payload(fresh);p['excluded'].append('0:123')
+    with pytest.raises(ValueError):reviewed.save(e,p)

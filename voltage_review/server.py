@@ -125,10 +125,15 @@ class Store:
             if payload.get('version')!=old['version']: raise RuntimeError('Review changed elsewhere; reload before saving')
             if payload.get('fingerprint')!=data['fingerprint']:raise RuntimeError('Fit data changed; reload before saving')
             excluded=payload.get('excluded',[])
+            # Refit catalogues omit rejected pulses. Their diagnostic records
+            # remain valid identities even when the original catalogue is absent.
+            identities={(int(s),int(t)) for s,t in zip(data['station'],data['time_ns'])}
+            identities.update((p['station'],int(p['time_ns'])) for p in data['omitted_measurements'])
             original_path=self.root/event/'plot.h5'
-            if not original_path.exists():original_path=self.path(event)/'plot.h5'
-            with h5py.File(original_path) as original:
-                all_station=original['station'][:];all_time=original['time_ns'][:]
+            if original_path.exists():
+                with h5py.File(original_path) as original:
+                    identities.update((int(s),int(t)) for s,t in zip(original['station'][:],original['time_ns'][:]))
+            all_station,all_time=zip(*sorted(identities))
             all_ids=[f'{s}:{t}' for s,t in zip(all_station,all_time)]
             if not isinstance(excluded,list) or any(not isinstance(i,str) or i not in all_ids for i in excluded):raise ValueError('Unknown measurement identity')
             if type(payload.get('bad')) is not bool:raise ValueError('Bad state must be boolean')
