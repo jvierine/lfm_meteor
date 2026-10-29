@@ -7,7 +7,7 @@ use rand_distr::StandardNormal;
 use std::time::Instant;
 
 struct Surface {origin:[f64;2],half:[f64;2],n:usize,path_cells:usize,values:Vec<f64>,offset:f64}
-pub struct Cache {surfaces:Vec<Surface>}
+pub struct Cache {pulses:Vec<super::reduced::Pulse>,offsets:Vec<f64>}
 
 fn cubic(y:[f64;4],t:f64)->f64 {
     // Four-point Lagrange interpolation, exact for cubic polynomials.
@@ -40,7 +40,7 @@ impl Surface {
 }
 
 impl Voltage {
-    fn pulse_logp(&self,i:usize,path:f64,beat:f64)->f64 {
+    pub(super) fn pulse_logp(&self,i:usize,path:f64,beat:f64)->f64 {
         let fd=beat-self.bandwidth/self.duration*path/C;
         let fft=self.fft.as_ref().unwrap();let mut s=vec![Complex::new(0.,0.);fft.forward.len()];
         for j in 0..self.n {
@@ -63,7 +63,21 @@ impl Voltage {
     }
 }
 impl Cache {
-    fn build(v:&Voltage,q:&[f64],n:usize,expand:f64)->anyhow::Result<Self> {
+    fn build(v:&Voltage,q:&[f64],_n:usize,_expand:f64)->anyhow::Result<Self> {
+        let obs=v.observables(q).ok_or_else(||anyhow::anyhow!("Invalid seed"))?;
+        let mut pulses=Vec::new();let mut offsets=Vec::new();
+        for (i,o) in obs.iter().enumerate() {
+            let beat=o[1]+v.bandwidth/v.duration*o[0]/C;
+            let p=super::reduced::Pulse::build(v,i,beat);
+            let offset=v.pulse_logp(i,o[0],beat);
+            anyhow::ensure!(offset.is_finite(),"Invalid pulse {i}");
+            anyhow::ensure!((p.logp(o[0],beat)-offset).abs()<1e-5,"Reduced pulse {i} disagrees with raw voltage");
+            pulses.push(p);offsets.push(offset);
+        }
+        Ok(Self{pulses,offsets})
+    }
+    /* Archived gridded construction, superseded by analytic envelope statistics.
+    fn old_build(v:&Voltage,q:&[f64],n:usize,expand:f64)->anyhow::Result<Self> {
         anyhow::ensure!(n>=9 && n%2==1,"Odd grid size >=9 required");
         let obs=v.observables(q).ok_or_else(||anyhow::anyhow!("Invalid cache seed"))?;
         let k=v.bandwidth/v.duration/C;let mut surfaces=Vec::new();
@@ -95,27 +109,22 @@ impl Cache {
         }
         Ok(Self{surfaces})
     }
+    */
     fn evaluate(&self,v:&Voltage,q:&[f64])->Option<Vec<f64>> {
         let obs=v.observables(q)?;let k=v.bandwidth/v.duration/C;
-        obs.iter().enumerate().map(|(i,o)|self.surfaces[i].at([o[0],o[1]+k*o[0]])).collect()
+        Some(obs.iter().enumerate().map(|(i,o)|self.pulses[i].logp(o[0],o[1]+k*o[0])-self.offsets[i]).collect())
     }
     fn logp(&self,v:&Voltage,q:&[f64])->f64 {
         self.evaluate(v,q).map_or(f64::NEG_INFINITY,|x|x.iter().sum())
     }
     fn exact(&self,v:&Voltage,q:&[f64])->f64 {
         let Some(obs)=v.observables(q) else{return f64::NEG_INFINITY;};let k=v.bandwidth/v.duration/C;
-        obs.iter().enumerate().map(|(i,o)|v.pulse_logp(i,o[0],o[1]+k*o[0])-self.surfaces[i].offset).sum()
+        obs.iter().enumerate().map(|(i,o)|v.pulse_logp(i,o[0],o[1]+k*o[0])-self.offsets[i]).sum()
     }
     fn save(&self,path:&str)->anyhow::Result<()> {
-        let h=hdf5::File::create(path)?;let n=self.surfaces[0].n;
-        let origin:Vec<f64>=self.surfaces.iter().flat_map(|s|s.origin).collect();
-        let half:Vec<f64>=self.surfaces.iter().flat_map(|s|s.half).collect();
-        let values:Vec<f64>=self.surfaces.iter().flat_map(|s|s.values.clone()).collect();
-        h.new_dataset::<f64>().shape((self.surfaces.len(),2)).create("origin_path_m_beat_hz")?.write_raw(&origin)?;
-        h.new_dataset::<f64>().shape((self.surfaces.len(),2)).create("half_width")?.write_raw(&half)?;
-        h.new_dataset::<f64>().shape((self.surfaces.len(),n,n)).create("relative_log_likelihood")?.write_raw(&values)?;
-        h.new_dataset_builder().with_data(&self.surfaces.iter().map(|s|s.offset).collect::<Vec<_>>()).create("offset")?;
-        h.new_dataset_builder().with_data(&self.surfaces.iter().map(|s|s.path_cells as u64).collect::<Vec<_>>()).create("path_samples_per_cell")?;
+        let h=hdf5::File::create(path)?;
+        h.new_dataset_builder().with_data(&self.offsets).create("offset")?;
+        h.new_dataset::<u64>().create("sufficient_statistics_version")?.write_scalar(&1)?;
         h.flush()?;Ok(())
     }
 }
@@ -160,11 +169,7 @@ impl Cache {
 
 #[no_mangle] pub unsafe extern "C" fn voltage_cache_margin(c:*const Cache,v:*const Voltage,q:*const f64)->f64 {
     let v=&*v;let c=&*c;let q=std::slice::from_raw_parts(q,v.dimension());
-    let Some(obs)=v.observables(q) else{return -1.;};let k=v.bandwidth/v.duration/C;
-    obs.iter().enumerate().flat_map(|(i,o)|{
-        let s=&c.surfaces[i];let b=o[1]+k*o[0];
-        [1.-((o[0]-s.origin[0])/s.half[0]).abs(),1.-((b-s.origin[1])/s.half[1]).abs()]
-    }).fold(1.,f64::min)
+    if c.logp(v,q).is_finite(){1.}else{-1.}
 }
 
 #[cfg(test)] mod tests {

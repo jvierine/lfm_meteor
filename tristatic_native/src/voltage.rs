@@ -5,6 +5,7 @@ use crate::{C,metropolis};
 use rustfft::{Fft,FftPlanner,num_complex::Complex};
 use std::sync::Arc;
 mod compressed;
+mod reduced;
 
 struct WhiteningFft {forward:Arc<dyn Fft<f64>>,inverse:Arc<dyn Fft<f64>>,filters:Vec<Vec<Complex<f64>>>}
 
@@ -272,6 +273,15 @@ impl Voltage {
         assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!((reference_norm-lognorm).abs()<1e-10);
         assert!(residual.iter().zip(&reference).all(|(a,b)|(a-b).abs()<1e-10));
+        let beat=fd+bandwidth/duration*path/C;
+        let reduced=reduced::Pulse::build(&model,0,beat);
+        for shift in [-20000.,-5000.,-200.,-0.001,0.,0.001,200.,5000.,20000.] {
+            for db in [-30000.,-5000.,-100.,0.,100.,5000.,30000.] {
+                let exact=model.pulse_logp(0,path+shift,beat+db);
+                let fast=reduced.logp(path+shift,beat+db);
+                assert!((exact-fast).abs()<1e-6,"path {shift} beat {db}: {exact} vs {fast}");
+            }
+        }
         // Cropped echoes may start before the first valid residual row. The
         // transformed data still have a valid model; do not reject these pulses.
         for sample in &mut model.sample_time {*sample+=100./fs;}

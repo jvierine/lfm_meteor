@@ -120,14 +120,20 @@ def run(args,event):
         archive=folder/'attempts'/str(time.time_ns());archive.mkdir(parents=True)
         for path in folder.glob('*.h5'):shutil.copy2(path,archive/path.name)
         if (folder/'error.log').exists():shutil.move(folder/'error.log',archive/'error.log')
-    began=time.monotonic();d,initial=prepare(args,event,folder);lib=native(args.library);model=Model(lib,folder,d)
-    q=initial.copy();seed=args.seed/event/'fit.h5'
+    seed=args.seed/event/'fit.h5'
+    # Prefer the last physical fit; WJ is used only by prepare() as a seed.
+    if (folder/'fit.h5').exists():seed=folder/'fit.h5'
+    seeded=None
     if seed.exists():
-        with h5py.File(seed) as h:q=h['params'][:]
-        with h5py.File(args.seed/event/'input.h5') as h:old_center=h['center'][:]
+        with h5py.File(seed) as h:seeded=h['params'][:]
+        with h5py.File(seed.parent/'input.h5') as h:old_center=h['center'][:]
+    began=time.monotonic();d,initial=prepare(args,event,folder);lib=native(args.library);model=Model(lib,folder,d)
+    q=initial.copy()
+    if seeded is not None:
+        q=seeded
         q[:6]+=(old_center-d['center'])/1000
     cache=None
-    for n in ((129,129,257,257) if previous_seconds else (65,65,129,129,257,257)):
+    for n in (0,):
         if cache is not None:cache.close()
         cache=Cached(model,q,n,args.expand,folder/'likelihood_cache.h5')
         try:
@@ -142,8 +148,8 @@ def run(args,event):
         except RuntimeError as exc:
             if 'validation probes' not in str(exc):raise
             print('RECENTER',event,str(exc),flush=True)
-    else:raise RuntimeError('Cached likelihood failed interpolation accuracy gate')
-    meta=dict(fit_unix_time=time.time(),cost=-cache.logp(q),optimizer_success=bool(fit.success),model='direct shrinking radius; cached joint voltage likelihood',
+    else:raise RuntimeError('Reduced sufficient-statistic likelihood failed raw parity gate')
+    meta=dict(fit_unix_time=time.time(),cost=-cache.logp(q),optimizer_success=bool(fit.success),model='direct shrinking radius; analytic joint voltage sufficient statistics',
               Gamma=1.,Cd=2.,sigma_s2_m2=1e-8,material_density_kg_m3=3000.,prior='Uniform x0,v0,log10 r0; radius 1e-7 to 1e-2 m',
               cache_grid_size=n,uncertainty_budget_seconds=args.budget)
     save(folder/'fit.h5',dict(params=q,initial=initial),meta)
