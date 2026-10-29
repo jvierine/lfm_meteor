@@ -58,7 +58,7 @@ function fitSummary(){
   const size=document.createElement('span');size.className='mass-estimate';
   size.innerHTML=uncertaintyMath('d',Number.isFinite(r.lo95_scatter_kg)?diameter(r.lo95_scatter_kg):null,diameter(r.mass_kg),Number.isFinite(r.hi95_scatter_kg)?diameter(r.hi95_scatter_kg):null,'µm',false).replace('<mn>0</mn>','<mtext>RCS</mtext>');
   root.append(size);const detail=document.createElement('span');detail.className='mass-status';
-  detail.textContent=`RCS RMS scatter: ${r.rcs_rms_db?.toFixed(2)} dB. 95% empirical scatter interval, using a shared Gaussian RCS offset; not total physical uncertainty. Observed mass loss over ${r.covered_duration_s.toFixed(3)} s; equivalent diameter at 3000 kg/m³, not initial diameter; gain ≥ −10 dB one-way.${r.lo95_scatter_kg==null?' Interval lookup-limited: perturbations leave the tabulated domain or have ambiguous inversions.':''}${r.covered_duration_s<.999*r.requested_duration_s?' Partial coverage.':''}`;root.append(detail);
+  detail.textContent=`RCS RMS scatter: ${r.rcs_rms_db?.toFixed(2)} dB. 95% empirical scatter interval, using a shared Gaussian RCS offset; not total physical uncertainty. Observed mass loss over ${r.covered_duration_s.toFixed(3)} s; equivalent diameter at 3000 kg/m³, not initial diameter; gain ≥ −10 dB one-way.${r.uncertainty_extrapolated_fraction>0?' Uncertainty tails use extrapolated lookup edge slopes.':''}${r.lo95_scatter_kg==null?' Interval unavailable: ambiguous inversion.':''}${r.covered_duration_s<.999*r.requested_duration_s?' Partial coverage.':''}`;root.append(detail);
  }
 }
 function navigate(v,method,args){

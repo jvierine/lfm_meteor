@@ -86,6 +86,7 @@ class Store:
                 if any(h.attrs.get(k)!=hashlib.sha256(p.read_bytes() if p.exists() else b'').hexdigest() for k,p in inputs.items()):return data
                 if 'lo95_scatter_kg' not in h.attrs:return data
                 data['rcs_mass']={k:float(h.attrs[k]) if np.isfinite(h.attrs[k]) else None for k in ('mass_kg','lo95_scatter_kg','hi95_scatter_kg','rcs_rms_db','scatter_valid_fraction','covered_duration_s','requested_duration_s','n_measured','n_missing_in_beam')}
+                data['rcs_mass']['uncertainty_extrapolated_fraction']=float(h.attrs.get('uncertainty_extrapolated_fraction',0.))
                 data['rcs_mass']['curves']=[dict(time_s=g['time_s'][:].tolist(),rcs_dbsm=g['rcs_dbsm'][:].tolist()) for g in h.get('intervals',{}).values()]
         return data
 

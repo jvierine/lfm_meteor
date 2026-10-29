@@ -1,5 +1,5 @@
 import numpy as np
-from export_voltage_rcs_mass import integrate
+from export_voltage_rcs_mass import integrate, invert_scatter
 from export_voltage_rcs_mass import RATE_FACTOR
 
 def run(rcs,gain=None,rejected=None):
@@ -29,6 +29,17 @@ def test_rejected_value_not_used():
 def test_no_lookup_extrapolation():
     _,s,_=run([-10.,-10.])
     assert np.isnan(s['mass_kg'])
+
+def test_scatter_tails_extend_edge_slopes():
+    root,extended=invert_scatter(np.array([0.,10.,20.,30.]),np.array([-10.,15.,40.]),np.array([12.,13.,14.,15.]))
+    np.testing.assert_allclose(root,[11.,13.5,16.])
+    np.testing.assert_array_equal(extended,[True,False,True])
+
+def test_large_scatter_retains_interval():
+    _,s,_=run([1.,29.])
+    assert s['rcs_rms_db']==14.
+    assert np.isfinite(s['lo95_scatter_kg']+s['hi95_scatter_kg'])
+    assert s['uncertainty_extrapolated_fraction']>0
 
 def test_event_rms_shared_scatter():
     _,s,draws=run([9.,11.])

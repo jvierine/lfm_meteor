@@ -25,6 +25,18 @@ def invert(curve, measured, source):
     return np.where(count==1,np.nansum(roots,axis=-1),np.nan),count
 
 
+def invert_scatter(curve, measured, source):
+    """Extend monotone lookup edge slopes for uncertainty tails only."""
+    roots,count=invert(curve,measured,source)
+    measured=np.asarray(measured)
+    extended=np.zeros(measured.shape,dtype=bool)
+    if np.all(np.isfinite(curve)) and np.all(np.diff(curve)>0):
+        for mask,j in ((measured<curve[0],0),(measured>curve[-1],len(source)-2)):
+            value=source[j]+(measured-curve[j])*(source[j+1]-source[j])/(curve[j+1]-curve[j])
+            roots=np.where(mask,value,roots);extended|=mask
+    return roots,extended
+
+
 def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
     """Interpolate bounded gaps in dBsm; never bridge an out-of-beam interval.
 
@@ -39,7 +51,7 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
     # A shared event-level offset avoids assuming independent scatter samples.
     offsets=rng['generator'].normal(size=2048)*rms
     pieces = np.split(np.arange(len(t)), np.flatnonzero(np.diff(beam.astype(int)))+1)
-    result = []; masses = []; draws = []; requested = 0.
+    result = []; masses = []; draws = []; requested = 0.; extrapolated=np.zeros(2048,dtype=bool)
     for indices in pieces:
         anchors = indices[observed[indices]]
         if len(anchors) < 2: continue
@@ -61,7 +73,9 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
         masses.append(weights[active]@rate[active])
         noisy = rcs[anchors]+offsets[:,None]
         noisy_grid = np.array([np.interp(grid,t[anchors],row) for row in noisy])
-        samples = np.array([RATE_FACTOR*10**invert(c,noisy_grid[:,j],source)[0] for j,c in enumerate(curves)]).T
+        inversions=[invert_scatter(c,noisy_grid[:,j],source) for j,c in enumerate(curves)]
+        samples = np.array([RATE_FACTOR*10**root for root,_ in inversions]).T
+        extrapolated|=np.any(np.array([flag for _,flag in inversions])[active],axis=0)
         draws.append(samples[:,active]@weights[active])
         result.append(dict(time_s=grid, altitude_km=a, speed_km_s=v, rcs_dbsm=power,
                            log10_source=roots, rate_kg_s=rate, integration_weights_s=weights,
@@ -72,6 +86,7 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
     interval=np.percentile(samples,[2.5,97.5]) if fraction==1. else [np.nan,np.nan]
     duration=sum(r['integration_weights_s'].sum() for r in result)
     return result, dict(mass_kg=mass, lo95_scatter_kg=interval[0],hi95_scatter_kg=interval[1],
+                       uncertainty_extrapolated_fraction=float(extrapolated.mean()),
                        rcs_rms_db=rms,scatter_valid_fraction=fraction,covered_duration_s=duration,
                        requested_duration_s=requested,n_measured=int(observed.sum()),
                        n_missing_in_beam=int((beam&~observed).sum())), samples
@@ -116,7 +131,7 @@ def export(folder, lookup, flags):
             beam_sha256=hashlib.sha256(paths[1].read_bytes()).hexdigest(),
             flag_sha256=hashlib.sha256(flag.read_bytes() if flag.exists() else b'').hexdigest(),
             meaning='Observed ablated mass over bounded in-beam intervals, not initial mass',
-            uncertainty='Event RMS about mean in-beam measured dBsm; shared Gaussian offset across all anchors and intervals, 2048 draws; conditional on trajectory and lookup; includes real RCS evolution, not calibrated total uncertainty',
+            uncertainty='Event RMS about mean in-beam measured dBsm; shared Gaussian offset across all anchors and intervals, 2048 draws; monotone log-source edge slopes extended for uncertainty tails; nominal observed interval unchanged; conditional on trajectory and lookup, not calibrated total uncertainty',
             lookup_warning='Pilot head-on collisionless FDTD; mesh/time convergence not certified',
             source_program=Path(__file__).read_text(),lookup_file=str(lookup),lookup_correction=correction,rate_factor=RATE_FACTOR)
         h['mass_scatter_samples_kg']=samples
