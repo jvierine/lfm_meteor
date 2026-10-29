@@ -46,16 +46,25 @@ class Cached:
 def covariance(cache,q):
     # Numerical curvature in scaled coordinates; retain cross-parameter terms.
     step=np.r_[np.full(3,1e-4),np.full(3,1e-3),.003]
-    eye=np.diag(step);h=np.empty((7,7));f=cache.logp(q)
-    for i in range(7):
-        h[i,i]=-(cache.logp(q+eye[i])-2*f+cache.logp(q-eye[i]))
-        for j in range(i):
-            h[i,j]=h[j,i]=-(cache.logp(q+eye[i]+eye[j])-cache.logp(q+eye[i]-eye[j])-cache.logp(q-eye[i]+eye[j])+cache.logp(q-eye[i]-eye[j]))/4
-    if not np.all(np.isfinite(h)):raise RuntimeError('Curvature stencil outside cache; need recentering')
+    upper=np.r_[np.full(3,20.),np.full(3,40.),-2.]
+    step=np.where(q+2*step>upper,-step,step)
+    for attempt in range(5):
+        eye=np.diag(step);h=np.empty((7,7));f=cache.logp(q)
+        one=np.array([cache.logp(q+e) for e in eye])
+        for i in range(7):
+            h[i,i]=-(cache.logp(q+2*eye[i])-2*one[i]+f)
+            for j in range(i):
+                h[i,j]=h[j,i]=-(cache.logp(q+eye[i]+eye[j])-one[i]-one[j]+f)
+        if np.all(np.isfinite(h)):break
+        step*=.2
+    else:raise RuntimeError('Curvature stencil outside cache; need recentering')
     w,u=np.linalg.eigh(h)
     # Regularization affects proposal only, never likelihood or prior.
     inv=(u/np.maximum(w,max(np.max(w)*1e-8,1e-6)))@u.T
-    return step[:,None]*inv*step[None,:]
+    cov=step[:,None]*inv*step[None,:]
+    limit=np.r_[np.full(3,.01),np.full(3,.1),.5]
+    scale=np.minimum(1.,limit/np.sqrt(np.diag(cov)))
+    return scale[:,None]*cov*scale[None,:]
 
 
 def optimize(cache,q):
@@ -69,9 +78,10 @@ def optimize(cache,q):
 
 def validate(cache,q,cov,folder):
     rng=np.random.default_rng(7021);points=[q]
-    for _ in range(48):
+    for _ in range(500):
         p=q+rng.multivariate_normal(np.zeros(7),cov)
         if np.isfinite(cache.logp(p)):points.append(p)
+        if len(points)>=49:break
     if len(points)<16:raise RuntimeError('Insufficient interior validation probes; cache too narrow')
     exact=np.array([cache.logp(p,True) for p in points]);approx=np.array([cache.logp(p) for p in points])
     error=(approx-approx[0])-(exact-exact[0])
