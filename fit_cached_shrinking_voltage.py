@@ -137,7 +137,7 @@ def run(args,event):
     if (folder/'complete.h5').exists():
         with h5py.File(folder/'complete.h5') as h:
             flags_changed=int(h.attrs.get('fit_flag_revision',-1))!=revision
-            if bool(h.attrs.get('uncertainty_converged',False)) and not flags_changed:return
+            if bool(h.attrs.get('uncertainty_converged',False)) and not flags_changed and not args.multistart_physical:return
             previous_seconds=float(h.attrs.get('uncertainty_total_seconds',h.attrs.get('uncertainty_elapsed_seconds',0.)))
         completed_at=(folder/'complete.h5').stat().st_mtime
         for path in folder.glob('chain_*.h5'):
