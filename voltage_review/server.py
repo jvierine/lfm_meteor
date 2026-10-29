@@ -85,7 +85,7 @@ class Store:
         folders={f.name:f for f in self.root.glob('tri_*')}
         if self.refits:folders.update({f.name:f for f in self.refits.glob('tri_*')})
         if self.latest:folders.update({f.name:f for f in self.latest.glob('tri_*')})
-        for folder in sorted(folders.values()):
+        for folder in sorted(folders.values(),key=lambda f:f.name):
             if not EVENT.fullmatch(folder.name):continue
             plot=self.path(folder.name)/'plot.h5'
             if not plot.exists():continue

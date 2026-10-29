@@ -43,7 +43,11 @@ export function beamPanels(container,onSelect){
    };
    if(v.j){
     for(const contour of d.contours){const shade=contour.level===-3?.35:contour.level===-10?.62:.8;
-     for(const path of contour.lines){line(path.flat(),[shade,shade,shade],contour.level===-3?1.8:1);if(path.length>15){const p=path[Math.floor(path.length*.2)];v.axes.node_label(...p,`${contour.level} dB`,'#687780');}}
+     for(const path of contour.lines)line(path.flat(),[shade,shade,shade],contour.level===-3?1.8:1);
+     const closed=contour.lines.filter(p=>p.length>15&&Math.hypot(p[0][0]-p.at(-1)[0],p[0][1]-p.at(-1)[1])<1);
+     const centre=p=>Math.hypot(p.reduce((s,v)=>s+v[0],0)/p.length,p.reduce((s,v)=>s+v[1],0)/p.length);
+     closed.sort((a,b)=>centre(a)-centre(b));
+     if(closed.length){const top=closed[0].reduce((a,b)=>a[1]>b[1]?a:b);v.axes.node_label(...top,`${contour.level} dB`,'#687780');}
     }
     line(d.east_m.flatMap((x,i)=>[x,d.north_m[i]]),[.65,.68,.7],1);
     const s=limits(d.snr_db,1),col=x=>colour((x-s[0])/(s[1]-s[0]));
