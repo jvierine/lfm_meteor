@@ -10,7 +10,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let power = array(&event, "dynamic_mass_kg")?;
     let sigma = array(&event, "rcs_mass_kg")?;
     let mut f = Figure::new(IntendedUse::Custom {
-        width_mm: 230.,
+        width_mm: 250.,
         font_pt: 9.,
     });
     f.height_mm = 82.;
@@ -89,7 +89,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     a.yticks = a.xticks.clone();
     a.xticklabels = Some(vec![r"$10^{-10}$".into(), r"$10^{-8}$".into(), r"$10^{-6}$".into()]);
     a.yticklabels = a.xticklabels.clone();
-    let mut p = Panel::new(Rect::new(156., 10., 47., 53.), a);
+    let mut p = Panel::new(Rect::new(188., 10., 47., 53.), a);
     p.major_grid("#e4e4e4", 0.4);
     p.errorbars(
         &points(&x, &y),
@@ -107,7 +107,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     panel_label(&mut f, &p, "(c)");
     f.panels.push(p);
     f.colorbars.push(Colorbar::new(
-        Rect::new(210., 10., 2., 53.),
+        Rect::new(138., 10., 2., 53.),
         cid,
         r"Geocentric speed ($\mathrm{km\,s^{-1}}$)",
         vec![20., 40., 60.],
