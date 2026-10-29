@@ -28,11 +28,11 @@ fn render(folder:&Path)->Result<()> {
     let endpoints:Vec<_>=beat.iter().zip(&sigma).flat_map(|(b,s)|[b-1.96*s,b+1.96*s]).collect();
     let ranges=[limits(&offset,0.1),limits(&speed,0.1),limits(&residual,1.),limits(&endpoints,100.)];
     let labels=["Apparent path offset (km)","Speed (km s$^{-1}$)","Apparent path residual (m)","Residual beat (Hz)"];
-    let mut f=Figure::new(IntendedUse::ArticleWide);f.width_mm=220.;f.height_mm=155.;
+    let mut f=Figure::new(IntendedUse::ArticleWide);f.width_mm=220.;f.height_mm=164.;
     let colors=["#0072B2","#D55E00","#009E73"];
     let names=["Sanya","Danzhou","Wenchang"];
     for panel in 0..4 {
-        let rect=Rect::new(22.+(panel%2) as f64*110.,16.+(panel/2) as f64*72.,80.,48.);
+        let rect=Rect::new(22.+(panel%2) as f64*110.,25.+(panel/2) as f64*72.,80.,48.);
         let mut p=Panel::new(rect,Axes::new(limits(&t,0.01),ranges[panel],"Time from reference epoch (s)",labels[panel]));
         if panel>=2 {p.push(Layer::Line(Line::new(vec![[t.iter().copied().fold(f64::INFINITY,f64::min),0.],[t.iter().copied().fold(f64::NEG_INFINITY,f64::max),0.]],"#888888")));}
         if panel==1 {
@@ -52,7 +52,11 @@ fn render(folder:&Path)->Result<()> {
                 dots(&mut p,&xy,colors[s])?;
             }
         }
-        if panel==0 {p.legend=Some(Legend::new((0..3).map(|s|LegendEntry::line(names[s],colors[s])).collect()));}
+        if panel==0 {
+            let mut legend=Legend::new((0..3).map(|s|LegendEntry::line(names[s],colors[s])).collect());
+            legend.position=LegendPosition::AboveCenter;legend.columns=3;
+            p.legend=Some(legend);
+        }
         f.panels.push(p);
     }
     let id=folder.file_name().unwrap().to_string_lossy().replace('_',"\\_");
