@@ -6,8 +6,10 @@ from pathlib import Path
 
 import contourpy
 import h5py
-import jcoord
 import numpy as np
+# The installed legacy jcoord still imports numpy.mat.
+if not hasattr(np,'mat'):np.mat=np.asmatrix
+import jcoord
 
 import noise_model
 import plot_memo09_antenna_gain_patterns as gain
@@ -28,6 +30,11 @@ def positions(q, d):
 
 def export(folder, source_root, noise):
     folder=Path(folder)
+    target=folder/'beam_rcs.h5'
+    digest=hashlib.sha256((folder/'fit.h5').read_bytes()).hexdigest()
+    if target.exists():
+        with h5py.File(target) as h:
+            if h.attrs.get('fit_sha256')==digest:return
     with h5py.File(folder/'input.h5') as h:
         original=Path(h.attrs.get('original_input',folder/'input.h5'))
     with h5py.File(original) as h:
@@ -65,14 +72,13 @@ def export(folder, source_root, noise):
     dirs/=np.linalg.norm(dirs,axis=-1)[...,None]
     field=10*np.log10(np.maximum(power(dirs),1e-12))
     contour=contourpy.contour_generator(x=axis,y=axis,z=field)
-    target=folder/'beam_rcs.h5'
     with h5py.File(target.with_suffix('.h5.partial'),'w') as h:
         for key,val in dict(time_ns=d['time_ns'],time_s=d['time_s'],snr_db=snr,relative_gain_db=relative,rcs_dbsm=rcs,east_m=e,north_m=n,system_temperature_k=tsys).items():h[key]=val
         cg=h.create_group('contours')
         for level in (-3.,-10.,-20.):
             g=cg.create_group(str(int(level)));g.attrs['gain_db']=level
             for i,line in enumerate(contour.lines(level)):g[str(i)]=line
-        h.attrs.update(plane_range_m=plane,extent_m=extent,fit_sha256=hashlib.sha256((folder/'fit.h5').read_bytes()).hexdigest(),
+        h.attrs.update(plane_range_m=plane,extent_m=extent,fit_sha256=digest,
                        gain_convention='one-way power relative to steered peak; monostatic RCS uses G_tx*G_rx',
                        coordinate_convention='orthogonal projected east and north; ray intersection with plane at median axial range',
                        rcs_selection='Sanya one-way gain >= -3 dB; measured noise temperature; 1/pulse_duration noise bandwidth',source_program=__file__)
