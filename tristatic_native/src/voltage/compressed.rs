@@ -9,6 +9,10 @@ use std::time::Instant;
 struct Surface {origin:[f64;2],half:[f64;2],n:usize,path_cells:usize,values:Vec<f64>,offset:f64}
 pub struct Cache {pulses:Vec<super::reduced::Pulse>,offsets:Vec<f64>}
 
+fn tune_scale(log_scale:f64,step:usize,accept:bool)->f64 {
+    (log_scale+(step as f64+10.).powf(-0.6)*((if accept {1.}else{0.})-0.234)).clamp(-8.,4.)
+}
+
 fn cubic(y:[f64;4],t:f64)->f64 {
     // Four-point Lagrange interpolation, exact for cubic polynomials.
     -t*(t-1.)*(t-2.)*y[0]/6.+(t+1.)*(t-1.)*(t-2.)*y[1]/2.
@@ -146,13 +150,17 @@ impl Cache {
         let mut chol=base.clone().cholesky().ok_or_else(||anyhow::anyhow!("Proposal covariance not positive definite"))?.l()*(2.38/(n as f64).sqrt());
         let mut lp=c.logp(v,x.as_slice());anyhow::ensure!(lp.is_finite(),"Nonfinite initial posterior");
         let mut mean=DVector::zeros(n);let mut scatter=DMatrix::zeros(n,n);
+        let mut log_scale=0_f64;
         let mut samples=Vec::new();let mut logs=Vec::new();let mut accepted=0u64;let mut outside=0u64;let mut steps=0usize;
         for step in 0..warmup+draws {
             if started.elapsed().as_secs_f64()>=seconds {break;}
-            let z=DVector::from_fn(n,|_,_|rng.sample::<f64,_>(StandardNormal));let proposal=&x+&chol*z;
+            let z=DVector::from_fn(n,|_,_|rng.sample::<f64,_>(StandardNormal));let proposal=&x+(&chol*z)*log_scale.exp();
             let candidate=c.logp(v,proposal.as_slice());if !candidate.is_finite(){outside+=1;}
-            if candidate.is_finite() && rng.gen::<f64>().ln()<candidate-lp {x=proposal;lp=candidate;if step>=warmup {accepted+=1;}}
+            let accept=candidate.is_finite() && rng.gen::<f64>().ln()<candidate-lp;
+            if accept {x=proposal;lp=candidate;if step>=warmup {accepted+=1;}}
             if step<warmup {
+                // Robbins-Monro scale tuning is frozen with the covariance after warmup.
+                log_scale=tune_scale(log_scale,step,accept);
                 let count=(step+1) as f64;let delta=&x-&mean;mean+=&delta/count;scatter+=&delta*(&x-&mean).transpose();
                 if step>=499 && step%100==99 {let covariance=(&scatter/(count-1.)+&base*0.01)*(2.38_f64.powi(2)/n as f64);if let Some(f)=covariance.cholesky(){chol=f.l();}}
             } else {samples.extend_from_slice(x.as_slice());logs.push(lp);}
@@ -163,6 +171,7 @@ impl Cache {
         h.new_dataset_builder().with_data(&logs).create("log_probability")?;
         for (name,value) in [("accepted",accepted),("steps",steps as u64),("outside_proposals",outside)]{h.new_dataset::<u64>().create(name)?.write_scalar(&value)?;}
         h.new_dataset::<f64>().create("elapsed_seconds")?.write_scalar(&started.elapsed().as_secs_f64())?;
+        h.new_dataset::<f64>().create("frozen_proposal_scale")?.write_scalar(&log_scale.exp())?;
         h.flush()?;Ok(())
     })();match result {Ok(())=>1,Err(e)=>{eprintln!("{e:#}");0}}
 }
@@ -174,6 +183,23 @@ impl Cache {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn warmup_scale_recovers_gaussian_from_oversized_steps() {
+        let mut rng=StdRng::seed_from_u64(515);
+        let mut x=[0_f64;7];let mut lp=0.;let mut scale=0.;
+        let mut sum=[0.;7];let mut square=[0.;7];let mut accepted=0;
+        for step in 0..104000 {
+            let y: [f64;7]=std::array::from_fn(|i|x[i]+50.*f64::exp(scale)*rng.sample::<f64,_>(StandardNormal));
+            let candidate=-0.5*y.iter().map(|v|v*v).sum::<f64>();
+            let accept=rng.gen::<f64>().ln()<candidate-lp;
+            if accept {x=y;lp=candidate;}
+            if step<4000 {scale=tune_scale(scale,step,accept);}else {
+                if accept {accepted+=1;}
+                for i in 0..7 {sum[i]+=x[i];square[i]+=x[i]*x[i];}
+            }
+        }
+        assert!((10000..50000).contains(&accepted));
+        for i in 0..7 {assert!((sum[i]/100000.).abs()<0.05);assert!((square[i]/100000.-1.).abs()<0.08);}
+    }
     #[test] fn cubic_recovers_polynomial() {
         let f=|x:f64|2.+3.*x-4.*x*x+0.7*x*x*x;
         for i in 0..100 {let t=i as f64/100.;assert!((cubic([-1.,0.,1.,2.].map(f),t)-f(t)).abs()<1e-12);}
