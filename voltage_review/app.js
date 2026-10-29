@@ -65,3 +65,13 @@ function move(step){if(!data)return;const list=filtered(),i=list.findIndex(e=>e.
 $('search').oninput=sidebar;$('filter').onchange=sidebar;$('refresh').onclick=refresh;$('previous').onclick=()=>move(-1);$('next').onclick=()=>move(1);$('reset').onclick=reset;
 $('flag').onclick=()=>save({excluded:[...new Set([...data.annotation.excluded,...selected])]});$('restore').onclick=()=>save({excluded:data.annotation.excluded.filter(id=>!selected.has(id))});$('clear').onclick=()=>{selected.clear();table();draw();controls();};$('undo').onclick=()=>undo.length&&save({...undo.at(-1),version:data.annotation.version},true);$('bad').onchange=e=>save({bad:e.target.checked});$('savenote').onclick=()=>save({note:$('note').value});$('connect').onclick=()=>{token=$('token').value.trim();sessionStorage.setItem('review-token',token);refresh();};document.addEventListener('keydown',e=>{const typing=['TEXTAREA','SELECT'].includes(e.target.tagName)||(e.target.tagName==='INPUT'&&!['checkbox','radio','button'].includes(e.target.type))||e.target.isContentEditable;if(typing||e.ctrlKey||e.metaKey||e.altKey||e.repeat)return;if(e.key==='ArrowRight')move(1);if(e.key==='ArrowLeft')move(-1);if(e.key.toLowerCase()==='c')$('clear').click();if(e.key.toLowerCase()==='f'){$('flag').click();e.preventDefault();}if(e.key.toLowerCase()==='b'&&data)save({bad:!data.annotation.bad});});
 try{await init();setup();if(token)sessionStorage.setItem('review-token',token);await refresh();}catch(e){status('Viewer failed: '+e.message,true);}
+setInterval(async()=>{
+ if(!data||busy||selected.size||document.hidden||$('note').value!==data.annotation.note)return;
+ const id=data.event;
+ try{
+  const next=await api('/api/event/'+id);
+  if(busy||selected.size||data.event!==id||$('note').value!==data.annotation.note)return;
+  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m;
+  if(changed)await load(id);
+ }catch(e){status(e.message,true);}
+},30000);
