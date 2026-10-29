@@ -10,6 +10,10 @@ import time
 import traceback
 import h5py
 import numpy as np
+# Legacy jcoord imports numpy.mat, removed in NumPy 2. Keep its matrix API local
+# to this process without changing the shared server installation.
+if not hasattr(np, 'mat'):
+    np.mat = np.asmatrix
 from scipy.optimize import least_squares
 import matplotlib
 matplotlib.use('Agg')
