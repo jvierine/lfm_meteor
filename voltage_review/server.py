@@ -54,6 +54,13 @@ class Store:
                 if np.array_equal(h['time_ns'][:].astype(str),data['time_ns']) and np.array_equal(h['station'][:],data['station']):
                     for k in ('path_measurement_lower95_m','path_measurement_upper95_m'):data[k]=h[k][:].tolist()
         data['uncertainty_status']=uncertainty_status
+        if uncertainty_status=='unavailable: four completed chains required':
+            folder=self.path(event)
+            chains=sum((folder/f'chain_{i}.h5').exists() for i in range(4))
+            failed=(folder/'error.log').exists()
+            data['uncertainty_status']=(f'Uncertainty sampling failed; {chains}/4 chains completed' if failed else
+                                        f'Uncertainty pending; {chains}/4 chains completed')
+            fit_metadata['mass_status']='Dynamic mass pending joint trajectory uncertainty' if not failed else 'Dynamic mass pending sampling repair'
         data.update(fit_metadata)
         data['event']=event;data['annotation']=self.annotation(event)
         data['omitted_measurements']=[]
