@@ -156,6 +156,50 @@ impl Cache {
     match result {Ok(c)=>Box::into_raw(Box::new(c)),Err(e)=>{eprintln!("{e:#}");std::ptr::null_mut()}}
 }
 #[no_mangle] pub unsafe extern "C" fn voltage_cache_free(c:*mut Cache){if !c.is_null(){drop(Box::from_raw(c));}}
+// Block bootstrap weights act on complete pulse likelihoods, never on separate
+// delay and beat diagnostics. Physical trajectory integration remains unchanged.
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_weighted_fit(c:*const Cache,v:*const Voltage,q:*const f64,
+    transform:*const f64,weights:*const f64,result:*mut f64,seconds:f64)->i32 {
+    let c=&*c;let v=&*v;let n=v.dimension();
+    let center=DVector::from_column_slice(std::slice::from_raw_parts(q,n));
+    let t=DMatrix::from_row_slice(n,n,std::slice::from_raw_parts(transform,n*n));
+    let w=std::slice::from_raw_parts(weights,c.pulses.len());
+    if w.iter().any(|x|!x.is_finite() || *x<0.) || w.iter().sum::<f64>()<=0. {return 0;}
+    let objective=|z:&DVector<f64>| {
+        let p=&center+&t*z;
+        c.evaluate(v,p.as_slice()).map_or(f64::INFINITY,|x|-x.iter().zip(w).map(|(a,b)|a*b).sum::<f64>())
+    };
+    let (z,ok)=simplex_minimize(objective,n,seconds);
+    let p=center+t*z;
+    std::slice::from_raw_parts_mut(result,n).copy_from_slice(p.as_slice());
+    if ok {1}else{0}
+}
+
+fn simplex_minimize<F:Fn(&DVector<f64>)->f64>(f:F,n:usize,seconds:f64)->(DVector<f64>,bool) {
+    let started=Instant::now();
+    let mut x=vec![DVector::zeros(n);n+1];
+    for i in 0..n {x[i+1][i]=1.;}
+    let mut y:Vec<f64>=x.iter().map(&f).collect();
+    for _ in 0..6000 {
+        let mut order:Vec<_>=(0..=n).collect();order.sort_by(|&a,&b|y[a].total_cmp(&y[b]));
+        x=order.iter().map(|&i|x[i].clone()).collect();y=order.iter().map(|&i|y[i]).collect();
+        if y[0].is_finite() && y[n]-y[0]<1e-6 && x.iter().map(|p|(p-&x[0]).norm()).fold(0.,f64::max)<0.02 {return (x[0].clone(),true);}
+        if started.elapsed().as_secs_f64()>seconds {break;}
+        let centroid=x[..n].iter().fold(DVector::zeros(n),|a,b|a+b)/n as f64;
+        let reflected=&centroid+(&centroid-&x[n]);let fr=f(&reflected);
+        if fr<y[0] {
+            let expanded=&centroid+2.*(&reflected-&centroid);let fe=f(&expanded);
+            if fe<fr {x[n]=expanded;y[n]=fe;}else{x[n]=reflected;y[n]=fr;}
+        }else if fr<y[n-1] {x[n]=reflected;y[n]=fr;}
+        else {
+            let contracted=if fr<y[n] {&centroid+0.5*(&reflected-&centroid)}else{&centroid+0.5*(&x[n]-&centroid)};
+            let fc=f(&contracted);
+            if fc<fr.min(y[n]) {x[n]=contracted;y[n]=fc;}
+            else {for i in 1..=n {x[i]=&x[0]+0.5*(&x[i]-&x[0]);y[i]=f(&x[i]);}}
+        }
+    }
+    let i=(0..=n).min_by(|&a,&b|y[a].total_cmp(&y[b])).unwrap();(x[i].clone(),false)
+}
 #[no_mangle] pub unsafe extern "C" fn voltage_cache_logp(c:*const Cache,v:*const Voltage,q:*const f64,exact:i32)->f64 {
     let v=&*v;let q=std::slice::from_raw_parts(q,v.dimension());if exact!=0 {(*c).exact(v,q)}else{(*c).logp(v,q)}
 }
@@ -206,6 +250,10 @@ impl Cache {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn bootstrap_optimizer_recovers_correlated_quadratic() {
+        let (x,ok)=simplex_minimize(|x| (x[0]+2.*x[1]-7.).powi(2)+0.1*(x[1]+3.).powi(2),2,2.);
+        assert!(ok);assert!((x[0]-13.).abs()<0.01);assert!((x[1]+3.).abs()<0.01);
+    }
     #[test] fn inverse_radius_transport_preserves_volume_and_local_metric() {
         let mut center=DVector::zeros(7);center[6]=-4.;
         let mut cov=DMatrix::identity(7,7);cov[(0,6)]=0.7;cov[(6,0)]=0.7;
