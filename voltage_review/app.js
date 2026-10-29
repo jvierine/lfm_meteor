@@ -72,7 +72,7 @@ function nearest(v,x,y){if(!data||v.j===1)return null;let best=null,distance=12;
 function draw(){if(!data||!views.length)return;const n=data.ids.length,offset=Array(n),model=Array(n),res=data.modeled_path_m.map((m,i)=>m-data.seed_apparent_path_m[i]);const groups=names.map((_,s)=>data.station.flatMap((v,i)=>v===s?[i]:[]).sort((a,b)=>data.time_s[a]-data.time_s[b]));groups.forEach(ids=>{const b=data.seed_apparent_path_m[ids[0]];ids.forEach(i=>{offset[i]=(data.seed_apparent_path_m[i]-b)/1000;model[i]=(data.modeled_path_m[i]-b)/1000;});});const ys=[offset,data.speed_km_s,res,data.residual_beat_hz],bounds=[range(offset,.1),range(data.speed_km_s,.1),range(res,1),range(data.residual_beat_hz.flatMap((b,i)=>[b-1.96*data.conditional_beat_std_hz[i],b+1.96*data.conditional_beat_std_hz[i]]),100)];xview??=range(data.time_s,.01);const excluded=new Set(data.annotation.excluded);
 fitSummary();
 if(views.every(v=>v.bounds===null))xview=range(eventTimes(),.01);
-const ghostY=(p,j)=>j===0?(p.path_m-data.seed_apparent_path_m[groups[p.station][0]])/1000:j===2?(p.modeled_path_m===undefined?NaN:p.modeled_path_m-p.path_m):j===3?p.residual_beat_hz:NaN;
+const ghostY=(p,j)=>j===0?(p.path_m-data.seed_apparent_path_m[groups[p.station][0]])/1000:j===2?(Number.isFinite(p.modeled_path_m)?p.modeled_path_m-p.path_m:NaN):j===3?p.residual_beat_hz:NaN;
 for(const j of [0,2,3]){const ghost=(data.omitted_measurements||[]).map(p=>ghostY(p,j)).filter(Number.isFinite);if(ghost.length)bounds[j]=range([...bounds[j],...ghost],j===0?.1:1);}
 if(data.path_measurement_lower95_m){const edges=[],resEdges=[];groups.forEach(ids=>{const b=data.seed_apparent_path_m[ids[0]];ids.forEach(i=>{edges.push((data.path_measurement_lower95_m[i]-b)/1000,(data.path_measurement_upper95_m[i]-b)/1000);resEdges.push(data.modeled_path_m[i]-data.path_measurement_upper95_m[i],data.modeled_path_m[i]-data.path_measurement_lower95_m[i]);});});bounds[0]=range([...offset,...edges],.1);bounds[2]=range([...res,...resEdges],1);}
 if(data.path_lower95_m){const edges=[];groups.forEach(ids=>{const b=data.seed_apparent_path_m[ids[0]];ids.forEach(i=>edges.push((data.path_lower95_m[i]-b)/1000,(data.path_upper95_m[i]-b)/1000));});bounds[0]=range([...offset,...model,...edges],.1);bounds[1]=range([...data.speed_km_s,...data.speed_lower95_km_s,...data.speed_upper95_km_s],.1);}
@@ -95,7 +95,7 @@ setInterval(async()=>{
  try{
   const next=await api('/api/event/'+id);
   if(busy||selected.size||data.event!==id||$('note').value!==data.annotation.note)return;
-  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m;
+  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m||JSON.stringify(next.omitted_measurements)!==JSON.stringify(data.omitted_measurements);
   if(changed)await load(id);
  }catch(e){status(e.message,true);}
 },30000);

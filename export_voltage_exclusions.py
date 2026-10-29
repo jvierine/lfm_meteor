@@ -24,7 +24,11 @@ def export(folder, library):
         valid=bool(library.voltage_prediction(handle,q.ctypes.data_as(ptr),output.ctypes.data_as(ptr)))
         prediction=output.reshape(data['real'].shape+(2,));prediction=prediction[:,:,0]+1j*prediction[:,:,1]
     finally:library.voltage_free(handle)
-    model=apparent_paths(q,data)
+    try:
+        model=apparent_paths(q,data)
+    except ValueError:
+        # An excluded time can lie outside the fitted model's physical domain.
+        model=np.full(len(data['time_s']),np.nan)
     anchor=299792458.*(359.45540369317763e-6+data['gate']/data['fs'])
     t=data['sample_time_s']-anchor[:,None]/299792458.;rate=data['bandwidth']/data['duration']
     reference=np.exp(2j*np.pi*(data['bandwidth']/2*t-rate/2*t*t))
