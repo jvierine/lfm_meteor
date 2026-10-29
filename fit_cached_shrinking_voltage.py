@@ -123,15 +123,6 @@ def run(args,event):
         if (folder/'uncertainty_budget.h5').exists():
             with h5py.File(folder/'uncertainty_budget.h5') as h:same=h.attrs.get('generation','')==args.budget_generation
         if not same:previous_seconds=0.
-    proposal=None
-    if len(list(folder.glob('chain_*.h5')))==4:
-        draws=[]
-        for path in sorted(folder.glob('chain_*.h5')):
-            with h5py.File(path) as h:
-                x=h['samples'][:]
-                if len(x):draws.append(x[len(x)//2:])
-        if len(draws)==4:
-            proposal=np.cov(np.concatenate(draws).T)
     if previous_seconds>=args.budget-12:raise RuntimeError('Five-minute cumulative uncertainty budget exhausted; preserve existing draws')
     if (folder/'input.h5').exists():
         archive=folder/'attempts'/str(time.time_ns());archive.mkdir(parents=True)
@@ -166,7 +157,10 @@ def run(args,event):
         if cache is not None:cache.close()
         cache=Cached(model,q,n,args.expand,folder/'likelihood_cache.h5')
         try:
-            q,fit=optimize(cache,q);cov=covariance(cache,q)
+            q,fit=optimize(cache,q)
+            cache.close()
+            cache=Cached(model,q,0,args.expand,folder/'likelihood_cache.h5')
+            cov=covariance(cache,q)
         except RuntimeError as exc:
             if 'Curvature stencil' not in str(exc):raise
             print('RECENTER',event,str(exc),flush=True)
