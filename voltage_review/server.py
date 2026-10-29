@@ -37,11 +37,14 @@ class Store:
         with h5py.File(self.path(event)/'plot.h5') as h:
             data={k:h[k][:].tolist() for k in h}
             data['beat_pass']=bool(h.attrs['beat_guard_pass'])
+            uncertainty_status=str(h.attrs.get('uncertainty_status','Model uncertainty unavailable'))
         data['time_ns']=[str(t) for t in data['time_ns']]
         data['ids']=[f'{s}:{t}' for s,t in zip(data['station'],data['time_ns'])]
         if len(set(data['ids']))!=len(data['ids']): raise ValueError('Duplicate station/pulse identity')
         # This fingerprint is stable when the same data are re-exported.
-        data['fingerprint']=hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
+        core={k:v for k,v in data.items() if k not in ('path_lower95_m','path_upper95_m','speed_lower95_km_s','speed_upper95_km_s')}
+        data['fingerprint']=hashlib.sha256(json.dumps(core,sort_keys=True).encode()).hexdigest()
+        data['uncertainty_status']=uncertainty_status
         data['event']=event;data['annotation']=self.annotation(event)
         return data
 
@@ -111,7 +114,7 @@ def handler(store,token,static,wasm):
                 except (OSError,ValueError,KeyError) as e:return self.reply(404,{'error':str(e)})
             if path.startswith('/pkg/'):
                 name=path.removeprefix('/pkg/')
-                if name not in ('rustplotlib_web.js','rustplotlib_web_bg.wasm'):return self.send_error(404)
+                if name not in ('rustplotlib_web.js','rustplotlib_web_bg.wasm','navigation.js'):return self.send_error(404)
                 content=(wasm/name).read_bytes();self.send_response(200)
                 self.send_header('Content-Type','application/wasm' if name.endswith('.wasm') else 'text/javascript')
                 self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content);return

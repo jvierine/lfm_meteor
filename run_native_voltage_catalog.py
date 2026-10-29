@@ -19,9 +19,6 @@ from voltage_noise_covariance import fit_noise, colored_noise
 if not hasattr(np, 'mat'):
     np.mat = np.asmatrix
 from scipy.optimize import least_squares
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 from mpi4py import MPI
 from astropy.utils import iers
 iers.conf.auto_download=False
@@ -238,33 +235,8 @@ def run_one(args, event, events, reference, lib):
                            noise_covariance_pass=bool(np.all(data['noise_covariance_pass'])),
                            limitations='Ideal waveform; cell-averaged rectangular support; receiver filtering and intrapulse motion unvalidated. Beat guard is diagnostic, not independent validation.')
         os.replace(out/'fit.h5.partial',out/'fit.h5')
-        fig,axes=plt.subplots(3,1,figsize=(9,7),sharex=True,constrained_layout=True)
-        for station,ax in enumerate(axes):
-            k=data['station']==station
-            ax.errorbar(data['time_s'][k],beats[k],yerr=1.96*control_std[k],fmt='.',capsize=2)
-            ax.axhline(0,color='black',lw=.8);ax.set_ylabel(['Sanya','Danzhou','Wenchang'][station]+'\nResidual beat (Hz)')
-        axes[-1].set_xlabel('Time from reference epoch (s)')
-        fig.savefig(out/'beat_guard.png',dpi=160);fig.savefig(out/'beat_guard.pdf');plt.close(fig)
-        fig,axes=plt.subplots(2,2,figsize=(11,7),constrained_layout=True)
-        modeled=apparent_paths(result.x,data)
-        for station,label in enumerate(['Sanya','Danzhou','Wenchang']):
-            k=data['station']==station;t=data['time_s'][k];order=np.argsort(t)
-            offset=seed_paths[k][0]
-            axes[0,0].plot(t,(seed_paths[k]-offset)/1000,'.',alpha=.6)
-            axes[0,0].plot(t[order],(modeled[k][order]-offset)/1000,label=label)
-            axes[1,0].plot(t,modeled[k]-seed_paths[k],'.',label=label)
-            axes[1,1].errorbar(t,beats[k],yerr=1.96*control_std[k],fmt='.',capsize=2,label=label)
-        t=np.linspace(data['time_s'].min(),data['time_s'].max(),200)
-        vinf=np.linalg.norm(data['center'][3:]+1000*result.x[3:6]);a=10**result.x[6];b=10**result.x[7]
-        axes[0,1].plot(t,(vinf-a*np.exp(b*t))/1000,color='black')
-        axes[0,1].text(.03,.05,'Beat guard: '+('PASS' if beat_guard else 'FAIL')+'\nProvisional waveform model',
-                       transform=axes[0,1].transAxes,fontsize=10)
-        axes[0,0].set_ylabel('Apparent path offset (km)');axes[0,1].set_ylabel('Speed (km/s)')
-        axes[1,0].set_ylabel('Apparent path residual (m)');axes[1,1].set_ylabel('Residual beat (Hz)')
-        for ax in axes[1]:ax.axhline(0,color='black',lw=.8)
-        for ax in axes.flat:ax.set_xlabel('Time from reference epoch (s)')
-        axes[0,0].legend();fig.suptitle(event)
-        fig.savefig(out/'event.png',dpi=160);fig.savefig(out/'event.pdf');plt.close(fig)
+        from export_voltage_plot import export
+        export(out)
         sampling_allowed=bool(args.draws>0 and beat_guard and result.success and np.all(data['noise_covariance_pass']))
         if sampling_allowed:
             widths=np.r_[np.full(3,1e-4),np.full(3,1e-3),.01,.01].astype(float)
@@ -283,6 +255,7 @@ def run_one(args, event, events, reference, lib):
                            sampler='Rust random-walk Metropolis-Hastings; proposal frozen after warmup',
                            amplitude_prior='Flat complex Re/Im prior, amplitudes analytically marginalized in MCMC',
                            convergence_verified=False)
+        export(out)
         return f'optimizer={result.success} beat_guard={beat_guard} median_abs_beat={np.median(abs(beats)):.2f}Hz'
     finally:
         lib.voltage_free(handle)

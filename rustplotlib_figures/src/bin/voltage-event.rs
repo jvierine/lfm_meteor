@@ -23,6 +23,7 @@ fn render(folder:&Path)->Result<()> {
     let khz=beat.iter().zip(&sigma).any(|(b,s)|b.abs()+1.96*s>5000.);
     if khz {for b in &mut beat{*b/=1000.;}for s in &mut sigma{*s/=1000.;}}
     let speed=get("speed_km_s")?;let ts=get("speed_time_s")?;
+    let bands=if h.link_exists("path_lower95_m"){Some((get("path_lower95_m")?,get("path_upper95_m")?,get("speed_lower95_km_s")?,get("speed_upper95_km_s")?))}else{None};
     let mut offset=vec![0.;t.len()];
     for s in 0..3 {let first=(0..t.len()).filter(|&i|station[i]==s).min_by(|&i,&j|t[i].total_cmp(&t[j])).unwrap();
         for i in 0..t.len(){if station[i]==s{offset[i]=(observed[i]-observed[first])/1000.;}}}
@@ -30,7 +31,12 @@ fn render(folder:&Path)->Result<()> {
     let km=residual.iter().any(|r|r.abs()>5000.);
     if km {for r in &mut residual{*r/=1000.;}}
     let endpoints:Vec<_>=beat.iter().zip(&sigma).flat_map(|(b,s)|[b-1.96*s,b+1.96*s]).collect();
-    let ranges=[limits(&offset,0.1),limits(&speed,0.1),limits(&residual,1.),limits(&endpoints,if khz{0.1}else{100.})];
+    let mut ranges=[limits(&offset,0.1),limits(&speed,0.1),limits(&residual,1.),limits(&endpoints,if khz{0.1}else{100.})];
+    if let Some((lo,hi,vl,vu))=&bands{
+        let mut path_edges=offset.clone();
+        for s in 0..3{let first=(0..t.len()).filter(|&i|station[i]==s).min_by(|&i,&j|t[i].total_cmp(&t[j])).unwrap();for i in 0..t.len(){if station[i]==s{path_edges.extend([(lo[i]-observed[first])/1000.,(hi[i]-observed[first])/1000.]);}}}
+        ranges[0]=limits(&path_edges,.1);ranges[1]=limits(&[speed.clone(),vl.clone(),vu.clone()].concat(),.1);
+    }
     let labels=["Apparent path offset (km)","Speed (km s$^{-1}$)",if km{"Apparent path residual (km)"}else{"Apparent path residual (m)"},if khz{"Residual beat (kHz)"}else{"Residual beat (Hz)"}];
     let mut f=Figure::new(IntendedUse::ArticleWide);f.width_mm=220.;f.height_mm=164.;
     let colors=["#0072B2","#D55E00","#009E73"];
@@ -45,6 +51,7 @@ fn render(folder:&Path)->Result<()> {
         let mut p=Panel::new(rect,Axes::new(limits(&t,0.01),ranges[panel],"Time from reference epoch (s)",labels[panel]));
         if panel>=2 {p.push(Layer::Line(Line::new(vec![[t.iter().copied().fold(f64::INFINITY,f64::min),0.],[t.iter().copied().fold(f64::NEG_INFINITY,f64::max),0.]],"#888888")));}
         if panel==1 {
+            if let Some((_,_,lo,hi))=&bands{p.uncertainty_band(&ts,lo,hi,"#666666",0.5)?;}
             p.push(Layer::Line(Line::new(ts.iter().zip(&speed).map(|(&x,&y)|[x,y]).collect(),"#222222")));
         } else {
             for s in 0..3 {
@@ -52,6 +59,7 @@ fn render(folder:&Path)->Result<()> {
                 let xy:Vec<_>=idx.iter().map(|&i|[t[i],match panel{0=>offset[i],2=>residual[i],_=>beat[i]}]).collect();
                 if panel==0 {
                     let base=observed[idx[0]];
+                    if let Some((lo,hi,_,_))=&bands{p.uncertainty_band(&idx.iter().map(|&i|t[i]).collect::<Vec<_>>(),&idx.iter().map(|&i|(lo[i]-base)/1000.).collect::<Vec<_>>(),&idx.iter().map(|&i|(hi[i]-base)/1000.).collect::<Vec<_>>(),colors[s],0.5)?;}
                     p.push(Layer::Line(Line::new(idx.iter().map(|&i|[t[i],(model[i]-base)/1000.]).collect(),colors[s])));
                 }
                 if panel==3 {
