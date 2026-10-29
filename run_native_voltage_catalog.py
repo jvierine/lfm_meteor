@@ -112,6 +112,47 @@ def beat_peak(row, fs):
     return frequency
 
 
+def apparent_paths(q,data):
+    x0=data['center'][:3]+1000*q[:3];v0=data['center'][3:]+1000*q[3:6]
+    speed=np.linalg.norm(v0);u=v0/speed;a=10**q[6];b=10**q[7];t=data['time_s']
+    with np.errstate(over='ignore',invalid='ignore'):
+        velocity=(speed-a*np.exp(b*t))[:,None]*u
+        nominal=x0+(speed*t-a*np.expm1(b*t)/b)[:,None]*u
+    if not np.all(np.isfinite(nominal)) or np.any(speed-a*np.exp(b*t)<=100):
+        raise ValueError('Nonphysical WJ state')
+    f=data['frames'];rp=f[:,6:15].reshape(-1,3,3);vp=f[:,15:24].reshape(-1,3,3)
+    rv=f[:,24:33].reshape(-1,3,3);vv=f[:,33:42].reshape(-1,3,3)
+    def frame(x,v):
+        return (f[:,:3]+np.einsum('nij,nj->ni',rp,x)+np.einsum('nij,nj->ni',rv,v),
+                f[:,3:6]+np.einsum('nij,nj->ni',vp,x)+np.einsum('nij,nj->ni',vv,v))
+    retarded=nominal.copy()
+    for _ in range(2):
+        x,_=frame(retarded,velocity)
+        retarded=nominal-velocity*np.linalg.norm(x-data['tx'],axis=1)[:,None]/299792458.
+    x,v=frame(retarded,velocity);tx=x-data['tx'];rx=x-data['rx']
+    a=np.linalg.norm(tx,axis=1);b=np.linalg.norm(rx,axis=1)
+    fd=-np.sum((tx/a[:,None]+rx/b[:,None])*v,axis=1)/data['wavelength']
+    return a+b+299792458.*fd/(data['bandwidth']/data['duration'])
+
+
+def beat_seed(data,initial):
+    anchor=299792458.*(359.45540369317763e-6+data['gate']/data['fs'])
+    t=data['sample_time_s']-anchor[:,None]/299792458.
+    k=data['bandwidth']/data['duration']
+    reference=np.exp(2j*np.pi*(data['bandwidth']/2*t-k/2*t*t))
+    raw=data['real']+1j*data['imag']
+    observed=np.array([beat_peak(row,data['fs']) for row in raw*np.conj(reference)])
+    measured=anchor+299792458.*observed/k
+    def residual(q):
+        try:return (apparent_paths(q,data)-measured)/3.
+        except ValueError:return np.full(len(measured),1e10)
+    bounds=(np.r_[np.full(3,-20.),np.full(3,-40.),-5.,-4.],
+            np.r_[np.full(3,20.),np.full(3,40.),5.,3.])
+    result=least_squares(residual,initial,bounds=bounds,x_scale='jac',loss='soft_l1',
+                         max_nfev=400,ftol=1e-10,xtol=1e-10,gtol=1e-9)
+    return result.x,observed,measured,residual(result.x)*3
+
+
 def run_one(args, event, events, reference, lib):
     out=Path(args.output)/event;out.mkdir(parents=True,exist_ok=True)
     if (out/'complete.h5').exists():
@@ -129,7 +170,8 @@ def run_one(args, event, events, reference, lib):
             return r
         initial=np.r_[np.zeros(6),2.,0.]
         start=time.monotonic()
-        result=least_squares(residual,initial,x_scale='jac',max_nfev=args.max_nfev,
+        seeded,seed_beats,seed_paths,seed_residual=beat_seed(data,initial)
+        result=least_squares(residual,seeded,x_scale='jac',max_nfev=args.max_nfev,
                              ftol=1e-8,xtol=1e-8,gtol=1e-7)
         r=residual(result.x).reshape(data['real'].shape+(2,))
         raw=data['real']+1j*data['imag']
@@ -161,6 +203,8 @@ def run_one(args, event, events, reference, lib):
         beat_guard=bool(np.all(np.abs(z)<5) and np.all(np.abs(trend_z)<3))
         with h5py.File(out/'fit.h5.partial','w') as h:
             h['params']=result.x;h['initial']=initial;h['residual_beat_hz']=beats
+            h['beat_seed_params']=seeded;h['seed_observed_beat_hz']=seed_beats
+            h['seed_apparent_path_m']=seed_paths;h['seed_path_residual_m']=seed_residual
             h['conditional_beat_std_hz']=control_std;h['beat_z']=z;h['station']=data['station'];h['time_s']=data['time_s']
             h['station_beat_offset_and_slope']=trend_coefficients;h['station_beat_trend_z']=trend_z
             h['predicted_real']=predicted.real;h['predicted_imag']=predicted.imag
