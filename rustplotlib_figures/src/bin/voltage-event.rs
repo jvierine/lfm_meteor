@@ -26,10 +26,12 @@ fn render(folder:&Path)->Result<()> {
     let mut offset=vec![0.;t.len()];
     for s in 0..3 {let first=(0..t.len()).filter(|&i|station[i]==s).min_by(|&i,&j|t[i].total_cmp(&t[j])).unwrap();
         for i in 0..t.len(){if station[i]==s{offset[i]=(observed[i]-observed[first])/1000.;}}}
-    let residual:Vec<_>=model.iter().zip(&observed).map(|(a,b)|a-b).collect();
+    let mut residual:Vec<_>=model.iter().zip(&observed).map(|(a,b)|a-b).collect();
+    let km=residual.iter().any(|r|r.abs()>5000.);
+    if km {for r in &mut residual{*r/=1000.;}}
     let endpoints:Vec<_>=beat.iter().zip(&sigma).flat_map(|(b,s)|[b-1.96*s,b+1.96*s]).collect();
     let ranges=[limits(&offset,0.1),limits(&speed,0.1),limits(&residual,1.),limits(&endpoints,if khz{0.1}else{100.})];
-    let labels=["Apparent path offset (km)","Speed (km s$^{-1}$)","Apparent path residual (m)",if khz{"Residual beat (kHz)"}else{"Residual beat (Hz)"}];
+    let labels=["Apparent path offset (km)","Speed (km s$^{-1}$)",if km{"Apparent path residual (km)"}else{"Apparent path residual (m)"},if khz{"Residual beat (kHz)"}else{"Residual beat (Hz)"}];
     let mut f=Figure::new(IntendedUse::ArticleWide);f.width_mm=220.;f.height_mm=164.;
     let colors=["#0072B2","#D55E00","#009E73"];
     let names=["Sanya","Danzhou","Wenchang"];
