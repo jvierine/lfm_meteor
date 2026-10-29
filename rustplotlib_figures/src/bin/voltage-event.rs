@@ -9,7 +9,8 @@ fn limits(x:&[f64], minimum:f64)->[f64;2] {
     [(lo+hi-span)/2.-span*0.08,(lo+hi+span)/2.+span*0.08]
 }
 fn dots(p:&mut Panel, xy:&[[f64;2]], color:&str)->Result<()> {
-    let c=ColorMap::new(vec![color.into(),color.into()])?;
+    let rgb=[0,1,2].map(|i|u8::from_str_radix(&color[1+2*i..3+2*i],16).unwrap() as f64/255.);
+    let c=ColorMap::new(vec![rgb,rgb])?;
     let s=Scale::new([0.,1.],Normalization::Linear,c)?;
     p.scatter_colored(xy,&vec![0.5;xy.len()],&s,3.,0.9,color)
 }
