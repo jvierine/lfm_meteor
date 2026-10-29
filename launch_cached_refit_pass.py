@@ -20,12 +20,12 @@ def main():
              '--initial',str(base/'tristatic_voltage_refit_flags_20261029'),
              '--flags',str(root/'flags_snapshot'),'--output',str(root),
              '--seed',str(base/'tristatic_shrinking_voltage_20261029'),'--library',a.library,
-             '--budget','300','--budget-generation','reduced-central-v1']
+             '--budget','300','--budget-generation','reduced-scaled-v1']
     env=os.environ.copy();env.update(OPENBLAS_NUM_THREADS='1',OMP_NUM_THREADS='1',MKL_NUM_THREADS='1')
     with open(root/'central_retry.log','ab',buffering=0) as log:
         process=subprocess.Popen(command,cwd=code,stdout=log,stderr=log,env=env)
         commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=code,text=True).strip()
-        save(root/'central_launch.h5',{},dict(pid=process.pid,started_unix=time.time(),workers=128,code_commit=commit,budget_generation='reduced-central-v1'))
+        save(root/'central_launch.h5',{},dict(pid=process.pid,started_unix=time.time(),workers=128,code_commit=commit,budget_generation='reduced-scaled-v1'))
         result=process.wait()
     save(root/'central_finished.h5',{},dict(exit_code=result,finished_unix=time.time(),event_success_requires_individual_checks=True))
 
