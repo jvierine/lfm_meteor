@@ -158,7 +158,7 @@ def handler(store,token,static,wasm):
                 content=(wasm/name).read_bytes();self.send_response(200)
                 self.send_header('Content-Type','application/wasm' if name.endswith('.wasm') else 'text/javascript')
                 self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content);return
-            if path not in ('/','/index.html','/app.js','/style.css'):return self.send_error(404)
+            if path not in ('/','/index.html','/app.js','/beam.js','/style.css'):return self.send_error(404)
             return super().do_GET()
         def do_POST(self):
             if not self.authorized():return self.reply(401,{'error':'Access token required'})

@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import os
+import time
 from pathlib import Path
 
 import contourpy
@@ -86,9 +87,11 @@ def export(folder, source_root, noise):
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('roots',nargs='+');p.add_argument('--source-root',required=True);args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('roots',nargs='+');p.add_argument('--source-root',required=True);p.add_argument('--cycles',type=int,default=1);args=p.parse_args()
     noise=noise_model.MeasuredSystemNoise(str(Path(args.source_root)/'results/sanya_4mhz_system_noise_power_100pulse.h5'))
-    for root in args.roots:
-        for fit in sorted(Path(root).glob('tri_*/fit.h5')):
-            try:export(fit.parent,args.source_root,noise);print('OK',fit.parent.name,flush=True)
-            except Exception as e:print('ERROR',fit.parent.name,str(e),flush=True)
+    for cycle in range(args.cycles):
+        for root in args.roots:
+            for fit in sorted(Path(root).glob('tri_*/fit.h5')):
+                try:export(fit.parent,args.source_root,noise);print('OK',fit.parent.name,flush=True)
+                except Exception as e:print('ERROR',fit.parent.name,str(e),flush=True)
+        if cycle+1<args.cycles:time.sleep(60)
