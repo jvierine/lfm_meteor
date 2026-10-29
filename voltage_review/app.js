@@ -1,10 +1,12 @@
 import init, {SeriesView, LinePlot, PlotViewport} from '/pkg/rustplotlib_web.js';
 import {bindPlotNavigation} from '/pkg/navigation.js';
+import {beamPanels} from './beam.js';
 const $=id=>document.getElementById(id);
 const names=['Sanya','Danzhou','Wenchang'],colors=[[0,.447,.698],[.835,.369,0],[0,.62,.451]];
 let token=decodeURIComponent(location.hash.slice(1))||sessionStorage.getItem('review-token')||'';
 if(location.hash)history.replaceState(null,'',location.pathname);
 let catalog=[],data=null,selected=new Set(),undo=[],busy=false,request=0,views=[],xview=null;
+let beamView=null;
 const status=(text,error=false)=>{$('connection').textContent=text;$('connection').classList.toggle('error',error);};
 async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});const value=await r.json();if(!r.ok)throw Error(value.error||r.statusText);return value;}
 function filtered(){const q=$('search').value.toLowerCase(),mode=$('filter').value;return catalog.filter(e=>e.event.includes(q)&&(mode==='all'||mode==='flagged'&&(e.flagged||e.bad)));}
@@ -71,6 +73,7 @@ function project(v,x,y){return [70+(x-xview[0])/(xview[1]-xview[0])*(v.box.clien
 function nearest(v,x,y){if(!data||v.j===1)return null;let best=null,distance=12;for(const [i,yy] of v.points){const [px,py]=project(v,point(i).time_s,yy);if(px<70||px>v.box.clientWidth-18||py<30||py>v.box.clientHeight-48)continue;const d=Math.hypot(px-x,py-y);if(d<distance){distance=d;best=i;}}return best;}
 function draw(){if(!data||!views.length)return;const n=data.ids.length,offset=Array(n),model=Array(n),res=data.modeled_path_m.map((m,i)=>m-data.seed_apparent_path_m[i]);const groups=names.map((_,s)=>data.station.flatMap((v,i)=>v===s?[i]:[]).sort((a,b)=>data.time_s[a]-data.time_s[b]));groups.forEach(ids=>{const b=data.seed_apparent_path_m[ids[0]];ids.forEach(i=>{offset[i]=(data.seed_apparent_path_m[i]-b)/1000;model[i]=(data.modeled_path_m[i]-b)/1000;});});const ys=[offset,data.speed_km_s,res,data.residual_beat_hz],bounds=[range(offset,.1),range(data.speed_km_s,.1),range(res,1),range(data.residual_beat_hz.flatMap((b,i)=>[b-1.96*data.conditional_beat_std_hz[i],b+1.96*data.conditional_beat_std_hz[i]]),100)];xview??=range(data.time_s,.01);const excluded=new Set(data.annotation.excluded);
 fitSummary();
+beamView?.update(data,selected);
 if(views.every(v=>v.bounds===null))xview=range(eventTimes(),.01);
 const ghostY=(p,j)=>j===0?(p.path_m-data.seed_apparent_path_m[groups[p.station][0]])/1000:j===2?(Number.isFinite(p.modeled_path_m)?p.modeled_path_m-p.path_m:NaN):j===3?p.residual_beat_hz:NaN;
 for(const j of [0,2,3]){const ghost=(data.omitted_measurements||[]).map(p=>ghostY(p,j)).filter(Number.isFinite);if(ghost.length)bounds[j]=range([...bounds[j],...ghost],j===0?.1:1);}
@@ -84,18 +87,18 @@ if(j!==1)(data.omitted_measurements||[]).forEach((p,i)=>{const y=ghostY(p,j);if(
 if(data.path_measurement_lower95_m&&(j===0||j===2))groups.forEach((ids,s)=>{const b=data.seed_apparent_path_m[ids[0]];for(const i of ids){const lo=j===0?(data.path_measurement_lower95_m[i]-b)/1000:data.modeled_path_m[i]-data.path_measurement_upper95_m[i],hi=j===0?(data.path_measurement_upper95_m[i]-b)/1000:data.modeled_path_m[i]-data.path_measurement_lower95_m[i];line([data.time_s[i],lo,data.time_s[i],hi],colors[s],1);}});
 if(j===1){line(data.speed_time_s.flatMap((t,i)=>[t,data.speed_km_s[i]]),[.15,.18,.2],2);continue;}
 groups.forEach((ids,s)=>{if(j===0)line([...xy(ids,model)],colors[s]);if(j===3)for(const i of ids){const lo=ys[j][i]-1.96*data.conditional_beat_std_hz[i],hi=ys[j][i]+1.96*data.conditional_beat_std_hz[i];line([data.time_s[i],lo,data.time_s[i],hi],colors[s],.8);}const active=ids.filter(i=>!excluded.has(data.ids[i]));v.gpu.series(xy(active,ys[j]),...colors[s],true,6,false);for(const i of ids){v.points.push([i,ys[j][i]]);if(selected.has(data.ids[i])){v.gpu.series(xy([i],ys[j]),.05,.08,.12,true,12,false);v.gpu.series(xy([i],ys[j]),...colors[s],true,7,false);}if(excluded.has(data.ids[i])){const dx=(xview[1]-xview[0])*5/(w-88),dy=(v.bounds[1]-v.bounds[0])*5/(h-78),t=data.time_s[i],y=ys[j][i];line([t-dx,y-dy,t+dx,y+dy],[.74,.15,.21],2);line([t-dx,y+dy,t+dx,y-dy],[.74,.15,.21],2);}}});}}
-function reset(){xview=null;views.forEach(v=>v.bounds=null);draw();}
+function reset(){xview=null;views.forEach(v=>v.bounds=null);beamView?.reset();draw();}
 function move(step){if(!data)return;const list=filtered(),i=list.findIndex(e=>e.event===data.event),next=list[i+step];if(next)load(next.event);}
 $('search').oninput=sidebar;$('filter').onchange=sidebar;$('refresh').onclick=refresh;$('previous').onclick=()=>move(-1);$('next').onclick=()=>move(1);$('reset').onclick=reset;
 $('flag').onclick=()=>save({excluded:[...new Set([...data.annotation.excluded,...selected])]});$('restore').onclick=()=>save({excluded:data.annotation.excluded.filter(id=>!selected.has(id))});$('clear').onclick=()=>{selected.clear();table();draw();controls();};$('undo').onclick=()=>undo.length&&save({...undo.at(-1),version:data.annotation.version},true);$('bad').onchange=e=>save({bad:e.target.checked});$('savenote').onclick=()=>save({note:$('note').value});$('connect').onclick=()=>{token=$('token').value.trim();sessionStorage.setItem('review-token',token);refresh();};document.addEventListener('keydown',e=>{const typing=['TEXTAREA','SELECT'].includes(e.target.tagName)||(e.target.tagName==='INPUT'&&!['checkbox','radio','button'].includes(e.target.type))||e.target.isContentEditable;if(typing||e.ctrlKey||e.metaKey||e.altKey||e.repeat)return;if(e.key==='ArrowRight')move(1);if(e.key==='ArrowLeft')move(-1);if(e.key.toLowerCase()==='c')$('clear').click();if(e.key.toLowerCase()==='f'){$('flag').click();e.preventDefault();}if(e.key.toLowerCase()==='b'&&data)save({bad:!data.annotation.bad});});
-try{await init();setup();if(token)sessionStorage.setItem('review-token',token);await refresh();}catch(e){status('Viewer failed: '+e.message,true);}
+try{await init();setup();beamView=beamPanels($('plots'),id=>{selected.has(id)?selected.delete(id):selected.add(id);table();draw();controls();});if(token)sessionStorage.setItem('review-token',token);await refresh();}catch(e){status('Viewer failed: '+e.message,true);}
 setInterval(async()=>{
  if(!data||busy||selected.size||document.hidden||$('note').value!==data.annotation.note)return;
  const id=data.event;
  try{
   const next=await api('/api/event/'+id);
   if(busy||selected.size||data.event!==id||$('note').value!==data.annotation.note)return;
-  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m||JSON.stringify(next.omitted_measurements)!==JSON.stringify(data.omitted_measurements);
+  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m||JSON.stringify(next.omitted_measurements)!==JSON.stringify(data.omitted_measurements)||JSON.stringify(next.beam)!==JSON.stringify(data.beam);
   if(changed)await load(id);
  }catch(e){status(e.message,true);}
 },30000);

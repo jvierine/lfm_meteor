@@ -68,6 +68,14 @@ class Store:
                     ident=f'{s}:{t}'
                     if ident not in present:
                         data['omitted_measurements'].append(dict(id=ident,station=int(s),time_ns=str(t),time_s=float(h['time_s'][i]),path_m=float(h['seed_apparent_path_m'][i])))
+        beam=self.path(event)/'beam_rcs.h5'
+        if beam.exists():
+            with h5py.File(beam) as h:
+                data['beam']={k:[float(x) if np.isfinite(x) else None for x in h[k][:]] for k in ('time_s','snr_db','relative_gain_db','rcs_dbsm','east_m','north_m')}
+                data['beam']['time_ns']=[str(t) for t in h['time_ns'][:]]
+                data['beam']['plane_range_m']=float(h.attrs['plane_range_m'])
+                data['beam']['extent_m']=float(h.attrs['extent_m'])
+                data['beam']['contours']=[dict(level=float(g.attrs['gain_db']),lines=[v[:].tolist() for v in g.values()]) for g in h['contours'].values()]
         return data
 
     def catalog(self):
