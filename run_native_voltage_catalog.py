@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import time
 import traceback
+import subprocess
+import hashlib
 import h5py
 import numpy as np
 # Legacy jcoord imports numpy.mat, removed in NumPy 2. Keep its matrix API local
@@ -19,6 +21,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpi4py import MPI
+from astropy.utils import iers
+iers.conf.auto_download=False
 import fit_gcrs_trajectories_lfm_ambiguity as gfit
 import sanya_opts as sc
 import fit_all_ballistic_snr_weighted as base
@@ -221,7 +225,28 @@ def run_one(args, event, events, reference, lib):
             ax.axhline(0,color='black',lw=.8);ax.set_ylabel(['Sanya','Danzhou','Wenchang'][station]+'\nResidual beat (Hz)')
         axes[-1].set_xlabel('Time from reference epoch (s)')
         fig.savefig(out/'beat_guard.png',dpi=160);fig.savefig(out/'beat_guard.pdf');plt.close(fig)
-        if args.draws>0:
+        fig,axes=plt.subplots(2,2,figsize=(11,7),constrained_layout=True)
+        modeled=apparent_paths(result.x,data)
+        for station,label in enumerate(['Sanya','Danzhou','Wenchang']):
+            k=data['station']==station;t=data['time_s'][k];order=np.argsort(t)
+            offset=seed_paths[k][0]
+            axes[0,0].plot(t,(seed_paths[k]-offset)/1000,'.',alpha=.6)
+            axes[0,0].plot(t[order],(modeled[k][order]-offset)/1000,label=label)
+            axes[1,0].plot(t,modeled[k]-seed_paths[k],'.',label=label)
+            axes[1,1].errorbar(t,beats[k],yerr=1.96*control_std[k],fmt='.',capsize=2,label=label)
+        t=np.linspace(data['time_s'].min(),data['time_s'].max(),200)
+        vinf=np.linalg.norm(data['center'][3:]+1000*result.x[3:6]);a=10**result.x[6];b=10**result.x[7]
+        axes[0,1].plot(t,(vinf-a*np.exp(b*t))/1000,color='black')
+        axes[0,1].text(.03,.05,'Beat guard: '+('PASS' if beat_guard else 'FAIL')+'\nProvisional waveform model',
+                       transform=axes[0,1].transAxes,fontsize=10)
+        axes[0,0].set_ylabel('Apparent path offset (km)');axes[0,1].set_ylabel('Speed (km/s)')
+        axes[1,0].set_ylabel('Apparent path residual (m)');axes[1,1].set_ylabel('Residual beat (Hz)')
+        for ax in axes[1]:ax.axhline(0,color='black',lw=.8)
+        for ax in axes.flat:ax.set_xlabel('Time from reference epoch (s)')
+        axes[0,0].legend();fig.suptitle(event)
+        fig.savefig(out/'event.png',dpi=160);fig.savefig(out/'event.pdf');plt.close(fig)
+        sampling_allowed=bool(args.draws>0 and beat_guard and result.success)
+        if sampling_allowed:
             widths=np.r_[np.full(3,1e-4),np.full(3,1e-3),.01,.01].astype(float)
             q=np.ascontiguousarray(result.x)
             for chain in range(4):
@@ -231,8 +256,9 @@ def run_one(args, event, events, reference, lib):
                 if not ok: raise RuntimeError('Native MH failed')
                 os.replace(target,out/f'chain_{chain}.h5')
         with h5py.File(out/'complete.h5','w') as h:
-            h.attrs.update(provisional=True,draws_per_chain=args.draws,chains=4 if args.draws else 0,
+            h.attrs.update(provisional=True,draws_per_chain=args.draws if sampling_allowed else 0,chains=4 if sampling_allowed else 0,
                            beat_guard_pass=beat_guard,optimizer_success=result.success,
+                           sampling_blocked_by_guard=bool(args.draws>0 and not sampling_allowed),
                            sampler='Rust random-walk Metropolis-Hastings; proposal frozen after warmup',
                            amplitude_prior='Flat complex Re/Im prior, amplitudes analytically marginalized in MCMC',
                            convergence_verified=False)
@@ -254,7 +280,15 @@ def main():
         ref=base.match_reference_fit(events[0],reference)
         if ref and (not args.event or ref['event_id']==args.event):jobs.append((ref['event_id'],events,ref))
     if not jobs:raise RuntimeError('No matching events')
-    if comm.rank==0:print(f'events={len(jobs)} mpi_ranks={comm.size}',flush=True)
+    if comm.rank==0:
+        print(f'events={len(jobs)} mpi_ranks={comm.size}',flush=True)
+        Path(args.output).mkdir(parents=True,exist_ok=True)
+        with h5py.File(Path(args.output)/'launch.h5','w') as h:
+            h['event_ids']=np.array([j[0] for j in jobs],dtype=h5py.string_dtype())
+            h.attrs.update(mpi_ranks=comm.size,draws=args.draws,warmup=args.warmup,
+                           git_revision=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+                           native_library_sha256=hashlib.sha256(Path(args.library).read_bytes()).hexdigest(),
+                           provisional=True,started_unix=time.time())
     lib=load_library(args.library)
     for index,(event,events,ref) in enumerate(jobs):
         if index%comm.size!=comm.rank:continue
