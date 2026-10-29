@@ -4,6 +4,7 @@ import ctypes as ct
 import os
 import time
 import traceback
+import shutil
 from pathlib import Path
 
 import h5py
@@ -100,7 +101,19 @@ def validate(cache,q,cov,folder):
 
 def run(args,event):
     folder=args.output/event;folder.mkdir(parents=True,exist_ok=True)
-    if (folder/'complete.h5').exists():return
+    previous_seconds=0.
+    if (folder/'complete.h5').exists():
+        with h5py.File(folder/'complete.h5') as h:
+            if bool(h.attrs.get('uncertainty_converged',False)):return
+            previous_seconds=float(h.attrs.get('uncertainty_total_seconds',h.attrs.get('uncertainty_elapsed_seconds',0.)))
+    elif list(folder.glob('chain_*.h5')):
+        for path in folder.glob('chain_*.h5'):
+            with h5py.File(path) as h:previous_seconds+=float(h['elapsed_seconds'][()]) if 'elapsed_seconds' in h else 0.
+    if previous_seconds>=args.budget-45:raise RuntimeError('Five-minute cumulative uncertainty budget exhausted; preserve existing draws')
+    if (folder/'input.h5').exists():
+        archive=folder/'attempts'/str(time.time_ns());archive.mkdir(parents=True)
+        for path in folder.glob('*.h5'):shutil.copy2(path,archive/path.name)
+        if (folder/'error.log').exists():shutil.move(folder/'error.log',archive/'error.log')
     began=time.monotonic();d,initial=prepare(args,event,folder);lib=native(args.library);model=Model(lib,folder,d)
     q=initial.copy();seed=args.seed/event/'fit.h5'
     if seed.exists():
@@ -108,7 +121,7 @@ def run(args,event):
         with h5py.File(args.seed/event/'input.h5') as h:old_center=h['center'][:]
         q[:6]+=(old_center-d['center'])/1000
     cache=None
-    for n in (65,129,257):
+    for n in ((129,257) if previous_seconds else (65,129,257)):
         if cache is not None:cache.close()
         cache=Cached(model,q,n,args.expand,folder/'likelihood_cache.h5')
         q,fit=optimize(cache,q);cov=covariance(cache,q)
@@ -129,7 +142,7 @@ def run(args,event):
     if args.validate_only:return
     started=time.monotonic();chains=[];rng=np.random.default_rng(82304)
     for i in range(4):
-        remaining=args.budget-(time.monotonic()-started)-40
+        remaining=args.budget-previous_seconds-(time.monotonic()-started)-40
         if remaining<=0:raise RuntimeError('Uncertainty budget exhausted before four chains')
         seconds=remaining/(4-i)
         start=q.copy()
@@ -155,6 +168,7 @@ def run(args,event):
     if margin<=.1:raise RuntimeError('Posterior approaches cache boundary; expand cache before reporting intervals')
     attrs=export(folder,model,q,meta,chains)
     attrs.update(uncertainty_elapsed_seconds=time.monotonic()-started,uncertainty_budget_seconds=args.budget,
+                 uncertainty_total_seconds=previous_seconds+time.monotonic()-started,
                  total_elapsed_seconds=time.monotonic()-began,cache_validated=True)
     save(folder/'complete.h5',{},attrs)
     cache.close();lib.voltage_free(model.handle)
@@ -165,7 +179,7 @@ def main():
     p=argparse.ArgumentParser()
     for key in ('source','initial','flags','output','seed'):p.add_argument('--'+key,type=Path,required=True)
     p.add_argument('--library',required=True);p.add_argument('--event');p.add_argument('--budget',type=float,default=300)
-    p.add_argument('--warmup',type=int,default=4000);p.add_argument('--draws',type=int,default=24000)
+    p.add_argument('--warmup',type=int,default=4000);p.add_argument('--draws',type=int,default=96000)
     p.add_argument('--expand',type=float,default=1.);p.add_argument('--validate-only',action='store_true')
     args=p.parse_args();comm=MPI.COMM_WORLD
     events=[args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5'))
