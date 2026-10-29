@@ -6,10 +6,18 @@ edition = "2021"
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[features]
+mpi-cli = ["dep:mpi"]
+
+[[bin]]
+name = "tristatic-native"
+path = "src/main.rs"
+required-features = ["mpi-cli"]
+
 [dependencies]
 anyhow = "1"
 hdf5 = { package = "hdf5-metno", version = "0.12" }
-mpi = "0.8.2"
+mpi = { version = "0.8.2", optional = true }
 nalgebra = "0.34"
 ode_solvers = "0.6.2"
 rand = "0.8"
