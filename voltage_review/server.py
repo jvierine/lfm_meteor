@@ -47,6 +47,11 @@ class Store:
         # This fingerprint is stable when the same data are re-exported.
         core={k:v for k,v in data.items() if k not in ('path_lower95_m','path_upper95_m','speed_lower95_km_s','speed_upper95_km_s','initial_radius_m_quantiles','initial_mass_kg_quantiles')}
         data['fingerprint']=hashlib.sha256(json.dumps(core,sort_keys=True).encode()).hexdigest()
+        uncertainty=self.path(event)/'path_measurement_uncertainty.h5'
+        if uncertainty.exists():
+            with h5py.File(uncertainty) as h:
+                if np.array_equal(h['time_ns'][:].astype(str),data['time_ns']) and np.array_equal(h['station'][:],data['station']):
+                    for k in ('path_measurement_lower95_m','path_measurement_upper95_m'):data[k]=h[k][:].tolist()
         data['uncertainty_status']=uncertainty_status
         data.update(fit_metadata)
         data['event']=event;data['annotation']=self.annotation(event)
