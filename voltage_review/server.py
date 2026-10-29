@@ -19,12 +19,14 @@ EVENT=re.compile(r'^tri_\d+_\d+$')
 
 
 class Store:
-    def __init__(self, root, flags, refits=None):
+    def __init__(self, root, flags, refits=None, latest=None):
         self.root=Path(root);self.flags=Path(flags);self.flags.mkdir(parents=True,exist_ok=True)
         self.refits=Path(refits) if refits else None
+        self.latest=Path(latest) if latest else None
 
     def path(self,event):
         if not EVENT.fullmatch(event): raise ValueError('Invalid event identifier')
+        if self.latest and (self.latest/event/'plot.h5').exists():return self.latest/event
         if self.refits and (self.refits/event/'plot.h5').exists():return self.refits/event
         return self.root/event
 
@@ -82,6 +84,7 @@ class Store:
         result=[]
         folders={f.name:f for f in self.root.glob('tri_*')}
         if self.refits:folders.update({f.name:f for f in self.refits.glob('tri_*')})
+        if self.latest:folders.update({f.name:f for f in self.latest.glob('tri_*')})
         for folder in sorted(folders.values()):
             if not EVENT.fullmatch(folder.name):continue
             plot=self.path(folder.name)/'plot.h5'
@@ -178,11 +181,12 @@ def handler(store,token,static,wasm):
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--data',required=True);p.add_argument('--flags',required=True)
     p.add_argument('--refits')
+    p.add_argument('--latest')
     p.add_argument('--wasm',required=True);p.add_argument('--token-file',required=True)
     p.add_argument('--port',type=int,default=8767);p.add_argument('--host',default='127.0.0.1');a=p.parse_args()
     token_path=Path(a.token_file)
     if not token_path.exists():
         fd=os.open(token_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'w') as f:f.write(secrets.token_urlsafe(32))
-    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags,a.refits),token_path.read_text().strip(),Path(__file__).parent,Path(a.wasm)))
+    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags,a.refits,a.latest),token_path.read_text().strip(),Path(__file__).parent,Path(a.wasm)))
     print(f'Listening on {a.host}:{a.port}',flush=True);server.serve_forever()

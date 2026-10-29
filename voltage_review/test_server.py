@@ -51,6 +51,23 @@ def test_model_bands_preserve_saved_measurement_fingerprint(store):
     assert store.save(e,payload(d))['version']==1
 
 
+def test_beam_sidecar_preserves_flags_and_null_rcs(store):
+    import json
+    e='tri_0003_1713794570204349518';before=store.data(e)
+    with h5py.File(store.path(e)/'beam_rcs.h5','w') as h:
+        for k in ('time_s','snr_db','relative_gain_db','east_m','north_m'):h[k]=[1.,2.]
+        h['rcs_dbsm']=[-20.,np.nan]
+        h['time_ns']=np.array([1713794570204349518,1713794570204349519],dtype=np.int64)
+        h.attrs.update(plane_range_m=95000.,extent_m=2500.)
+        g=h.create_group('contours/-3');g.attrs['gain_db']=-3.;g['0']=[[0.,1.],[1.,0.]]
+    after=store.data(e)
+    assert after['beam']['rcs_dbsm']==[-20.,None]
+    assert after['beam']['time_ns'][0]=='1713794570204349518'
+    assert after['fingerprint']==before['fingerprint']
+    json.dumps(after,allow_nan=False)
+    assert store.save(e,payload(before))['version']==1
+
+
 def test_excluded_point_remains_selectable_after_refit(store):
     e='tri_0003_1713794570204349518'
     with h5py.File(store.path(e)/'plot.h5','a') as h:h['seed_apparent_path_m']=[100.,101.]

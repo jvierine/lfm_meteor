@@ -31,7 +31,7 @@ export function beamPanels(container,onSelect){
    const xl=v.j?[-d.extent_m,d.extent_m]:limits(d.time_s,.01),yl=v.j?[-d.extent_m,d.extent_m]:limits([...d.relative_gain_db,0],3);
    if(v.j){const ratio=(w-153)/(h-78);if(ratio>1){xl[0]*=ratio;xl[1]*=ratio;}else{yl[0]/=ratio;yl[1]/=ratio;}}
    v.full=[...xl,...yl];v.bounds??=v.full.slice();const b=v.bounds;
-   v.title.textContent=v.j?`Sanya beam · ${(d.plane_range_m/1000).toFixed(1)} km axial range`:'Sanya gain and RCS';
+   v.title.textContent=v.j?`Sanya beam · ${(d.plane_range_m/1000).toFixed(1)} km axial range`:finite(d.rcs_dbsm).length?'Sanya gain and RCS':'Sanya gain · no in-beam RCS';
    v.axesCanvas.style.width=`${w-65}px`;
    v.axes.begin_axes(w-65,h,devicePixelRatio,...b,v.j?'East–west offset (m)':'Time from reference epoch (s)',v.j?'North–south offset (m)':'One-way gain relative to peak (dB)');v.axes.x_ticks(false,false);
    v.gpu.set_margins(70,83,30,48);v.gpu.begin(w,h,devicePixelRatio,...b);v.points=[];v.extra.replaceChildren();
