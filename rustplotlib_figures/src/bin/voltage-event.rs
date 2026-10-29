@@ -31,6 +31,11 @@ fn render(folder:&Path)->Result<()> {
     let mut f=Figure::new(IntendedUse::ArticleWide);f.width_mm=220.;f.height_mm=164.;
     let colors=["#0072B2","#D55E00","#009E73"];
     let names=["Sanya","Danzhou","Wenchang"];
+    let mut legend_panel=Panel::new(Rect::new(22.,22.,190.,1.),Axes::new([0.,1.],[0.,1.],"",""));
+    legend_panel.axes=None;
+    let mut legend=Legend::new((0..3).map(|s|LegendEntry::line(names[s],colors[s])).collect());
+    legend.position=LegendPosition::AboveCenter;legend.columns=3;
+    legend_panel.legend=Some(legend);f.panels.push(legend_panel);
     for panel in 0..4 {
         let rect=Rect::new(22.+(panel%2) as f64*110.,25.+(panel/2) as f64*72.,80.,48.);
         let mut p=Panel::new(rect,Axes::new(limits(&t,0.01),ranges[panel],"Time from reference epoch (s)",labels[panel]));
@@ -51,11 +56,6 @@ fn render(folder:&Path)->Result<()> {
                 }
                 dots(&mut p,&xy,colors[s])?;
             }
-        }
-        if panel==0 {
-            let mut legend=Legend::new((0..3).map(|s|LegendEntry::line(names[s],colors[s])).collect());
-            legend.position=LegendPosition::AboveCenter;legend.columns=3;
-            p.legend=Some(legend);
         }
         f.panels.push(p);
     }
