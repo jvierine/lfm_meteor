@@ -10,9 +10,10 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize, least_squares
 from mpi4py import MPI
-from fit_shrinking_voltage import Model, prepare, save, export, full_products, PTR
+from fit_shrinking_voltage import Model, prepare, save, export, full_products, PTR, C
+from run_native_voltage_catalog import beat_peak
 from run_native_voltage_catalog import load_library
 
 
@@ -81,6 +82,26 @@ def optimize(cache,q):
         return -lp if np.isfinite(lp) else 1e30
     fit=minimize(objective,np.zeros(7),method='Powell',options=dict(maxiter=100,xtol=1e-5,ftol=1e-9))
     return q+transform@fit.x,fit
+
+
+def physical_start_points(model,initial,current):
+    # Apparent chirp paths guide initialization only; final selection uses voltage likelihood.
+    d=model.d;k=d['bandwidth']/d['duration']
+    anchor=C*(359.45540369317763e-6+d['gate']/d['fs'])
+    t=d['sample_time_s']-anchor[:,None]/C
+    reference=np.exp(2j*np.pi*(d['bandwidth']/2*t-k/2*t*t))
+    measured=anchor+C*np.array([beat_peak(row,d['fs']) for row in (d['real']+1j*d['imag'])*np.conj(reference)])/k
+    lower=np.r_[np.full(3,-20.),np.full(3,-40.),-7.]
+    upper=np.r_[np.full(3,20.),np.full(3,40.),-2.]
+    def residual(q):
+        try:return (model.paths(q,model.states(q))-measured)/100.
+        except (ValueError,RuntimeError):return np.full(len(measured),1e8)
+    points=[current.copy(),initial.copy()]
+    for logr in (-5.,-4.,-3.):
+        q=initial.copy();q[6]=logr
+        fit=least_squares(residual,q,bounds=(lower,upper),loss='soft_l1',x_scale='jac',max_nfev=150)
+        if np.all(np.isfinite(fit.x)):points.append(fit.x)
+    return points
 
 
 def validate(cache,q,cov,folder):
@@ -174,6 +195,18 @@ def run(args,event):
         if not candidates:raise RuntimeError('No feasible physical seed for recorded pulse windows')
         q=max(candidates,key=lambda item:item[0])[1]
     cache=None
+    if args.multistart_physical:
+        trials=[]
+        for candidate in physical_start_points(model,initial,q):
+            if not np.isfinite(raw_logp(candidate)):continue
+            trial=Cached(model,candidate,0,args.expand,folder/'likelihood_cache.h5')
+            try:
+                refined,result=optimize(trial,candidate)
+                trials.append((raw_logp(refined),refined.copy()))
+            finally:trial.close()
+        if not trials:raise RuntimeError('No feasible physical multistart solution')
+        save(folder/'physical_multistart.h5',dict(params=np.array([p for _,p in trials]),raw_logp=np.array([score for score,_ in trials])),dict(initialization_only=True))
+        q=max(trials,key=lambda item:item[0])[1]
     for n in (0,):
         if cache is not None:cache.close()
         cache=Cached(model,q,n,args.expand,folder/'likelihood_cache.h5')
@@ -261,6 +294,7 @@ def main():
     p.add_argument('--budget-generation',default='',help='Explicitly authorized fresh bounded attempt; old timings retained')
     p.add_argument('--uncertainty-only',action='store_true')
     p.add_argument('--posterior-seed',action='store_true',help='Refine from the best previous posterior state using the exact likelihood')
+    p.add_argument('--multistart-physical',action='store_true')
     args=p.parse_args();comm=MPI.COMM_WORLD
     events=args.events or ([args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5')))
     for event in events[comm.rank::comm.size]:
