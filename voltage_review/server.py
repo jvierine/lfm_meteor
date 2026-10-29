@@ -28,6 +28,8 @@ class Store:
         if not EVENT.fullmatch(event): raise ValueError('Invalid event identifier')
         if self.latest and (self.latest/event/'plot.h5').exists():return self.latest/event
         if self.previous and (self.previous/event/'plot.h5').exists():return self.previous/event
+        # A physical-model catalogue must never silently serve a WJ initializer.
+        if self.latest:return self.latest/event
         if self.refits and (self.refits/event/'plot.h5').exists():return self.refits/event
         return self.root/event
 
