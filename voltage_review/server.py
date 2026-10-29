@@ -40,7 +40,7 @@ class Store:
             data={k:h[k][:].tolist() for k in h}
             data['beat_pass']=bool(h.attrs['beat_guard_pass'])
             uncertainty_status=str(h.attrs.get('uncertainty_status','Model uncertainty unavailable'))
-            fit_metadata={k:h.attrs[k].item() if hasattr(h.attrs[k],'item') else h.attrs[k] for k in ('fit_unix_time','fit_timestamp_source','fit_flag_revision','fit_excluded_count','mass_status') if k in h.attrs}
+            fit_metadata={k:h.attrs[k].item() if hasattr(h.attrs[k],'item') else h.attrs[k] for k in ('fit_unix_time','fit_timestamp_source','fit_flag_revision','fit_excluded_count','mass_status','best_initial_mass_kg','best_initial_radius_m') if k in h.attrs}
         data['time_ns']=[str(t) for t in data['time_ns']]
         data['ids']=[f'{s}:{t}' for s,t in zip(data['station'],data['time_ns'])]
         if len(set(data['ids']))!=len(data['ids']): raise ValueError('Duplicate station/pulse identity')
