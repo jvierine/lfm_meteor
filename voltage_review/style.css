@@ -3,9 +3,13 @@
 .mass-estimate{display:inline-block;padding:4px 0;max-width:100%;white-space:nowrap}
 .mass-estimate math{font-size:18px;font-family:"STIX Two Math","Cambria Math",math}
 .mass-status{flex-basis:100%;font-size:12px;color:#687780}
-.beam-scale{position:absolute;right:0;top:0;width:78px;height:100%;pointer-events:none;font-size:11px;color:#526578}
+.beam-scale{position:absolute;right:0;top:0;width:78px;height:100%;pointer-events:none;font:16px Palatino,"Palatino Linotype","Book Antiqua",serif;color:#222}
 .beam-tick{position:absolute;left:20px}
-.beam-axis-label{position:absolute;right:5px;top:30px;height:calc(100% - 78px);writing-mode:vertical-rl;text-align:center;font-size:12px}
+.beam-axis-label{position:absolute;right:5px;top:30px;height:calc(100% - 78px);writing-mode:vertical-rl;text-align:center;font-size:17px}
 .snr-bar{position:absolute;left:0;top:30px;bottom:48px;width:12px;border:1px solid #b9c4c9}
 .rcs-scale{color:#b84012;border-left:1px solid transparent}
 .rcs-scale .beam-tick{left:3px}
+.rcs-scale:before{content:"";position:absolute;left:-5px;top:30px;bottom:48px;border-left:0.7px solid #444}
+.rcs-scale .beam-tick:before{content:"";position:absolute;left:-8px;top:7px;width:4px;border-top:0.7px solid #444}
+.plot{height:360px}
+@media(max-width:900px){.plot{height:350px}}
