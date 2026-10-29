@@ -13,6 +13,7 @@ export function beamPanels(container,onSelect){
   const box=document.createElement('section');box.className='plot beam-plot';
   const axes=document.createElement('canvas'),canvas=document.createElement('canvas');canvas.className='gpu';canvas.tabIndex=0;
   canvas.setAttribute('aria-label',j?'Sanya transverse beam and SNR':'Sanya gain and radar cross section');
+  canvas.addEventListener('pointerdown',()=>canvas.focus({preventScroll:true}));
   const extra=document.createElement('div');extra.className='beam-scale';
   const rightCanvas=document.createElement('canvas');rightCanvas.style.cssText='left:auto;right:0;width:84px;pointer-events:none';rightCanvas.hidden=!!j;
   box.append(axes,canvas,extra,rightCanvas);container.append(box);

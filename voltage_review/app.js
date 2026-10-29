@@ -13,7 +13,30 @@ function sidebar(){const root=$('events');root.replaceChildren();for(const e of 
 function controls(){for(const id of ['flag','restore','clear'])$(id).disabled=busy||!selected.size;$('undo').disabled=busy||!undo.length;$('bad').disabled=busy||!data;$('savenote').disabled=busy||!data;$('selection').textContent=`${selected.size} selected`;$('bad').checked=!!data?.annotation.bad;}
 async function refresh(){try{catalog=await api('/api/events');sidebar();status('Connected');if(data&&!busy)await load(data.event);else if(!data&&catalog.length)await load(catalog[0].event);}catch(e){status(e.message,true);}}
 async function load(id){if(busy)return;const version=++request;status('Loading');try{const next=await api('/api/event/'+id);if(version!==request)return;data=next;selected.clear();undo=[];xview=null;views.forEach(v=>v.bounds=null);$('eventname').textContent=id;const rms=Math.sqrt(next.residual_beat_hz.reduce((a,x)=>a+x*x,0)/next.ids.length);$('quality').textContent=`${next.ids.length} measurements · residual beat RMS ${rms.toFixed(1)} Hz · ${next.uncertainty_status}`;$('note').value=next.annotation.note;$('saved').textContent=`Saved revision ${next.annotation.version}`;sidebar();table();draw();controls();status('Connected');}catch(e){status(e.message,true);}}
-async function save(change,isUndo=false){if(!data||busy)return;const previous=structuredClone(data.annotation);const updated={...previous,...change};busy=true;controls();$('saved').textContent='Saving';try{data.annotation=await api('/api/flags/'+data.event,{...updated,fingerprint:data.fingerprint});if(!isUndo)undo.push(previous);else undo.pop();const entry=catalog.find(e=>e.event===data.event);if(entry){entry.flagged=data.annotation.excluded.length;entry.bad=data.annotation.bad;entry.version=data.annotation.version;}$('note').value=data.annotation.note;$('saved').textContent=`Saved revision ${data.annotation.version}`;sidebar();table();draw();}catch(e){$('saved').textContent='Not saved';status(e.message,true);}finally{busy=false;controls();}}
+async function save(change,isUndo=false){
+ if(!data||busy)return;
+ const previous=structuredClone(data.annotation),updated={...previous,...change};
+ busy=true;controls();$('saved').textContent='Saving';
+ try{
+  let annotation;
+  try{annotation=await api('/api/flags/'+data.event,{...updated,fingerprint:data.fingerprint});}
+  catch(e){
+   if(e.message!=='Fit data changed; reload before saving')throw e;
+   const next=await api('/api/event/'+data.event);
+   if(next.annotation.version!==previous.version)throw Error('Review changed elsewhere; reload before saving');
+   // Pulse identities survive refits. Refresh the fit, never overwrite another review.
+   annotation=await api('/api/flags/'+data.event,{...updated,fingerprint:next.fingerprint});
+   data=next;
+  }
+  data.annotation=annotation;
+  if(!isUndo)undo.push(previous);else undo.pop();
+  const entry=catalog.find(e=>e.event===data.event);
+  if(entry){entry.flagged=annotation.excluded.length;entry.bad=annotation.bad;entry.version=annotation.version;}
+  $('note').value=annotation.note;$('saved').textContent=`Saved revision ${annotation.version}`;
+  sidebar();table();draw();status('Connected');
+ }catch(e){$('saved').textContent='Not saved';status(e.message,true);}
+ finally{busy=false;controls();}
+}
 function table(){const root=$('points');root.replaceChildren();if(!data)return;const excluded=new Set(data.annotation.excluded);data.ids.forEach((id,i)=>{const row=document.createElement('tr');row.classList.toggle('flagged',excluded.has(id));const cell=document.createElement('td'),check=document.createElement('input');check.type='checkbox';check.checked=selected.has(id);check.setAttribute('aria-label','Select '+names[data.station[i]]+' pulse '+data.time_ns[i]);check.onchange=()=>{check.checked?selected.add(id):selected.delete(id);draw();controls();};cell.append(check);row.append(cell);for(const text of [names[data.station[i]],data.time_ns[i],data.time_s[i].toFixed(6),data.residual_beat_hz[i].toFixed(1),excluded.has(id)?'Excluded':'Included']){const c=document.createElement('td');c.textContent=text;row.append(c);}root.append(row);});omittedTable();}
 function point(i){return i<0?data.omitted_measurements[-i-1]:{id:data.ids[i],station:data.station[i],time_s:data.time_s[i],time_ns:data.time_ns[i],residual_beat_hz:data.residual_beat_hz[i]};}
 function eventTimes(){return [...data.time_s,...(data.omitted_measurements||[]).map(p=>p.time_s)];}
