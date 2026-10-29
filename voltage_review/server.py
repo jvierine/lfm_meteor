@@ -60,7 +60,7 @@ class Store:
         if ghost.exists():
             with h5py.File(ghost) as h:
                 for i,(s,t) in enumerate(zip(h['station'][:],h['time_ns'][:])):
-                    data['omitted_measurements'].append(dict(id=f'{s}:{t}',station=int(s),time_ns=str(t),**{k:float(h[k][i]) for k in ('time_s','path_m','modeled_path_m','residual_beat_hz')}))
+                    data['omitted_measurements'].append(dict(id=f'{s}:{t}',station=int(s),time_ns=str(t),**{k:float(h[k][i]) if np.isfinite(h[k][i]) else None for k in ('time_s','path_m','modeled_path_m','residual_beat_hz')}))
         elif self.path(event)!=self.root/event and (self.root/event/'plot.h5').exists():
             with h5py.File(self.root/event/'plot.h5') as h:
                 present=set(data['ids'])

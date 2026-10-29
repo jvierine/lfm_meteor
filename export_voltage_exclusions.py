@@ -21,7 +21,7 @@ def export(folder, library):
     if not handle:raise RuntimeError('Cannot load original measurements')
     try:
         output=np.empty(library.voltage_len(handle));ptr=ct.POINTER(ct.c_double)
-        if not library.voltage_prediction(handle,q.ctypes.data_as(ptr),output.ctypes.data_as(ptr)):raise RuntimeError('Cannot evaluate excluded measurements')
+        valid=bool(library.voltage_prediction(handle,q.ctypes.data_as(ptr),output.ctypes.data_as(ptr)))
         prediction=output.reshape(data['real'].shape+(2,));prediction=prediction[:,:,0]+1j*prediction[:,:,1]
     finally:library.voltage_free(handle)
     model=apparent_paths(q,data)
@@ -31,6 +31,8 @@ def export(folder, library):
     raw=data['real']+1j*data['imag'];paths=[];beats=[]
     for i in missing:
         paths.append(anchor[i]+299792458./rate*beat_peak(raw[i]*np.conj(reference[i]),data['fs']))
+        if not valid:
+            beats.append(np.nan);continue
         mask=abs(prediction[i])>.2*np.max(abs(prediction[i]));phase=np.zeros(raw.shape[1],complex)
         phase[mask]=np.conj(prediction[i,mask])/abs(prediction[i,mask])
         beats.append(beat_peak(raw[i]*phase,data['fs']))
