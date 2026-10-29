@@ -106,9 +106,15 @@ def run(args,event):
         with h5py.File(folder/'complete.h5') as h:
             if bool(h.attrs.get('uncertainty_converged',False)):return
             previous_seconds=float(h.attrs.get('uncertainty_total_seconds',h.attrs.get('uncertainty_elapsed_seconds',0.)))
+        completed_at=(folder/'complete.h5').stat().st_mtime
+        for path in folder.glob('chain_*.h5'):
+            if path.stat().st_mtime>completed_at:
+                with h5py.File(path) as h:previous_seconds+=float(h['elapsed_seconds'][()]) if 'elapsed_seconds' in h else 0.
     elif list(folder.glob('chain_*.h5')):
         for path in folder.glob('chain_*.h5'):
             with h5py.File(path) as h:previous_seconds+=float(h['elapsed_seconds'][()]) if 'elapsed_seconds' in h else 0.
+    if (folder/'uncertainty_budget.h5').exists():
+        with h5py.File(folder/'uncertainty_budget.h5') as h:previous_seconds=max(previous_seconds,float(h.attrs['used_seconds']))
     if previous_seconds>=args.budget-45:raise RuntimeError('Five-minute cumulative uncertainty budget exhausted; preserve existing draws')
     if (folder/'input.h5').exists():
         archive=folder/'attempts'/str(time.time_ns());archive.mkdir(parents=True)
@@ -165,6 +171,7 @@ def run(args,event):
         if not ok:raise RuntimeError('Native cached MH failed')
         os.replace(str(target)+'.partial',target)
         with h5py.File(target) as h:chains.append(h['samples'][:])
+        save(folder/'uncertainty_budget.h5',{},dict(used_seconds=previous_seconds+time.monotonic()-started,limit_seconds=args.budget))
         print('CHAIN',event,i,len(chains[-1]),'elapsed',time.monotonic()-started,flush=True)
     length=min(map(len,chains))
     if length<1000:raise RuntimeError('Budget-limited: fewer than 1000 retained draws per chain')
@@ -176,6 +183,7 @@ def run(args,event):
     if np.max(abs(err))>.2:raise RuntimeError('Posterior left validated interpolation accuracy region; refine cache')
     if margin<=.1:raise RuntimeError('Posterior approaches cache boundary; expand cache before reporting intervals')
     attrs=export(folder,model,q,meta,chains)
+    save(folder/'uncertainty_budget.h5',{},dict(used_seconds=previous_seconds+time.monotonic()-started,limit_seconds=args.budget))
     attrs.update(uncertainty_elapsed_seconds=time.monotonic()-started,uncertainty_budget_seconds=args.budget,
                  uncertainty_total_seconds=previous_seconds+time.monotonic()-started,
                  total_elapsed_seconds=time.monotonic()-began,cache_validated=True)
