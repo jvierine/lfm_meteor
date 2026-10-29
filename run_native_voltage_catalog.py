@@ -149,10 +149,20 @@ def run_one(args, event, events, reference, lib):
             control_std.append(np.std(draws,ddof=1))
         beats=np.array(beats);control_std=np.array(control_std)
         z=beats/np.maximum(control_std,1e-6)
-        beat_guard=bool(np.all(np.abs(z)<5) and abs(np.mean(z))<3/np.sqrt(len(z)))
+        trend_coefficients=[];trend_z=[]
+        for station in range(3):
+            mask=data['station']==station
+            t=data['time_s'][mask];t=t-np.mean(t)
+            design=np.column_stack([np.ones(len(t)),t])/control_std[mask,None]
+            covariance=np.linalg.pinv(design.T@design)
+            coef=covariance@design.T@(beats[mask]/control_std[mask])
+            trend_coefficients.append(coef)
+            trend_z.append(coef/np.sqrt(np.diag(covariance)))
+        beat_guard=bool(np.all(np.abs(z)<5) and np.all(np.abs(trend_z)<3))
         with h5py.File(out/'fit.h5.partial','w') as h:
             h['params']=result.x;h['initial']=initial;h['residual_beat_hz']=beats
             h['conditional_beat_std_hz']=control_std;h['beat_z']=z;h['station']=data['station'];h['time_s']=data['time_s']
+            h['station_beat_offset_and_slope']=trend_coefficients;h['station_beat_trend_z']=trend_z
             h['predicted_real']=predicted.real;h['predicted_imag']=predicted.imag
             h.attrs.update(optimizer_success=result.success,optimizer_message=result.message,
                            cost=result.cost,nfev=result.nfev,elapsed_s=time.monotonic()-start,
