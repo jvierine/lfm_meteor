@@ -59,6 +59,7 @@ def main():
     p.add_argument('--all-events',action='store_true')
     p.add_argument('--sample-all',action='store_true')
     p.add_argument('--review-products',action='store_true')
+    p.add_argument('--pending-only',action='store_true',help='Distribute only unfinished events across MPI workers')
     args = p.parse_args()
     comm = MPI.COMM_WORLD
     events = []
@@ -68,6 +69,8 @@ def main():
                 events.append(flag.stem)
     if args.all_events:
         events=sorted(p.parent.name for p in Path(args.source).glob('tri_*/input.h5'))
+    if args.pending_only:
+        events=[event for event in events if not (Path(args.output)/event/'complete.h5').exists()]
     Path(args.output).mkdir(parents=True, exist_ok=True)
     if comm.rank == 0:
         print(f'Refitting {len(events)} events on {comm.size} workers; sample_all={args.sample_all}', flush=True)
