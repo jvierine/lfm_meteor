@@ -13,8 +13,19 @@ const fs=require('fs');
  if(await page.locator('canvas.gpu').count()!==4)throw Error('Missing panels');
  const rendering=await page.evaluate(()=>[...document.querySelectorAll('canvas.gpu')].map(c=>({width:c.width,height:c.height,webgl:!!c.getContext('webgl2')})));
  if(rendering.some(c=>!c.webgl||!c.width||!c.height))throw Error('Missing WebGL rendering');
+ const canvas=page.locator('canvas.gpu').first();
+ for(const modifier of ['Control','Meta']){
+  const before=JSON.parse(await canvas.getAttribute('data-xlim'));
+  const box=await canvas.boundingBox();await page.keyboard.down(modifier);
+  await page.mouse.move(box.x+120,box.y+70);await page.mouse.down();
+  await page.mouse.move(box.x+box.width-70,box.y+box.height-85,{steps:8});await page.mouse.up();await page.keyboard.up(modifier);
+  const after=JSON.parse(await canvas.getAttribute('data-xlim'));
+  if(after[1]-after[0]>=before[1]-before[0])throw Error(modifier+' box zoom failed');
+  if(await page.locator('#selection').textContent()!=='0 selected')throw Error('Zoom selected a measurement');
+  await page.locator('#reset').click();
+ }
  await page.locator('#points input').first().check();
- await page.locator('#flag').click();await page.waitForFunction(()=>document.querySelector('#saved').textContent.startsWith('Saved revision 1'));
+ await page.keyboard.press('f');await page.waitForFunction(()=>document.querySelector('#saved').textContent.startsWith('Saved revision 1'));
  await page.reload();await page.locator('#search').fill('tri_0003_1713794570204349518');await page.locator('#events button').first().click();
  await page.locator('summary').click();
  await page.locator('#points tr.flagged').first().waitFor();

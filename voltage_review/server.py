@@ -19,11 +19,13 @@ EVENT=re.compile(r'^tri_\d+_\d+$')
 
 
 class Store:
-    def __init__(self, root, flags):
+    def __init__(self, root, flags, refits=None):
         self.root=Path(root);self.flags=Path(flags);self.flags.mkdir(parents=True,exist_ok=True)
+        self.refits=Path(refits) if refits else None
 
     def path(self,event):
         if not EVENT.fullmatch(event): raise ValueError('Invalid event identifier')
+        if self.refits and (self.refits/event/'plot.h5').exists():return self.refits/event
         return self.root/event
 
     def annotation(self,event):
@@ -54,7 +56,7 @@ class Store:
         result=[]
         for folder in sorted(self.root.glob('tri_*')):
             if not EVENT.fullmatch(folder.name):continue
-            plot=folder/'plot.h5'
+            plot=self.path(folder.name)/'plot.h5'
             if not plot.exists():continue
             try:
                 with h5py.File(plot) as h:
@@ -71,7 +73,10 @@ class Store:
             if payload.get('version')!=old['version']: raise RuntimeError('Review changed elsewhere; reload before saving')
             if payload.get('fingerprint')!=data['fingerprint']:raise RuntimeError('Fit data changed; reload before saving')
             excluded=payload.get('excluded',[])
-            if not isinstance(excluded,list) or any(not isinstance(i,str) or i not in data['ids'] for i in excluded):raise ValueError('Unknown measurement identity')
+            with h5py.File(self.root/event/'plot.h5') as original:
+                all_station=original['station'][:];all_time=original['time_ns'][:]
+            all_ids=[f'{s}:{t}' for s,t in zip(all_station,all_time)]
+            if not isinstance(excluded,list) or any(not isinstance(i,str) or i not in all_ids for i in excluded):raise ValueError('Unknown measurement identity')
             if type(payload.get('bad')) is not bool:raise ValueError('Bad state must be boolean')
             note=payload.get('note','')
             if not isinstance(note,str) or len(note)>4000:raise ValueError('Invalid review note')
@@ -87,9 +92,9 @@ class Store:
                 h.attrs.update(event=event,version=revision['version'],bad=revision['bad'],note=note,
                                fingerprint=data['fingerprint'],format='station:UTC-unix-nanoseconds manual exclusions')
                 h['excluded']=np.array(revision['excluded'],dtype=h5py.string_dtype())
-                h['station']=np.asarray(data['station'],dtype=np.int64)
-                h['time_ns']=np.asarray(data['time_ns'],dtype=np.int64)
-                h['manual_reject_mask']=np.array([i in revision['excluded'] for i in data['ids']],dtype=bool)
+                h['station']=np.asarray(all_station,dtype=np.int64)
+                h['time_ns']=np.asarray(all_time,dtype=np.int64)
+                h['manual_reject_mask']=np.array([i in revision['excluded'] for i in all_ids],dtype=bool)
                 h.flush()
             with open(tmp,'rb') as f:os.fsync(f.fileno())
             os.replace(tmp,target)
@@ -142,11 +147,12 @@ def handler(store,token,static,wasm):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--data',required=True);p.add_argument('--flags',required=True)
+    p.add_argument('--refits')
     p.add_argument('--wasm',required=True);p.add_argument('--token-file',required=True)
     p.add_argument('--port',type=int,default=8767);p.add_argument('--host',default='127.0.0.1');a=p.parse_args()
     token_path=Path(a.token_file)
     if not token_path.exists():
         fd=os.open(token_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'w') as f:f.write(secrets.token_urlsafe(32))
-    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags),token_path.read_text().strip(),Path(__file__).parent,Path(a.wasm)))
+    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags,a.refits),token_path.read_text().strip(),Path(__file__).parent,Path(a.wasm)))
     print(f'Listening on {a.host}:{a.port}',flush=True);server.serve_forever()
