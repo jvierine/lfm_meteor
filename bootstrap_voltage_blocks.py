@@ -32,6 +32,7 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--library', type=Path, required=True)
     p.add_argument('--replicates', type=int, default=128)
+    p.add_argument('--resume', action='store_true')
     a = p.parse_args()
     comm = MPI.COMM_WORLD; rank = comm.rank
     started = time.monotonic()
@@ -64,8 +65,16 @@ def main():
     rows = []
     for index in range(rank, len(jobs), comm.size):
         width, j = jobs[index]
+        target=a.output/f'draw_{index:04d}.h5'
+        start=center
+        if a.resume and target.exists():
+            with h5py.File(target) as h:
+                previous=h['params'][:]
+                if h.attrs['optimizer_converged']:
+                    rows.append((width,j,True,previous));continue
+                start=previous
         weights = block_weights(d['time_s'], width, 441100+index)
-        result, ok = fit(weights, center)
+        result, ok = fit(weights, start)
         rows.append((width, j, ok, result))
         save(a.output/f'draw_{index:04d}.h5', dict(params=result, weights=weights),
              dict(block_seconds=width, replicate=j, optimizer_converged=ok))
