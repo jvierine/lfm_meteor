@@ -6,7 +6,7 @@ use rand::{Rng,SeedableRng,rngs::StdRng};
 use rand_distr::StandardNormal;
 use std::time::Instant;
 
-struct Surface {origin:[f64;2],half:[f64;2],n:usize,values:Vec<f64>,offset:f64}
+struct Surface {origin:[f64;2],half:[f64;2],n:usize,path_cells:usize,values:Vec<f64>,offset:f64}
 pub struct Cache {surfaces:Vec<Surface>}
 
 fn cubic(y:[f64;4],t:f64)->f64 {
@@ -21,13 +21,21 @@ impl Surface {
         // Leave a one-cell interpolation guard; never extrapolate or clamp a posterior.
         if z.iter().any(|v| !v.is_finite() || *v<1. || *v>=(self.n-2) as f64){return None;}
         let a=z[0].floor() as usize;let b=z[1].floor() as usize;
+        // Cell-averaged pulse support has derivative changes at sample edges.
+        // Never fit a cubic across such an edge when the path grid is aligned.
+        let start=if self.path_cells>=4 {
+            let center=(self.n/2) as i64;let cells=self.path_cells as i64;
+            let lo=(center+((a as i64-center).div_euclid(cells))*cells).max(0) as usize;
+            let hi=(lo+self.path_cells).min(self.n-1);
+            (a-1).clamp(lo,hi-3)
+        }else{a-1};
         let mut row=[0.;4];
         for k in 0..4 {
-            let values=std::array::from_fn(|j|self.values[(a+k-1)*self.n+b+j-1]);
+            let values=std::array::from_fn(|j|self.values[(start+k)*self.n+b+j-1]);
             if values.iter().any(|v|!v.is_finite()){return None;}
             row[k]=cubic(values,z[1]-b as f64);
         }
-        Some(cubic(row,z[0]-a as f64))
+        Some(cubic(row,z[0]-(start+1) as f64))
     }
 }
 
@@ -60,7 +68,7 @@ impl Cache {
         let obs=v.observables(q).ok_or_else(||anyhow::anyhow!("Invalid cache seed"))?;
         let k=v.bandwidth/v.duration/C;let mut surfaces=Vec::new();
         for (i,o) in obs.iter().enumerate() {
-            let origin=[o[0],o[1]+k*o[0]];let offset=v.pulse_logp(i,origin[0],origin[1]);
+            let mut origin=[o[0],o[1]+k*o[0]];let offset=v.pulse_logp(i,origin[0],origin[1]);
             anyhow::ensure!(offset.is_finite(),"Invalid pulse {i}");
             let mut half=[0.;2];
             for j in 0..2 {
@@ -68,13 +76,22 @@ impl Cache {
                 let curvature=(2.*offset-v.pulse_logp(i,a[0],a[1])-v.pulse_logp(i,b[0],b[1]))/(step*step);
                 half[j]=expand*(12./curvature.max(1e-8).sqrt()).clamp(if j==0 {100.}else{150.},if j==0 {2500.}else{5000.});
             }
+            let spacing=C/v.fs;let desired=2.*half[0]/(n-1) as f64;
+            let exponent=(spacing/desired).log2().floor();
+            let mut path_cells=0;
+            if exponent>=2. && (v.duration*v.fs-(v.duration*v.fs).round()).abs()<1e-7 {
+                path_cells=2usize.pow(exponent as u32);
+                let edge=C*(v.sample_time[i*v.n]-0.5/v.fs);
+                origin[0]=edge+((origin[0]-edge)/spacing).round()*spacing;
+                half[0]=(n-1) as f64/2.*spacing/path_cells as f64;
+            }
             let mut values=Vec::with_capacity(n*n);
             for a in 0..n {for b in 0..n {
                 let x=origin[0]+half[0]*(2.*a as f64/(n-1) as f64-1.);
                 let y=origin[1]+half[1]*(2.*b as f64/(n-1) as f64-1.);
                 values.push(v.pulse_logp(i,x,y)-offset);
             }}
-            surfaces.push(Surface{origin,half,n,values,offset});
+            surfaces.push(Surface{origin,half,n,path_cells,values,offset});
         }
         Ok(Self{surfaces})
     }
@@ -98,6 +115,7 @@ impl Cache {
         h.new_dataset::<f64>().shape((self.surfaces.len(),2)).create("half_width")?.write_raw(&half)?;
         h.new_dataset::<f64>().shape((self.surfaces.len(),n,n)).create("relative_log_likelihood")?.write_raw(&values)?;
         h.new_dataset_builder().with_data(&self.surfaces.iter().map(|s|s.offset).collect::<Vec<_>>()).create("offset")?;
+        h.new_dataset_builder().with_data(&self.surfaces.iter().map(|s|s.path_cells as u64).collect::<Vec<_>>()).create("path_samples_per_cell")?;
         h.flush()?;Ok(())
     }
 }
@@ -154,5 +172,11 @@ impl Cache {
     #[test] fn cubic_recovers_polynomial() {
         let f=|x:f64|2.+3.*x-4.*x*x+0.7*x*x*x;
         for i in 0..100 {let t=i as f64/100.;assert!((cubic([-1.,0.,1.,2.].map(f),t)-f(t)).abs()<1e-12);}
+    }
+    #[test] fn interpolation_respects_sample_edge_cusp() {
+        let n=65;let mut values=Vec::new();
+        for i in 0..n {for j in 0..n {let x=i as f64-32.;let y=j as f64-32.;values.push(-x.abs()-y*y);}}
+        let surface=Surface{origin:[0.,0.],half:[32.,32.],n,path_cells:16,values,offset:0.};
+        for i in -10..10 {let x=i as f64/11.;let y=0.37;assert!((surface.at([x,y]).unwrap()+x.abs()+y*y).abs()<1e-10);}
     }
 }
