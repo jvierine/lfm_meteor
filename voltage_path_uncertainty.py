@@ -52,10 +52,13 @@ def add_intervals(folder):
 
 if __name__=='__main__':
     import argparse
+    from mpi4py import MPI
     p=argparse.ArgumentParser();p.add_argument('root');args=p.parse_args()
     root=Path(args.root)
-    folders=[root] if (root/'fit.h5').exists() else sorted(x.parent for x in root.glob('*/fit.h5'))
-    for folder in folders:
+    comm=MPI.COMM_WORLD
+    folders=([root] if (root/'fit.h5').exists() else sorted(x.parent for x in root.glob('*/fit.h5'))) if comm.rank==0 else None
+    folders=comm.bcast(folders,root=0)
+    for folder in folders[comm.rank::comm.size]:
         if (folder/'path_measurement_uncertainty.h5').exists():continue
         add_intervals(folder)
         print(folder.name,flush=True)
