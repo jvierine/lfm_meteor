@@ -11,14 +11,25 @@ import traceback
 import h5py
 import numpy as np
 from scipy.optimize import least_squares
-from scipy.signal import find_peaks
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpi4py import MPI
-import fit_event_joint_delay_doppler_fft as fit
+import fit_gcrs_trajectories_lfm_ambiguity as gfit
+import sanya_opts as sc
 import fit_all_ballistic_snr_weighted as base
 from grid_search_delays_beam_axis import load_events, pair_tristatic_events, SAN_PATTERN, DAN_PATTERN, WEN_PATTERN
+
+
+def frame_coefficients(times):
+    # Same affine transform convention as fit_event_joint_delay_doppler_fft.
+    zero=np.zeros((len(times),3));x0,v0=base.gcrs_state_samples_to_itrs(zero,zero,times)
+    rp=np.empty((len(times),3,3));vp=rp.copy();rv=rp.copy();vv=rp.copy()
+    for j in range(3):
+        basis=zero.copy();basis[:,j]=1.
+        x,v=base.gcrs_state_samples_to_itrs(basis,zero,times);rp[:,:,j]=x-x0;vp[:,:,j]=v-v0
+        x,v=base.gcrs_state_samples_to_itrs(zero,basis,times);rv[:,:,j]=x-x0;vv[:,:,j]=v-v0
+    return x0,v0,rp,vp,rv,vv
 
 
 def prepare(path, events, reference):
@@ -56,17 +67,17 @@ def prepare(path, events, reference):
     if len(rows)<12 or len(set(stations))!=3:
         raise ValueError('Insufficient usable pulses across all three receivers')
     times = np.array(times, dtype=np.int64)
-    transforms = fit.precomputed_gcrs_to_itrs_linear(times)
+    transforms = frame_coefficients(times)
     frames = np.concatenate([a.reshape(len(times),-1) for a in transforms], axis=1)
     center = np.r_[reference['r0_gcrs_m'], reference['v0_gcrs_mps']]
     # Initial asymptotic speed includes a=100 m/s, preserving seed detection speed.
     center[3:] += 100*center[3:]/np.linalg.norm(center[3:])
-    rx = np.array(fit.gfit.LINK_RX_POSITIONS_M)[stations]
+    rx = np.array(gfit.LINK_RX_POSITIONS_M)[stations]
     data = dict(center=center,time_s=(times-reference['t0_ns'])*1e-9,time_ns=times,
-                frames=frames,tx=np.array(fit.sc.p_san),rx=rx,station=np.array(stations),
+                frames=frames,tx=np.array(sc.p_san),rx=rx,station=np.array(stations),
                 real=np.array(rows).real,imag=np.array(rows).imag,noise_power=np.array(noise),
                 sample_time_s=np.array(sample_times),fs=fs,bandwidth=bandwidth,duration=200e-6,
-                wavelength=float(fit.sc.RADAR_WAVELENGTH_M),gate=np.array(gates))
+                wavelength=float(sc.RADAR_WAVELENGTH_M),gate=np.array(gates))
     with h5py.File(path,'w') as h:
         for key,value in data.items(): h[key]=value
         h.attrs['source_event_files']=';'.join(e.path for e in events)
