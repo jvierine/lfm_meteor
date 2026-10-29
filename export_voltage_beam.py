@@ -35,7 +35,7 @@ def export(folder, source_root, noise):
     digest=hashlib.sha256((folder/'fit.h5').read_bytes()).hexdigest()
     if target.exists():
         with h5py.File(target) as h:
-            if h.attrs.get('fit_sha256')==digest:return
+            if h.attrs.get('fit_sha256')==digest and h.attrs.get('minimum_one_way_gain_db')==-10.:return
     with h5py.File(folder/'input.h5') as h:
         original=Path(h.attrs.get('original_input',folder/'input.h5'))
     with h5py.File(original) as h:
@@ -63,7 +63,7 @@ def export(folder, source_root, noise):
     peak=gain.site_summary(site)['steered_peak_gain_dbi'];linear=10**((peak+relative)/10)
     tsys=noise.tsys_k('Sanya',d['time_ns'])
     sigma=10**(snr/10)*1.380649e-23*tsys/d['duration']*(4*np.pi)**3*distance**4/(4.7e6*linear**2*d['wavelength']**2)
-    rcs=np.where((relative>=-3)&np.isfinite(tsys)&(sigma>0),10*np.log10(sigma),np.nan)
+    rcs=np.where((relative>=-10)&np.isfinite(tsys)&(sigma>0),10*np.log10(sigma),np.nan)
     # Project rays onto one transverse plane: contours and points share a range.
     plane=float(np.median(enu@p));scale=plane/(enu@p)
     e=(enu@east)*scale;n=(enu@north)*scale
@@ -79,10 +79,10 @@ def export(folder, source_root, noise):
         for level in (-3.,-10.,-20.):
             g=cg.create_group(str(int(level)));g.attrs['gain_db']=level
             for i,line in enumerate(contour.lines(level)):g[str(i)]=line
-        h.attrs.update(plane_range_m=plane,extent_m=extent,fit_sha256=digest,
+        h.attrs.update(plane_range_m=plane,extent_m=extent,fit_sha256=digest,minimum_one_way_gain_db=-10.,
                        gain_convention='one-way power relative to steered peak; monostatic RCS uses G_tx*G_rx',
                        coordinate_convention='orthogonal projected east and north; ray intersection with plane at median axial range',
-                       rcs_selection='Sanya one-way gain >= -3 dB; measured noise temperature; 1/pulse_duration noise bandwidth',source_program=__file__)
+                       rcs_selection='Sanya one-way gain >= -10 dB (two-way >= -20 dB); measured noise temperature; 1/pulse_duration noise bandwidth',source_program=__file__)
     os.replace(target.with_suffix('.h5.partial'),target)
 
 

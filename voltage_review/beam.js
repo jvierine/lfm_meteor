@@ -28,12 +28,12 @@ export function beamPanels(container,onSelect){
  function draw(){
   for(const v of panels){const d=current?.beam;v.box.hidden=!d;if(!d)continue;
    const w=v.box.clientWidth,h=v.box.clientHeight,excluded=new Set(current.annotation.excluded);if(w<200)continue;
-   const xl=v.j?[-d.extent_m,d.extent_m]:limits(d.time_s,.01),yl=v.j?[-d.extent_m,d.extent_m]:limits([...d.relative_gain_db,0],3);
+   const xl=v.j?[-d.extent_m,d.extent_m]:limits(d.time_s,.01),yl=v.j?[-d.extent_m,d.extent_m]:limits([...d.relative_gain_db.map(g=>2*g),0,-20],3);
    if(v.j){const ratio=(w-153)/(h-78);if(ratio>1){xl[0]*=ratio;xl[1]*=ratio;}else{yl[0]/=ratio;yl[1]/=ratio;}}
    v.full=[...xl,...yl];v.bounds??=v.full.slice();const b=v.bounds;
    v.title.textContent=v.j?`Sanya beam · ${(d.plane_range_m/1000).toFixed(1)} km axial range`:finite(d.rcs_dbsm).length?'Sanya gain and RCS':'Sanya gain · no in-beam RCS';
    v.axesCanvas.style.width=`${w-65}px`;
-   v.axes.begin_axes(w-65,h,devicePixelRatio,...b,v.j?'East–west offset (m)':'Time from reference epoch (s)',v.j?'North–south offset (m)':'One-way gain relative to peak (dB)');v.axes.x_ticks(false,false);
+   v.axes.begin_axes(w-65,h,devicePixelRatio,...b,v.j?'East–west offset (m)':'Time from reference epoch (s)',v.j?'North–south offset (m)':'Two-way gain relative to peak (dB)');v.axes.x_ticks(false,false);
    v.gpu.set_margins(70,83,30,48);v.gpu.begin(w,h,devicePixelRatio,...b);v.points=[];v.extra.replaceChildren();
    const line=(xy,c,size=1.4)=>v.gpu.series(new Float64Array(xy),...c,false,size,false);
    const marker=(i,x,y,c)=>{const id='0:'+d.time_ns[i];if(!Number.isFinite(x)||!Number.isFinite(y))return;v.points.push({id,x,y});
@@ -47,7 +47,7 @@ export function beamPanels(container,onSelect){
      const closed=contour.lines.filter(p=>p.length>15&&Math.hypot(p[0][0]-p.at(-1)[0],p[0][1]-p.at(-1)[1])<1);
      const centre=p=>Math.hypot(p.reduce((s,v)=>s+v[0],0)/p.length,p.reduce((s,v)=>s+v[1],0)/p.length);
      closed.sort((a,b)=>centre(a)-centre(b));
-     if(closed.length){const top=closed[0].reduce((a,b)=>a[1]>b[1]?a:b);v.axes.node_label(...top,`${contour.level} dB`,'#687780');}
+     if(closed.length){const top=closed[0].reduce((a,b)=>a[1]>b[1]?a:b);v.axes.node_label(...top,`${2*contour.level} dB`,'#687780');}
     }
     line(d.east_m.flatMap((x,i)=>[x,d.north_m[i]]),[.65,.68,.7],1);
     const s=limits(d.snr_db,1),col=x=>colour((x-s[0])/(s[1]-s[0]));
@@ -55,8 +55,8 @@ export function beamPanels(container,onSelect){
     const bar=document.createElement('div');bar.className='snr-bar';bar.style.background=`linear-gradient(to top,${stops.map(css).join(',')})`;v.extra.append(bar);
     scale(v,s,'SNR (dB)');
    }else{
-    line(d.time_s.flatMap((t,i)=>[t,d.relative_gain_db[i]]),[.15,.43,.68],2);
-    line([b[0],-3,b[1],-3],[.65,.68,.7],1);
+    line(d.time_s.flatMap((t,i)=>[t,2*d.relative_gain_db[i]]),[.15,.43,.68],2);
+    line([b[0],-20,b[1],-20],[.65,.68,.7],1);
     const r=limits(d.rcs_dbsm,3);const map=y=>b[2]+(y-r[0])/(r[1]-r[0])*(b[3]-b[2]);
     d.rcs_dbsm.forEach((y,i)=>{if(Number.isFinite(y))marker(i,d.time_s[i],map(y),[.72,.25,.07]);});
     scale(v,r,'RCS (dBsm)',true);
