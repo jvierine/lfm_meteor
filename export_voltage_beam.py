@@ -45,6 +45,8 @@ def export(folder, source_root, noise):
     keep=d['station']==0
     for k in ('time_s','time_ns','station','frames'):d[k]=d[k][keep]
     source=Path(source_root)/'results/tristatic_head_echoes/sanya'/Path(source).name
+    if not source.exists():
+        source=Path(source_root)/'results/voltage_sanya_snr_cache'/source.name
     with h5py.File(source) as h:
         raw_times=h['times_ns'][:].astype(np.int64);snr=h['snr_peak_db'][:]
     # These event files use China local timestamps; require exact ID matches.
