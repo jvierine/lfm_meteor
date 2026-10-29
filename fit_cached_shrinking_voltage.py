@@ -107,10 +107,16 @@ def validate(cache,q,cov,folder):
 
 def run(args,event):
     folder=args.output/event;folder.mkdir(parents=True,exist_ok=True)
+    flag=args.flags/(event+'.h5')
+    revision=0
+    if flag.exists():
+        with h5py.File(flag) as h:revision=int(h.attrs.get('version',0))
+    flags_changed=False
     previous_seconds=0.
     if (folder/'complete.h5').exists():
         with h5py.File(folder/'complete.h5') as h:
-            if bool(h.attrs.get('uncertainty_converged',False)):return
+            flags_changed=int(h.attrs.get('fit_flag_revision',-1))!=revision
+            if bool(h.attrs.get('uncertainty_converged',False)) and not flags_changed:return
             previous_seconds=float(h.attrs.get('uncertainty_total_seconds',h.attrs.get('uncertainty_elapsed_seconds',0.)))
         completed_at=(folder/'complete.h5').stat().st_mtime
         for path in folder.glob('chain_*.h5'):
@@ -154,6 +160,7 @@ def run(args,event):
     def raw_logp(p):
         p=np.ascontiguousarray(p)
         return lib.voltage_logp(model.handle,p.ctypes.data_as(PTR))
+    if flags_changed and raw_logp(initial)>raw_logp(q):q=initial.copy()
     for candidate in posterior_seeds:
         candidate[:6]+=(old_center-d['center'])/1000
         if raw_logp(candidate)>raw_logp(q):q=candidate.copy()
@@ -248,14 +255,14 @@ def run(args,event):
 def main():
     p=argparse.ArgumentParser()
     for key in ('source','initial','flags','output','seed'):p.add_argument('--'+key,type=Path,required=True)
-    p.add_argument('--library',required=True);p.add_argument('--event');p.add_argument('--budget',type=float,default=300)
+    p.add_argument('--library',required=True);p.add_argument('--event');p.add_argument('--events',nargs='+');p.add_argument('--budget',type=float,default=300)
     p.add_argument('--warmup',type=int,default=4000);p.add_argument('--draws',type=int,default=96000)
     p.add_argument('--expand',type=float,default=1.);p.add_argument('--validate-only',action='store_true')
     p.add_argument('--budget-generation',default='',help='Explicitly authorized fresh bounded attempt; old timings retained')
     p.add_argument('--uncertainty-only',action='store_true')
     p.add_argument('--posterior-seed',action='store_true',help='Refine from the best previous posterior state using the exact likelihood')
     args=p.parse_args();comm=MPI.COMM_WORLD
-    events=[args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5'))
+    events=args.events or ([args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5')))
     for event in events[comm.rank::comm.size]:
         try:run(args,event)
         except Exception:
