@@ -16,15 +16,21 @@ async function save(change,isUndo=false){if(!data||busy)return;const previous=st
 function table(){const root=$('points');root.replaceChildren();if(!data)return;const excluded=new Set(data.annotation.excluded);data.ids.forEach((id,i)=>{const row=document.createElement('tr');row.classList.toggle('flagged',excluded.has(id));const cell=document.createElement('td'),check=document.createElement('input');check.type='checkbox';check.checked=selected.has(id);check.setAttribute('aria-label','Select '+names[data.station[i]]+' pulse '+data.time_ns[i]);check.onchange=()=>{check.checked?selected.add(id):selected.delete(id);draw();controls();};cell.append(check);row.append(cell);for(const text of [names[data.station[i]],data.time_ns[i],data.time_s[i].toFixed(6),data.residual_beat_hz[i].toFixed(1),excluded.has(id)?'Excluded':'Included']){const c=document.createElement('td');c.textContent=text;row.append(c);}root.append(row);});}
 function range(values,minspan=1){let lo=Math.min(...values),hi=Math.max(...values),span=Math.max(hi-lo,minspan);return [(lo+hi-span)/2-.08*span,(lo+hi+span)/2+.08*span];}
 function xy(indices,ys){return new Float64Array(indices.flatMap(i=>[data.time_s[i],ys[i]]));}
+function uncertaintyMath(symbol,lo,mid,hi,unit){
+ const exponent=Number(mid.toExponential().split('e')[1]),factor=10**exponent;
+ const number=x=>Number(x.toPrecision(3)).toString();
+ const power=exponent===0?'':`<mo>⋅</mo><msup><mn>10</mn><mn>${exponent}</mn></msup>`;
+ return `<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><msub><mi>${symbol}</mi><mn>0</mn></msub><mo>=</mo><mo>(</mo><msubsup><mn>${number(mid/factor)}</mn><mrow><mo>−</mo><mn>${number((mid-lo)/factor)}</mn></mrow><mrow><mo>+</mo><mn>${number((hi-mid)/factor)}</mn></mrow></msubsup><mo>)</mo>${power}<mspace width="0.3em"/><mtext>${unit}</mtext><mspace width="0.6em"/><mtext>(95%)</mtext></mrow></math>`;
+}
 function fitSummary(){
  $('fitstamp').textContent=data.fit_unix_time?`Fit: ${new Date(data.fit_unix_time*1000).toISOString()} · flag revision ${data.fit_flag_revision||0} · ${data.fit_excluded_count||0} excluded · ${data.fit_timestamp_source}${data.annotation.version>(data.fit_flag_revision||0)?' · newer review revision exists':''}`:'Fit timestamp unavailable';
  const root=$('masssummary');root.replaceChildren();
  for(const [symbol,key,scale,unit] of [['m','initial_mass_kg_quantiles',1,'kg'],['r','initial_radius_m_quantiles',1e6,'µm']]){
   const q=data[key];if(!q)continue;
   const span=document.createElement('span');const [lo,mid,hi]=q.map(v=>v*scale);
-  span.innerHTML=`${symbol}<sub>0</sub> = ${mid.toExponential(3)} <sup>+${(hi-mid).toExponential(2)}</sup><sub>−${(mid-lo).toExponential(2)}</sub> ${unit} (95%) · `;root.append(span);
+  span.className='mass-estimate';span.innerHTML=uncertaintyMath(symbol,lo,mid,hi,unit);root.append(span);
  }
- root.append(document.createTextNode(data.mass_status||'Initial mass and radius posterior unavailable'));
+ const note=document.createElement('span');note.className='mass-status';note.textContent=data.mass_status||'Initial mass and radius posterior unavailable';root.append(note);
 }
 function navigate(v,method,args){
  if(!data||!v.bounds)return;
