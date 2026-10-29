@@ -55,7 +55,7 @@ def posterior_bands(folder, data, t):
     samples = np.stack(with_samples)
     if samples.ndim != 3 or samples.shape[2] != 8 or not np.isfinite(samples).all():
         raise ValueError('Invalid posterior samples')
-    import arviz_stats as az
+    from arviz_stats.base import array_stats as az
     diagnostic_samples = samples.transpose(2, 0, 1)
     rhat = float(np.max(az.rhat(diagnostic_samples, method='rank', chain_axis=1, draw_axis=2)))
     ess = float(np.min(az.ess(diagnostic_samples, method='bulk', chain_axis=1, draw_axis=2)))
