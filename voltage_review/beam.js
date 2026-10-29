@@ -13,9 +13,9 @@ export function beamPanels(container,onSelect){
   const box=document.createElement('section');box.className='plot beam-plot';
   const axes=document.createElement('canvas'),canvas=document.createElement('canvas');canvas.className='gpu';canvas.tabIndex=0;
   canvas.setAttribute('aria-label',j?'Sanya transverse beam and SNR':'Sanya gain and radar cross section');
-  const title=document.createElement('h2'),extra=document.createElement('div');extra.className='beam-scale';
-  box.append(axes,canvas,title,extra);container.append(box);
-  const panel={j,box,axesCanvas:axes,canvas,axes:new SeriesView(axes),gpu:new LinePlot(canvas),title,extra,bounds:null,points:[]};panels.push(panel);
+  const extra=document.createElement('div');extra.className='beam-scale';
+  box.append(axes,canvas,extra);container.append(box);
+  const panel={j,box,axesCanvas:axes,canvas,axes:new SeriesView(axes),gpu:new LinePlot(canvas),extra,bounds:null,points:[]};panels.push(panel);
   const navigate=(method,args)=>{if(!panel.bounds)return;const v=new PlotViewport(),b=panel.bounds,f=panel.full;
    v.zoom_box((b[0]-f[0])/(f[1]-f[0]),(b[2]-f[2])/(f[3]-f[2]),(b[1]-f[0])/(f[1]-f[0]),(b[3]-f[2])/(f[3]-f[2]));v[method](...args);const z=v.bounds();v.free();panel.bounds=[f[0]+z[0]*(f[1]-f[0]),f[0]+z[2]*(f[1]-f[0]),f[2]+z[1]*(f[3]-f[2]),f[2]+z[3]*(f[3]-f[2])];};
   bindPlotNavigation(canvas,{zoom:(...a)=>navigate('zoom',a),pan:(...a)=>navigate('pan',a),zoom_box:(...a)=>navigate('zoom_box',a),reset:()=>{panel.bounds=null;}},()=>draw(),()=>({x:70,y:30,width:box.clientWidth-153,height:box.clientHeight-78}));
@@ -31,7 +31,6 @@ export function beamPanels(container,onSelect){
    const xl=v.j?[-d.extent_m,d.extent_m]:limits(d.time_s,.01),yl=v.j?[-d.extent_m,d.extent_m]:limits([...d.relative_gain_db.map(g=>2*g),0,-20],3);
    if(v.j){const ratio=(w-153)/(h-78);if(ratio>1){xl[0]*=ratio;xl[1]*=ratio;}else{yl[0]/=ratio;yl[1]/=ratio;}}
    v.full=[...xl,...yl];v.bounds??=v.full.slice();const b=v.bounds;
-   v.title.textContent=v.j?`Sanya beam · ${(d.plane_range_m/1000).toFixed(1)} km axial range`:finite(d.rcs_dbsm).length?'Sanya gain and RCS':'Sanya gain · no in-beam RCS';
    v.axesCanvas.style.width=`${w-65}px`;
    v.axes.begin_axes(w-65,h,devicePixelRatio,...b,v.j?'East–west offset (m)':'Time from reference epoch (s)',v.j?'North–south offset (m)':'Two-way gain relative to peak (dB)');v.axes.x_ticks(false,false);
    v.gpu.set_margins(70,83,30,48);v.gpu.begin(w,h,devicePixelRatio,...b);v.points=[];v.extra.replaceChildren();

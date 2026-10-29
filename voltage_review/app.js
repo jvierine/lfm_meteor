@@ -59,8 +59,7 @@ function setup(){for(let j=0;j<4;j++){
  const box=document.createElement('section');box.className='plot';
  const axes=document.createElement('canvas'),gpu=document.createElement('canvas');gpu.className='gpu';gpu.tabIndex=0;
  gpu.setAttribute('aria-label',['Apparent path measurements','Fitted speed','Path residual measurements','Beat residual measurements'][j]);
- const title=document.createElement('h2');title.textContent=['Propagation paths','Velocity','Path residuals','Beat residuals'][j];
- box.append(axes,gpu,title);$('plots').append(box);
+ box.append(axes,gpu);$('plots').append(box);
  const v={box,canvas:gpu,axes:new SeriesView(axes),gpu:new LinePlot(gpu),bounds:null,points:[],j};views.push(v);v.gpu.set_margins(70,18,30,48);
  gpu.addEventListener('pointerdown',()=>gpu.focus());
  bindPlotNavigation(gpu,{zoom:(...a)=>navigate(v,'zoom',a),pan:(...a)=>navigate(v,'pan',a),zoom_box:(...a)=>navigate(v,'zoom_box',a),reset},draw,
