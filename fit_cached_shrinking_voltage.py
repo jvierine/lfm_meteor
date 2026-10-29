@@ -121,12 +121,21 @@ def run(args,event):
         with h5py.File(args.seed/event/'input.h5') as h:old_center=h['center'][:]
         q[:6]+=(old_center-d['center'])/1000
     cache=None
-    for n in ((129,257) if previous_seconds else (65,129,257)):
+    for n in ((129,129,257,257) if previous_seconds else (65,65,129,129,257,257)):
         if cache is not None:cache.close()
         cache=Cached(model,q,n,args.expand,folder/'likelihood_cache.h5')
-        q,fit=optimize(cache,q);cov=covariance(cache,q)
+        try:
+            q,fit=optimize(cache,q);cov=covariance(cache,q)
+        except RuntimeError as exc:
+            if 'Curvature stencil' not in str(exc):raise
+            print('RECENTER',event,str(exc),flush=True)
+            continue
         print('CACHE',event,n,'elapsed',time.monotonic()-began,flush=True)
-        if validate(cache,q,cov,folder):break
+        try:
+            if validate(cache,q,cov,folder):break
+        except RuntimeError as exc:
+            if 'validation probes' not in str(exc):raise
+            print('RECENTER',event,str(exc),flush=True)
     else:raise RuntimeError('Cached likelihood failed interpolation accuracy gate')
     meta=dict(fit_unix_time=time.time(),cost=-cache.logp(q),optimizer_success=bool(fit.success),model='direct shrinking radius; cached joint voltage likelihood',
               Gamma=1.,Cd=2.,sigma_s2_m2=1e-8,material_density_kg_m3=3000.,prior='Uniform x0,v0,log10 r0; radius 1e-7 to 1e-2 m',
