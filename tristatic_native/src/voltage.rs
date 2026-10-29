@@ -148,9 +148,9 @@ impl Voltage {
                     self.bandwidth/(2.*self.duration)*tau*tau+fd*sample);
                 let (si,co)=phase.sin_cos();*m=(envelope*co,envelope*si);
             }
-            // Condition on off-echo initial samples, whose distribution is independent
-            // of trajectory. Apply the same complex FIR to model and measured voltage.
-            if model[..self.filter_len-1].iter().any(|m|m.0*m.0+m.1*m.1>1e-20){return false;}
+            // Use only valid FIR rows: every input sample is inside the recorded
+            // window. Apply the same linear transform to data and model, including
+            // signal in the first filter_len-1 samples; those rows are not residuals.
             if let Some(fft)=&self.fft {
                 spectrum.fill(Complex::new(0.,0.));
                 for (j,m) in model.iter().enumerate(){spectrum[j]=Complex::new(m.0,m.1);}
@@ -271,6 +271,14 @@ impl Voltage {
         model.prepare_fft();
         assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!((reference_norm-lognorm).abs()<1e-10);
+        assert!(residual.iter().zip(&reference).all(|(a,b)|(a-b).abs()<1e-10));
+        // Cropped echoes may start before the first valid residual row. The
+        // transformed data still have a valid model; do not reject these pulses.
+        for sample in &mut model.sample_time {*sample+=100./fs;}
+        model.fft=None;
+        assert!(model.residual(&q,&mut residual,&mut lognorm));
+        let reference=residual.clone();model.prepare_fft();
+        assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!(residual.iter().zip(&reference).all(|(a,b)|(a-b).abs()<1e-10));
     }
 }

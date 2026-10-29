@@ -38,7 +38,6 @@ impl Voltage {
         for j in 0..self.n {
             let sample=self.sample_time[i*self.n+j];let tau=sample-path/C;
             let env=((tau+0.5/self.fs)*self.fs).clamp(0.,1.)*((self.duration-tau+0.5/self.fs)*self.fs).clamp(0.,1.);
-            if j<self.filter_len-1 && env>1e-10{return f64::NEG_INFINITY;}
             let phase=std::f64::consts::TAU*(self.bandwidth/2.*tau-self.bandwidth/(2.*self.duration)*tau*tau+fd*sample);
             let (si,co)=phase.sin_cos();s[j]=Complex::new(env*co,env*si);
         }
