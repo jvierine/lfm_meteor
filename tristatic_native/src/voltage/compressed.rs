@@ -13,6 +13,24 @@ fn tune_scale(log_scale:f64,step:usize,accept:bool)->f64 {
     (log_scale+(step as f64+10.).powf(-0.6)*((if accept {1.}else{0.})-0.234)).clamp(-8.,4.)
 }
 
+struct RadiusTransport {reference:f64,beta:Vec<f64>}
+impl RadiusTransport {
+    fn new(x:&DVector<f64>,cov:&DMatrix<f64>)->Self {
+        let beta=(0..6).map(|i|if x.len()==7 {cov[(i,6)]/cov[(6,6)]}else{0.}).collect();
+        Self{reference:x[6],beta}
+    }
+    fn physical(&self,y:&DVector<f64>)->DVector<f64> {
+        let mut x=y.clone();
+        if y.len()!=7 || !(-7. ..=-2.).contains(&y[6]){return x;}
+        let delta=y[6]-self.reference;
+        // Drag varies as 1/r. Straighten this correlation while still sampling
+        // log radius. This triangular shear has determinant one: no prior change.
+        let shift=-(-std::f64::consts::LN_10*delta).exp_m1()/std::f64::consts::LN_10-delta;
+        for i in 0..6 {x[i]+=self.beta[i]*shift;}
+        x
+    }
+}
+
 fn cubic(y:[f64;4],t:f64)->f64 {
     // Four-point Lagrange interpolation, exact for cubic polynomials.
     -t*(t-1.)*(t-2.)*y[0]/6.+(t+1.)*(t-1.)*(t-2.)*y[1]/2.
@@ -147,23 +165,26 @@ impl Cache {
         let started=Instant::now();let v=&*v;let c=&*c;let n=v.dimension();
         let mut rng=StdRng::seed_from_u64(seed);let mut x=DVector::from_column_slice(std::slice::from_raw_parts(q,n));
         let base=DMatrix::from_row_slice(n,n,std::slice::from_raw_parts(cov,n*n));
+        let transport=RadiusTransport::new(&x,&base);
+        let mut physical_x=transport.physical(&x);
         let mut chol=base.clone().cholesky().ok_or_else(||anyhow::anyhow!("Proposal covariance not positive definite"))?.l()*(2.38/(n as f64).sqrt());
-        let mut lp=c.logp(v,x.as_slice());anyhow::ensure!(lp.is_finite(),"Nonfinite initial posterior");
+        let mut lp=c.logp(v,physical_x.as_slice());anyhow::ensure!(lp.is_finite(),"Nonfinite initial posterior");
         let mut mean=DVector::zeros(n);let mut scatter=DMatrix::zeros(n,n);
         let mut log_scale=0_f64;
         let mut samples=Vec::new();let mut logs=Vec::new();let mut accepted=0u64;let mut outside=0u64;let mut steps=0usize;
         for step in 0..warmup+draws {
             if started.elapsed().as_secs_f64()>=seconds {break;}
             let z=DVector::from_fn(n,|_,_|rng.sample::<f64,_>(StandardNormal));let proposal=&x+(&chol*z)*log_scale.exp();
-            let candidate=c.logp(v,proposal.as_slice());if !candidate.is_finite(){outside+=1;}
+            let physical_proposal=transport.physical(&proposal);
+            let candidate=c.logp(v,physical_proposal.as_slice());if !candidate.is_finite(){outside+=1;}
             let accept=candidate.is_finite() && rng.gen::<f64>().ln()<candidate-lp;
-            if accept {x=proposal;lp=candidate;if step>=warmup {accepted+=1;}}
+            if accept {x=proposal;physical_x=physical_proposal;lp=candidate;if step>=warmup {accepted+=1;}}
             if step<warmup {
                 // Robbins-Monro scale tuning is frozen with the covariance after warmup.
                 log_scale=tune_scale(log_scale,step,accept);
                 let count=(step+1) as f64;let delta=&x-&mean;mean+=&delta/count;scatter+=&delta*(&x-&mean).transpose();
                 if step>=499 && step%100==99 {let covariance=(&scatter/(count-1.)+&base*0.01)*(2.38_f64.powi(2)/n as f64);if let Some(f)=covariance.cholesky(){chol=f.l();}}
-            } else {samples.extend_from_slice(x.as_slice());logs.push(lp);}
+            } else {samples.extend_from_slice(physical_x.as_slice());logs.push(lp);}
             steps=step+1;
         }
         let h=hdf5::File::create(CStr::from_ptr(path).to_str()?)?;
@@ -172,6 +193,8 @@ impl Cache {
         for (name,value) in [("accepted",accepted),("steps",steps as u64),("outside_proposals",outside)]{h.new_dataset::<u64>().create(name)?.write_scalar(&value)?;}
         h.new_dataset::<f64>().create("elapsed_seconds")?.write_scalar(&started.elapsed().as_secs_f64())?;
         h.new_dataset::<f64>().create("frozen_proposal_scale")?.write_scalar(&log_scale.exp())?;
+        h.new_dataset_builder().with_data(&transport.beta).create("radius_transport_beta")?;
+        h.new_dataset::<f64>().create("radius_transport_reference")?.write_scalar(&transport.reference)?;
         h.flush()?;Ok(())
     })();match result {Ok(())=>1,Err(e)=>{eprintln!("{e:#}");0}}
 }
@@ -183,6 +206,19 @@ impl Cache {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn inverse_radius_transport_preserves_volume_and_local_metric() {
+        let mut center=DVector::zeros(7);center[6]=-4.;
+        let mut cov=DMatrix::identity(7,7);cov[(0,6)]=0.7;cov[(6,0)]=0.7;
+        let t=RadiusTransport::new(&center,&cov);
+        for radius in [-6.,-4.,-2.1] {
+            let mut y=center.clone();y[6]=radius;
+            let mut jac=DMatrix::zeros(7,7);
+            for j in 0..7 {let mut a=y.clone();let mut b=y.clone();a[j]+=1e-5;b[j]-=1e-5;
+                let column=(t.physical(&a)-t.physical(&b))/(2e-5);jac.set_column(j,&column);}
+            assert!((jac.determinant()-1.).abs()<1e-7);
+            if radius==-4. {assert!((jac-DMatrix::identity(7,7)).norm()<1e-8);}
+        }
+    }
     #[test] fn warmup_scale_recovers_gaussian_from_oversized_steps() {
         let mut rng=StdRng::seed_from_u64(515);
         let mut x=[0_f64;7];let mut lp=0.;let mut scale=0.;
