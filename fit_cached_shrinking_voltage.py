@@ -106,6 +106,11 @@ def run(args,event):
               cache_grid_size=n,uncertainty_budget_seconds=args.budget)
     save(folder/'fit.h5',dict(params=q,initial=initial),meta)
     export(folder,model,q,meta);full_products(args,event,folder,model,q)
+    from voltage_path_uncertainty import path_intervals
+    with h5py.File(folder/'plot.h5') as h:observed=h['seed_apparent_path_m'][:]
+    intervals=path_intervals(d,model.prediction(q),observed)
+    save(folder/'path_measurement_uncertainty.h5',dict(time_ns=d['time_ns'],station=d['station'],
+         path_measurement_lower95_m=intervals[:,0],path_measurement_upper95_m=intervals[:,1]),dict(confidence=.95,conditional=True))
     print('FIT',event,'radius_m',10**q[6],'elapsed',time.monotonic()-began,flush=True)
     if args.validate_only:return
     started=time.monotonic();chains=[];rng=np.random.default_rng(82304)

@@ -253,7 +253,7 @@ impl Voltage {
             let angle=std::f64::consts::TAU*(bandwidth/2.*t-bandwidth/(2.*duration)*t*t+fd*sample);
             real.push(env*(2.*angle.cos()-angle.sin()));imag.push(env*(2.*angle.sin()+angle.cos()));
         }
-        let model=Voltage {center:vec![0.,0.,100000.,0.,0.,-10000.],time:vec![0.],frames:frame,
+        let mut model=Voltage {center:vec![0.,0.,100000.,0.,0.,-10000.],time:vec![0.],frames:frame,
             rx:vec![0.;3],tx:vec![0.;3],sample_time,white_real:real.clone(),white_imag:imag.clone(),
             whiten_real:vec![1.],whiten_imag:vec![0.],filter_len:1,real,imag,noise:vec![1.],n,fs,bandwidth,duration,wavelength,atmosphere:None,fft:None};
         let mut q=vec![0.,0.,0.,0.,0.,0.,2.,0.];let mut residual=vec![0.;2*n];let mut lognorm=0.;
@@ -262,5 +262,15 @@ impl Voltage {
         q[2]=0.001;
         assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!(residual.iter().map(|r|r*r).sum::<f64>()>0.001);
+        // Match the direct complex FIR for a realistic 65-tap filter.
+        model.filter_len=65;
+        model.whiten_real=(0..65).map(|i|if i==0 {1.} else {0.01*(i as f64).cos()}).collect();
+        model.whiten_imag=(0..65).map(|i|0.005*(i as f64).sin()).collect();
+        assert!(model.residual(&q,&mut residual,&mut lognorm));
+        let reference=residual.clone();let reference_norm=lognorm;
+        model.prepare_fft();
+        assert!(model.residual(&q,&mut residual,&mut lognorm));
+        assert!((reference_norm-lognorm).abs()<1e-10);
+        assert!(residual.iter().zip(&reference).all(|(a,b)|(a-b).abs()<1e-10));
     }
 }
