@@ -78,6 +78,11 @@ class Store:
                 data['beam']['plane_range_m']=float(h.attrs['plane_range_m'])
                 data['beam']['extent_m']=float(h.attrs['extent_m'])
                 data['beam']['contours']=[dict(level=float(g.attrs['gain_db']),lines=[v[:].tolist() for v in g.values()]) for g in h['contours'].values()]
+        mass=self.path(event)/'rcs_mass.h5'
+        if mass.exists():
+            with h5py.File(mass) as h:
+                data['rcs_mass']={k:float(h.attrs[k]) if np.isfinite(h.attrs[k]) else None for k in ('mass_kg','lo95_noise_kg','hi95_noise_kg','covered_duration_s','requested_duration_s','n_measured','n_missing_in_beam')}
+                data['rcs_mass']['curves']=[dict(time_s=g['time_s'][:].tolist(),rcs_dbsm=g['rcs_dbsm'][:].tolist()) for g in h.get('intervals',{}).values()]
         return data
 
     def catalog(self):

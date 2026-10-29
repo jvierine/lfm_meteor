@@ -46,6 +46,14 @@ function fitSummary(){
   span.className='mass-estimate';span.innerHTML=uncertaintyMath(symbol,lo,best===undefined?mid:best*scale,hi,unit,scientific);if(best===undefined)span.append(document.createTextNode(' (posterior median)'));root.append(span);
  }
  const note=document.createElement('span');note.className='mass-status';note.textContent=data.mass_status||'Initial mass and radius posterior unavailable';root.append(note);
+ const r=data.rcs_mass;
+ if(r?.mass_kg>0){
+  const span=document.createElement('span');span.className='mass-estimate';
+  if(r.lo95_noise_kg!==null&&r.hi95_noise_kg!==null)span.innerHTML=uncertaintyMath('m',r.lo95_noise_kg,r.mass_kg,r.hi95_noise_kg,'kg',true).replace('<mn>0</mn>','<mtext>RCS</mtext>');
+  else span.textContent=`RCS mass: ${r.mass_kg.toExponential(2)} kg (interval unavailable)`;
+  root.append(span);const detail=document.createElement('span');detail.className='mass-status';
+  detail.textContent=`Observed mass loss over ${r.covered_duration_s.toFixed(3)} s; gain ≥ −10 dB one-way. 95% receiver-noise interval only, not total uncertainty; pilot FDTD lookup.${r.covered_duration_s<.999*r.requested_duration_s?' Partial coverage: some RCS values are outside or ambiguous in the lookup.':''}`;root.append(detail);
+ }
 }
 function navigate(v,method,args){
  if(!data||!v.bounds)return;
@@ -97,7 +105,7 @@ setInterval(async()=>{
  try{
   const next=await api('/api/event/'+id);
   if(busy||selected.size||data.event!==id||$('note').value!==data.annotation.note)return;
-  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m||JSON.stringify(next.omitted_measurements)!==JSON.stringify(data.omitted_measurements)||JSON.stringify(next.beam)!==JSON.stringify(data.beam);
+  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m||JSON.stringify(next.omitted_measurements)!==JSON.stringify(data.omitted_measurements)||JSON.stringify(next.beam)!==JSON.stringify(data.beam)||JSON.stringify(next.rcs_mass)!==JSON.stringify(data.rcs_mass);
   if(changed)await load(id);
  }catch(e){status(e.message,true);}
 },30000);

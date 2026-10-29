@@ -58,6 +58,7 @@ export function beamPanels(container,onSelect){
     line(d.time_s.flatMap((t,i)=>[t,2*d.relative_gain_db[i]]),[.15,.43,.68],2);
     line([b[0],-20,b[1],-20],[.65,.68,.7],1);
     const r=limits(d.rcs_dbsm,3);const map=y=>b[2]+(y-r[0])/(r[1]-r[0])*(b[3]-b[2]);
+    for(const curve of current.rcs_mass?.curves||[])line(curve.time_s.flatMap((t,i)=>[t,map(curve.rcs_dbsm[i])]),[.72,.25,.07],1);
     d.rcs_dbsm.forEach((y,i)=>{if(Number.isFinite(y))marker(i,d.time_s[i],map(y),[.72,.25,.07]);});
     v.rightAxes.right_axis(84,h,devicePixelRatio,...r,'RCS (dBsm)');
    }
