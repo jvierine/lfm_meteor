@@ -29,3 +29,13 @@ def test_rejected_value_not_used():
 def test_no_lookup_extrapolation():
     _,s,_=run([-10.,-10.])
     assert np.isnan(s['mass_kg'])
+
+def test_bilinear_altitude_velocity_values():
+    values=np.array([[[0.,10.,20.,30.],[10.,20.,30.,40.]],
+                     [[20.,30.,40.,50.],[30.,40.,50.,60.]]])
+    pieces,summary,_=integrate(np.array([0.,1.]),np.array([25.,25.]),
+        np.array([95.,95.]),np.array([40.,40.]),np.zeros(2),np.zeros(2,bool),
+        (np.array([90.,100.]),np.array([30.,50.]),np.array([12.,13.,14.,15.]),values),
+        dict(snr=np.full(2,80.),generator=np.random.default_rng(1)))
+    np.testing.assert_allclose(pieces[0]['interpolated_curves_dbsm'][0],[15.,25.,35.,45.])
+    np.testing.assert_allclose(summary['mass_kg'],RATE_FACTOR*1e13)

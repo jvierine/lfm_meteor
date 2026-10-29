@@ -107,6 +107,9 @@ def export(folder, lookup, flags):
         dict(snr=beam['snr_db'],generator=np.random.default_rng(20261029)))
     with h5py.File(target.with_suffix('.h5.partial'),'w') as h:
         h.attrs.update(**summary,source_sha256=digest,event=folder.name,minimum_one_way_gain_db=-10.,
+            fit_sha256=hashlib.sha256(paths[0].read_bytes()).hexdigest(),
+            beam_sha256=hashlib.sha256(paths[1].read_bytes()).hexdigest(),
+            flag_sha256=hashlib.sha256(flag.read_bytes() if flag.exists() else b'').hexdigest(),
             meaning='Observed ablated mass over bounded in-beam intervals, not initial mass',
             uncertainty='Conditional receiver noise only; excludes calibration, trajectory, interpolation and scattering-model uncertainty',
             lookup_warning='Pilot head-on collisionless FDTD; mesh/time convergence not certified',

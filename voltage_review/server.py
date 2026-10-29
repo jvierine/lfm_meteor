@@ -81,6 +81,9 @@ class Store:
         mass=self.path(event)/'rcs_mass.h5'
         if mass.exists():
             with h5py.File(mass) as h:
+                flag=self.flags/(event+'.h5')
+                inputs={'fit_sha256':self.path(event)/'fit.h5','beam_sha256':beam,'flag_sha256':flag}
+                if any(h.attrs.get(k)!=hashlib.sha256(p.read_bytes() if p.exists() else b'').hexdigest() for k,p in inputs.items()):return data
                 data['rcs_mass']={k:float(h.attrs[k]) if np.isfinite(h.attrs[k]) else None for k in ('mass_kg','lo95_noise_kg','hi95_noise_kg','covered_duration_s','requested_duration_s','n_measured','n_missing_in_beam')}
                 data['rcs_mass']['curves']=[dict(time_s=g['time_s'][:].tolist(),rcs_dbsm=g['rcs_dbsm'][:].tolist()) for g in h.get('intervals',{}).values()]
         return data
