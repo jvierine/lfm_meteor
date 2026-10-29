@@ -141,6 +141,18 @@ def run(args,event):
     if seeded is not None:
         q=seeded
         q[:6]+=(old_center-d['center'])/1000
+    def raw_logp(p):
+        p=np.ascontiguousarray(p)
+        return lib.voltage_logp(model.handle,p.ctypes.data_as(PTR))
+    if not np.isfinite(raw_logp(q)):
+        candidates=[]
+        for center in (q,initial):
+            for logr in (initial[6],-5.,-4.,-3.,-2.01):
+                candidate=center.copy();candidate[6]=logr
+                score=raw_logp(candidate)
+                if np.isfinite(score):candidates.append((score,candidate))
+        if not candidates:raise RuntimeError('No feasible physical seed for recorded pulse windows')
+        q=max(candidates,key=lambda item:item[0])[1]
     cache=None
     for n in (0,):
         if cache is not None:cache.close()
