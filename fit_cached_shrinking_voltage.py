@@ -5,6 +5,7 @@ import os
 import time
 import traceback
 import shutil
+from types import SimpleNamespace
 from pathlib import Path
 
 import h5py
@@ -135,8 +136,9 @@ def run(args,event):
     # Prefer the last physical fit; WJ is used only by prepare() as a seed.
     if (folder/'fit.h5').exists():seed=folder/'fit.h5'
     seeded=None
+    existing_meta=None
     if seed.exists():
-        with h5py.File(seed) as h:seeded=h['params'][:]
+        with h5py.File(seed) as h:seeded=h['params'][:];existing_meta=dict(h.attrs)
         with h5py.File(seed.parent/'input.h5') as h:old_center=h['center'][:]
     began=time.monotonic();d,initial=prepare(args,event,folder);lib=native(args.library);model=Model(lib,folder,d)
     q=initial.copy()
@@ -160,7 +162,10 @@ def run(args,event):
         if cache is not None:cache.close()
         cache=Cached(model,q,n,args.expand,folder/'likelihood_cache.h5')
         try:
-            q,fit=optimize(cache,q)
+            if args.uncertainty_only:
+                if seeded is None:raise RuntimeError('A physical fit is required before uncertainty-only sampling')
+                fit=SimpleNamespace(success=True)
+            else:q,fit=optimize(cache,q)
             cache.close()
             cache=Cached(model,q,0,args.expand,folder/'likelihood_cache.h5')
             cov=covariance(cache,q)
@@ -178,13 +183,15 @@ def run(args,event):
     meta=dict(fit_unix_time=time.time(),cost=-cache.logp(q),optimizer_success=bool(fit.success),model='direct shrinking radius; analytic joint voltage sufficient statistics',
               Gamma=1.,Cd=2.,sigma_s2_m2=1e-8,material_density_kg_m3=3000.,prior='Uniform x0,v0,log10 r0; radius 1e-7 to 1e-2 m',
               cache_grid_size=n,uncertainty_budget_seconds=args.budget)
-    save(folder/'fit.h5',dict(params=q,initial=initial),meta)
-    export(folder,model,q,meta);full_products(args,event,folder,model,q)
-    from voltage_path_uncertainty import path_intervals
-    with h5py.File(folder/'plot.h5') as h:observed=h['seed_apparent_path_m'][:]
-    intervals=path_intervals(d,model.prediction(q),observed)
-    save(folder/'path_measurement_uncertainty.h5',dict(time_ns=d['time_ns'],station=d['station'],
-         path_measurement_lower95_m=intervals[:,0],path_measurement_upper95_m=intervals[:,1]),dict(confidence=.95,conditional=True))
+    if args.uncertainty_only:meta=existing_meta
+    else:
+        save(folder/'fit.h5',dict(params=q,initial=initial),meta)
+        export(folder,model,q,meta);full_products(args,event,folder,model,q)
+        from voltage_path_uncertainty import path_intervals
+        with h5py.File(folder/'plot.h5') as h:observed=h['seed_apparent_path_m'][:]
+        intervals=path_intervals(d,model.prediction(q),observed)
+        save(folder/'path_measurement_uncertainty.h5',dict(time_ns=d['time_ns'],station=d['station'],
+             path_measurement_lower95_m=intervals[:,0],path_measurement_upper95_m=intervals[:,1]),dict(confidence=.95,conditional=True))
     print('FIT',event,'radius_m',10**q[6],'elapsed',time.monotonic()-began,flush=True)
     if args.validate_only:return
     # Start in the posterior, not merely somewhere with finite likelihood.
@@ -236,6 +243,7 @@ def main():
     p.add_argument('--warmup',type=int,default=4000);p.add_argument('--draws',type=int,default=96000)
     p.add_argument('--expand',type=float,default=1.);p.add_argument('--validate-only',action='store_true')
     p.add_argument('--budget-generation',default='',help='Explicitly authorized fresh bounded attempt; old timings retained')
+    p.add_argument('--uncertainty-only',action='store_true')
     args=p.parse_args();comm=MPI.COMM_WORLD
     events=[args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5'))
     for event in events[comm.rank::comm.size]:
