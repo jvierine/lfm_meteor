@@ -4,6 +4,7 @@ from scipy.signal import lfilter
 
 
 def fit_noise(rows, gates, max_order=16):
+    rows=np.asarray(rows,dtype=np.complex128)
     segments=[]
     for row, gate in zip(rows,gates):
         for segment in (row[:max(0,int(gate)-650)],row[min(len(row),int(gate)+650):]):
