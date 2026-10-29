@@ -1,5 +1,5 @@
-import {SeriesView,LinePlot,PlotViewport} from '/pkg/rustplotlib_web.js';
-import {bindPlotNavigation} from '/pkg/navigation.js';
+import {SeriesView,LinePlot,PlotViewport} from './pkg/rustplotlib_web.js';
+import {bindPlotNavigation} from './pkg/navigation.js';
 
 const finite=a=>a.filter(Number.isFinite);
 const limits=(a,min=1)=>{a=finite(a);if(!a.length)return [0,1];const lo=Math.min(...a),hi=Math.max(...a),s=Math.max(hi-lo,min);return [(lo+hi-s)/2-.08*s,(lo+hi+s)/2+.08*s];};

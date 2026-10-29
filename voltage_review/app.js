@@ -1,5 +1,5 @@
-import init, {SeriesView, LinePlot, PlotViewport} from '/pkg/rustplotlib_web.js';
-import {bindPlotNavigation} from '/pkg/navigation.js';
+import init, {SeriesView, LinePlot, PlotViewport} from './pkg/rustplotlib_web.js';
+import {bindPlotNavigation} from './pkg/navigation.js';
 import {beamPanels} from './beam.js';
 const $=id=>document.getElementById(id);
 const names=['Sanya','Danzhou','Wenchang'],colors=[[0,.447,.698],[.835,.369,0],[0,.62,.451]];
@@ -7,7 +7,7 @@ if(location.hash)history.replaceState(null,'',location.pathname);
 let catalog=[],data=null,selected=new Set(),undo=[],busy=false,request=0,views=[],xview=null;
 let beamView=null;
 const status=(text,error=false)=>{$('connection').textContent=text;$('connection').classList.toggle('error',error);};
-async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const value=await r.json();if(!r.ok)throw Error(value.error||r.statusText);return value;}
+async function api(path,body){const r=await fetch(new URL(path.replace(/^\//,''),import.meta.url),{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const value=await r.json();if(!r.ok)throw Error(value.error||r.statusText);return value;}
 function filtered(){const q=$('search').value.toLowerCase(),mode=$('filter').value;return catalog.filter(e=>e.event.includes(q)&&(mode==='all'||mode==='flagged'&&(e.flagged||e.bad)));}
 function sidebar(){const root=$('events');root.replaceChildren();for(const e of filtered()){const b=document.createElement('button');b.textContent=e.event;b.className=data?.event===e.event?'active':'';const small=document.createElement('small');small.textContent=`${e.n} points${e.flagged?' · '+e.flagged+' flagged':''}${e.bad?' · manually marked bad':''}`;b.append(small);b.onclick=()=>load(e.event);root.append(b);} $('counts').textContent=`${catalog.length} fitted events`;}
 function controls(){for(const id of ['flag','restore','clear'])$(id).disabled=busy||!selected.size;$('undo').disabled=busy||!undo.length;$('bad').disabled=busy||!data;$('savenote').disabled=busy||!data;$('selection').textContent=`${selected.size} selected`;$('bad').checked=!!data?.annotation.bad;}
