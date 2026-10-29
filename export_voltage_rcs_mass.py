@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -88,6 +89,11 @@ def export(folder, lookup, flags):
             if h.attrs.get('source_sha256')==digest:return
     with h5py.File(lookup) as h:
         table=(h['altitude_km'][:],h['velocity_km_s'][:],np.log10(h['source_n0_rM2_m_inv'][:]),h['rcs_dbsm'][:])
+        correction=h.attrs.get('lookup_correction','none')
+    if target.exists() and correction!='none':
+        with h5py.File(target) as h:old=h.attrs.get('lookup_correction','none')
+        backup=folder/'rcs_mass_original_lookup.h5'
+        if old=='none' and not backup.exists():shutil.copy2(target,backup)
     with h5py.File(folder/'beam_rcs.h5') as h:
         beam={k:h[k][:] for k in ('time_ns','time_s','rcs_dbsm','relative_gain_db','snr_db')}
     with h5py.File(folder/'input.h5') as h:original=Path(h.attrs.get('original_input',folder/'input.h5'))
@@ -113,7 +119,7 @@ def export(folder, lookup, flags):
             meaning='Observed ablated mass over bounded in-beam intervals, not initial mass',
             uncertainty='Conditional receiver noise only; excludes calibration, trajectory, interpolation and scattering-model uncertainty',
             lookup_warning='Pilot head-on collisionless FDTD; mesh/time convergence not certified',
-            source_program=Path(__file__).read_text(),lookup_file=str(lookup),rate_factor=RATE_FACTOR)
+            source_program=Path(__file__).read_text(),lookup_file=str(lookup),lookup_correction=correction,rate_factor=RATE_FACTOR)
         h['mass_noise_samples_kg']=samples
         for k,val in beam.items():h['measurements/'+k]=val
         h['measurements/altitude_km']=altitude;h['measurements/speed_km_s']=speed;h['measurements/rejected']=rejected
