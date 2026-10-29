@@ -188,6 +188,7 @@ def run_one(args, event, events, reference, lib):
 
 
 def main():
+    os.chdir(Path(__file__).resolve().parent)
     p=argparse.ArgumentParser();p.add_argument('--output',required=True);p.add_argument('--library',required=True)
     p.add_argument('--event');p.add_argument('--max-nfev',type=int,default=150)
     p.add_argument('--warmup',type=int,default=4000);p.add_argument('--draws',type=int,default=8000)

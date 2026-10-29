@@ -107,3 +107,29 @@ impl Voltage {
     })();
     match result {Ok(())=>1,Err(e)=>{eprintln!("{e:#}");0}}
 }
+
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn noiseless_waveform_and_delay_perturbation() {
+        let n=1000;let fs=4e6;let duration=200e-6;let bandwidth=4e6;let wavelength=0.7;
+        let beta=9900./C;let path=200000.*(1.+beta+beta*beta);let fd=19800./wavelength;
+        let mut frame=vec![0.;42];
+        for j in 0..3 {frame[6+3*j+j]=1.;frame[33+3*j+j]=1.;}
+        let sample_time:Vec<f64>=(0..n).map(|j|path/C+(j as f64-100.)/fs).collect();
+        let mut real=Vec::new();let mut imag=Vec::new();
+        for &sample in &sample_time {
+            let t=sample-path/C;
+            let env=((t+0.5/fs)*fs).clamp(0.,1.)*((duration-t+0.5/fs)*fs).clamp(0.,1.);
+            let angle=std::f64::consts::TAU*(bandwidth/2.*t-bandwidth/(2.*duration)*t*t+fd*sample);
+            real.push(env*(2.*angle.cos()-angle.sin()));imag.push(env*(2.*angle.sin()+angle.cos()));
+        }
+        let model=Voltage {center:vec![0.,0.,100000.,0.,0.,-10000.],time:vec![0.],frames:frame,
+            rx:vec![0.;3],tx:vec![0.;3],sample_time,real,imag,noise:vec![1.],n,fs,bandwidth,duration,wavelength};
+        let mut q=vec![0.,0.,0.,0.,0.,0.,2.,0.];let mut residual=vec![0.;2*n];let mut lognorm=0.;
+        assert!(model.residual(&q,&mut residual,&mut lognorm));
+        assert!(residual.iter().map(|r|r*r).sum::<f64>()<1e-12);
+        q[2]=0.001;
+        assert!(model.residual(&q,&mut residual,&mut lognorm));
+        assert!(residual.iter().map(|r|r*r).sum::<f64>()>0.001);
+    }
+}
