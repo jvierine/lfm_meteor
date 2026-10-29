@@ -31,10 +31,13 @@ function omittedTable(){
  }
 }
 function uncertaintyMath(symbol,lo,best,hi,unit,scientific){
+ if(!Number.isFinite(best)||best<=0)return '<span>Estimate unavailable</span>';
  const exponent=scientific?Number(best.toExponential().split('e')[1]):0,factor=10**exponent;
  const number=x=>Number(x.toPrecision(3)).toLocaleString('en-US',{useGrouping:false,maximumSignificantDigits:3});
  const power=exponent===0?'':`<mo>⋅</mo><msup><mn>10</mn><mn>${exponent}</mn></msup>`;
- return `<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><msub><mi>${symbol}</mi><mn>0</mn></msub><mo>=</mo><mn>${number(best/factor)}</mn><mspace width="0.3em"/><mo>(</mo><mn>${number(lo/factor)}</mn><mo>,</mo><mn>${number(hi/factor)}</mn><mo>)</mo>${power}<mspace width="0.3em"/><mtext>${unit}</mtext><mspace width="0.6em"/><mtext>(95%)</mtext></mrow></math>`;
+ const valid=Number.isFinite(lo)&&Number.isFinite(hi)&&lo>=0&&hi>=lo;
+ const interval=valid?`<mspace width="0.3em"/><mo>(</mo><mn>${number(lo/factor)}</mn><mo>,</mo><mn>${number(hi/factor)}</mn><mo>)</mo>`:'';
+ return `<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><msub><mi>${symbol}</mi><mn>0</mn></msub><mo>=</mo><mn>${number(best/factor)}</mn>${interval}${power}<mspace width="0.3em"/><mtext>${unit}</mtext><mspace width="0.6em"/><mtext>${valid?'(95%)':'(interval unavailable)'}</mtext></mrow></math>`;
 }
 function fitSummary(){
  $('fitstamp').textContent=data.fit_unix_time?`Fit: ${new Date(data.fit_unix_time*1000).toISOString()} · flag revision ${data.fit_flag_revision||0} · ${data.fit_excluded_count||0} excluded · ${data.fit_timestamp_source}${data.annotation.version>(data.fit_flag_revision||0)?' · newer review revision exists':''}`:'Fit timestamp unavailable';
@@ -49,13 +52,11 @@ function fitSummary(){
  const r=data.rcs_mass;
  if(r?.mass_kg>0){
   const span=document.createElement('span');span.className='mass-estimate';
-  if(r.lo95_scatter_kg!=null&&r.hi95_scatter_kg!=null)span.innerHTML=uncertaintyMath('m',r.lo95_scatter_kg,r.mass_kg,r.hi95_scatter_kg,'kg',true).replace('<mn>0</mn>','<mtext>RCS</mtext>');
-  else span.textContent=`RCS mass: ${r.mass_kg.toExponential(2)} kg (interval unavailable)`;
+  span.innerHTML=uncertaintyMath('m',r.lo95_scatter_kg,r.mass_kg,r.hi95_scatter_kg,'kg',true).replace('<mn>0</mn>','<mtext>RCS</mtext>');
   root.append(span);
   const diameter=m=>1e6*Math.cbrt(6*m/(Math.PI*3000));
   const size=document.createElement('span');size.className='mass-estimate';
-  if(r.lo95_scatter_kg!=null&&r.hi95_scatter_kg!=null)size.innerHTML=uncertaintyMath('d',diameter(r.lo95_scatter_kg),diameter(r.mass_kg),diameter(r.hi95_scatter_kg),'µm',false).replace('<mn>0</mn>','<mtext>RCS</mtext>');
-  else size.innerHTML=`<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><msub><mi>d</mi><mtext>RCS</mtext></msub><mo>=</mo><mn>${Number(diameter(r.mass_kg).toPrecision(3))}</mn><mspace width="0.3em"/><mtext>µm</mtext></mrow></math> (interval unavailable)`;
+  size.innerHTML=uncertaintyMath('d',Number.isFinite(r.lo95_scatter_kg)?diameter(r.lo95_scatter_kg):null,diameter(r.mass_kg),Number.isFinite(r.hi95_scatter_kg)?diameter(r.hi95_scatter_kg):null,'µm',false).replace('<mn>0</mn>','<mtext>RCS</mtext>');
   root.append(size);const detail=document.createElement('span');detail.className='mass-status';
   detail.textContent=`RCS RMS scatter: ${r.rcs_rms_db?.toFixed(2)} dB. 95% empirical scatter interval, using a shared Gaussian RCS offset; not total physical uncertainty. Observed mass loss over ${r.covered_duration_s.toFixed(3)} s; equivalent diameter at 3000 kg/m³, not initial diameter; gain ≥ −10 dB one-way.${r.lo95_scatter_kg==null?' Interval lookup-limited: perturbations leave the tabulated domain or have ambiguous inversions.':''}${r.covered_duration_s<.999*r.requested_duration_s?' Partial coverage.':''}`;root.append(detail);
  }

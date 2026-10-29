@@ -146,9 +146,12 @@ class Store:
 def handler(store,token,static,wasm):
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self,*args,**kwargs):super().__init__(*args,directory=str(static),**kwargs)
+        def end_headers(self):
+            self.send_header('Cache-Control','no-store')
+            super().end_headers()
         def reply(self,status,obj):
             body=json.dumps(obj,allow_nan=False).encode();self.send_response(status)
-            self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store')
+            self.send_header('Content-Type','application/json')
             self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
         def authorized(self):return secrets.compare_digest(self.headers.get('Authorization',''),'Bearer '+token)
         def do_GET(self):
