@@ -38,13 +38,15 @@ class Store:
             data={k:h[k][:].tolist() for k in h}
             data['beat_pass']=bool(h.attrs['beat_guard_pass'])
             uncertainty_status=str(h.attrs.get('uncertainty_status','Model uncertainty unavailable'))
+            fit_metadata={k:h.attrs[k].item() if hasattr(h.attrs[k],'item') else h.attrs[k] for k in ('fit_unix_time','fit_timestamp_source','fit_flag_revision','fit_excluded_count','mass_status') if k in h.attrs}
         data['time_ns']=[str(t) for t in data['time_ns']]
         data['ids']=[f'{s}:{t}' for s,t in zip(data['station'],data['time_ns'])]
         if len(set(data['ids']))!=len(data['ids']): raise ValueError('Duplicate station/pulse identity')
         # This fingerprint is stable when the same data are re-exported.
-        core={k:v for k,v in data.items() if k not in ('path_lower95_m','path_upper95_m','speed_lower95_km_s','speed_upper95_km_s')}
+        core={k:v for k,v in data.items() if k not in ('path_lower95_m','path_upper95_m','speed_lower95_km_s','speed_upper95_km_s','initial_radius_m_quantiles','initial_mass_kg_quantiles')}
         data['fingerprint']=hashlib.sha256(json.dumps(core,sort_keys=True).encode()).hexdigest()
         data['uncertainty_status']=uncertainty_status
+        data.update(fit_metadata)
         data['event']=event;data['annotation']=self.annotation(event)
         return data
 

@@ -35,7 +35,7 @@ fn render(folder:&Path)->Result<()> {
     if let Some((lo,hi,vl,vu))=&bands{
         let mut path_edges=offset.clone();
         for s in 0..3{let first=(0..t.len()).filter(|&i|station[i]==s).min_by(|&i,&j|t[i].total_cmp(&t[j])).unwrap();for i in 0..t.len(){if station[i]==s{path_edges.extend([(lo[i]-observed[first])/1000.,(hi[i]-observed[first])/1000.]);}}}
-        ranges[0]=limits(&path_edges,.1);ranges[1]=limits(&[speed.clone(),vl.clone(),vu.clone()].concat(),.1);
+        ranges[0]=limits(&path_edges,0.1);ranges[1]=limits(&[speed.clone(),vl.clone(),vu.clone()].concat(),0.1);
     }
     let labels=["Apparent path offset (km)","Speed (km s$^{-1}$)",if km{"Apparent path residual (km)"}else{"Apparent path residual (m)"},if khz{"Residual beat (kHz)"}else{"Residual beat (Hz)"}];
     let mut f=Figure::new(IntendedUse::ArticleWide);f.width_mm=220.;f.height_mm=164.;

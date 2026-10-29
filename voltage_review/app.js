@@ -16,6 +16,16 @@ async function save(change,isUndo=false){if(!data||busy)return;const previous=st
 function table(){const root=$('points');root.replaceChildren();if(!data)return;const excluded=new Set(data.annotation.excluded);data.ids.forEach((id,i)=>{const row=document.createElement('tr');row.classList.toggle('flagged',excluded.has(id));const cell=document.createElement('td'),check=document.createElement('input');check.type='checkbox';check.checked=selected.has(id);check.setAttribute('aria-label','Select '+names[data.station[i]]+' pulse '+data.time_ns[i]);check.onchange=()=>{check.checked?selected.add(id):selected.delete(id);draw();controls();};cell.append(check);row.append(cell);for(const text of [names[data.station[i]],data.time_ns[i],data.time_s[i].toFixed(6),data.residual_beat_hz[i].toFixed(1),excluded.has(id)?'Excluded':'Included']){const c=document.createElement('td');c.textContent=text;row.append(c);}root.append(row);});}
 function range(values,minspan=1){let lo=Math.min(...values),hi=Math.max(...values),span=Math.max(hi-lo,minspan);return [(lo+hi-span)/2-.08*span,(lo+hi+span)/2+.08*span];}
 function xy(indices,ys){return new Float64Array(indices.flatMap(i=>[data.time_s[i],ys[i]]));}
+function fitSummary(){
+ $('fitstamp').textContent=data.fit_unix_time?`Fit: ${new Date(data.fit_unix_time*1000).toISOString()} · flag revision ${data.fit_flag_revision||0} · ${data.fit_excluded_count||0} excluded · ${data.fit_timestamp_source}`:'Fit timestamp unavailable';
+ const root=$('masssummary');root.replaceChildren();
+ for(const [symbol,key,scale,unit] of [['m','initial_mass_kg_quantiles',1,'kg'],['r','initial_radius_m_quantiles',1e6,'µm']]){
+  const q=data[key];if(!q)continue;
+  const span=document.createElement('span');const [lo,mid,hi]=q.map(v=>v*scale);
+  span.innerHTML=`${symbol}<sub>0</sub> = ${mid.toExponential(3)} <sup>+${(hi-mid).toExponential(2)}</sup><sub>−${(mid-lo).toExponential(2)}</sub> ${unit} (95%) · `;root.append(span);
+ }
+ root.append(document.createTextNode(data.mass_status||'Initial mass and radius posterior unavailable'));
+}
 function navigate(v,method,args){
  if(!data||!v.bounds)return;
  const bx=range(data.time_s,.01),by=v.fullBounds,sx=bx[1]-bx[0],sy=by[1]-by[0];
@@ -41,6 +51,7 @@ function setup(){for(let j=0;j<4;j++){
 function project(v,x,y){return [70+(x-xview[0])/(xview[1]-xview[0])*(v.box.clientWidth-88),v.box.clientHeight-48-(y-v.bounds[0])/(v.bounds[1]-v.bounds[0])*(v.box.clientHeight-78)];}
 function nearest(v,x,y){if(!data||v.j===1)return null;let best=null,distance=12;for(const [i,yy] of v.points){const [px,py]=project(v,data.time_s[i],yy);if(px<70||px>v.box.clientWidth-18||py<30||py>v.box.clientHeight-48)continue;const d=Math.hypot(px-x,py-y);if(d<distance){distance=d;best=i;}}return best;}
 function draw(){if(!data||!views.length)return;const n=data.ids.length,offset=Array(n),model=Array(n),res=data.modeled_path_m.map((m,i)=>m-data.seed_apparent_path_m[i]);const groups=names.map((_,s)=>data.station.flatMap((v,i)=>v===s?[i]:[]).sort((a,b)=>data.time_s[a]-data.time_s[b]));groups.forEach(ids=>{const b=data.seed_apparent_path_m[ids[0]];ids.forEach(i=>{offset[i]=(data.seed_apparent_path_m[i]-b)/1000;model[i]=(data.modeled_path_m[i]-b)/1000;});});const ys=[offset,data.speed_km_s,res,data.residual_beat_hz],bounds=[range(offset,.1),range(data.speed_km_s,.1),range(res,1),range(data.residual_beat_hz.flatMap((b,i)=>[b-1.96*data.conditional_beat_std_hz[i],b+1.96*data.conditional_beat_std_hz[i]]),100)];xview??=range(data.time_s,.01);const excluded=new Set(data.annotation.excluded);
+fitSummary();
 if(data.path_lower95_m){const edges=[];groups.forEach(ids=>{const b=data.seed_apparent_path_m[ids[0]];ids.forEach(i=>edges.push((data.path_lower95_m[i]-b)/1000,(data.path_upper95_m[i]-b)/1000));});bounds[0]=range([...offset,...model,...edges],.1);bounds[1]=range([...data.speed_km_s,...data.speed_lower95_km_s,...data.speed_upper95_km_s],.1);}
 for(const v of views){const j=v.j;v.fullBounds=bounds[j];v.bounds??=bounds[j];v.canvas.dataset.xlim=JSON.stringify(xview);v.canvas.dataset.ylim=JSON.stringify(v.bounds);const w=v.box.clientWidth,h=v.box.clientHeight,dpr=devicePixelRatio;v.axes.begin_axes(w,h,dpr,...xview,...v.bounds,'Time from reference epoch (s)',['Apparent path offset (km)','Speed (km/s)','Path residual (m)','Residual beat (Hz)'][j]);v.axes.x_ticks(false,false);v.gpu.begin(w,h,dpr,...xview,...v.bounds);v.points=[];const line=(points,c,size=1.5)=>v.gpu.series(new Float64Array(points),...c,false,size,false);if(j>=2)line([xview[0],0,xview[1],0],[.65,.68,.7],1);
 if(data.path_lower95_m&&j===0)groups.forEach((ids,s)=>{const b=data.seed_apparent_path_m[ids[0]];v.gpu.band(new Float64Array(ids.flatMap(i=>[data.time_s[i],(data.path_lower95_m[i]-b)/1000,(data.path_upper95_m[i]-b)/1000])),...colors[s],.5);});

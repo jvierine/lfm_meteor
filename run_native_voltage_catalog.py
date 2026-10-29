@@ -229,6 +229,7 @@ def run_one(args, event, events, reference, lib):
             h['station_beat_offset_and_slope']=trend_coefficients;h['station_beat_trend_z']=trend_z
             h['predicted_real']=predicted.real;h['predicted_imag']=predicted.imag
             h.attrs.update(optimizer_success=result.success,optimizer_message=result.message,
+                           fit_unix_time=time.time(),
                            cost=result.cost,nfev=result.nfev,elapsed_s=time.monotonic()-start,
                            beat_guard_pass=beat_guard,provisional=True,
                            likelihood='Proper complex Gaussian AR innovations; shared whitening of waveform and data; amplitude profiled for optimization and marginalized for MCMC',

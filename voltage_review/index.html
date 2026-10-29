@@ -5,6 +5,7 @@
 <div class="layout"><aside><input id="search" type="search" aria-label="Search events" placeholder="Event ID">
 <select id="filter" aria-label="Filter events"><option value="all">All events</option><option value="pass">Beat check passed</option><option value="fail">Beat check failed</option><option value="flagged">Manually flagged</option></select><nav id="events"></nav></aside>
 <main><section class="eventhead"><div><h1 id="eventname">Trajectory review</h1><span id="quality"></span></div><div><button id="previous" title="Previous event">&#8592;</button><button id="next" title="Next event">&#8594;</button></div></section>
+<p id="fitstamp"></p><p id="masssummary"></p>
 <div class="toolbar"><button id="flag" disabled>Flag selected</button><button id="restore" disabled>Restore selected</button><button id="clear" disabled>Clear selection</button><button id="undo" disabled>Undo</button><label><input id="bad" type="checkbox">Bad event</label><button id="reset">Reset view</button><span id="selection">0 selected</span></div>
 <div class="legend"><span class="sanya">Sanya</span><span class="danzhou">Danzhou</span><span class="wenchang">Wenchang</span><span class="excluded">Excluded</span><span id="saved" role="status"></span></div>
 <div id="plots"></div><div id="hover" role="status">&nbsp;</div>

@@ -25,6 +25,10 @@ def masked_input(source, flags, target):
     if len(set(ids)) != len(ids) or excluded - set(ids):
         raise ValueError('Duplicate or unmatched manual measurement IDs')
     keep = np.array([i not in excluded for i in ids])
+    first = int(np.argmin(data['time_s']))
+    data['initial_detection_time_s'] = data['time_s'][first]
+    data['initial_detection_time_ns'] = data['time_ns'][first]
+    data['initial_detection_frame'] = data['frames'][first].copy()
     for s in range(3):
         times = data['time_s'][keep & (data['station'] == s)]
         if len(times) < 3 or np.ptp(times) <= 0:
