@@ -39,3 +39,13 @@ def test_data_change_and_traversal_rejected(store):
     e='tri_0003_1713794570204349518';p=payload(store.data(e));p['fingerprint']='wrong'
     with pytest.raises(RuntimeError):store.save(e,p)
     with pytest.raises(ValueError):store.data('../secret')
+
+
+def test_model_bands_preserve_saved_measurement_fingerprint(store):
+    e='tri_0003_1713794570204349518';d=store.data(e)
+    with h5py.File(store.path(e)/'plot.h5','a') as h:
+        for key in ('path_lower95_m','path_upper95_m','speed_lower95_km_s','speed_upper95_km_s'):
+            h[key]=[1.,2.]
+        h.attrs['uncertainty_status']='95% pointwise model interval'
+    assert store.data(e)['fingerprint']==d['fingerprint']
+    assert store.save(e,payload(d))['version']==1

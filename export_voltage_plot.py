@@ -18,11 +18,11 @@ def posterior_bands(folder, data, t):
     samples = np.stack(with_samples)
     if samples.ndim != 3 or samples.shape[2] != 8 or not np.isfinite(samples).all():
         raise ValueError('Invalid posterior samples')
-    import arviz as az
-    inference = az.from_dict(posterior={'q': samples})
-    rhat = float(np.max(az.rhat(inference, method='rank')['q'].values))
-    ess = float(np.min(az.ess(inference, method='bulk')['q'].values))
-    tail = float(np.min(az.ess(inference, method='tail')['q'].values))
+    import arviz_stats as az
+    diagnostic_samples = samples.transpose(2, 0, 1)
+    rhat = float(np.max(az.rhat(diagnostic_samples, method='rank', chain_axis=1, draw_axis=2)))
+    ess = float(np.min(az.ess(diagnostic_samples, method='bulk', chain_axis=1, draw_axis=2)))
+    tail = float(np.min(az.ess(diagnostic_samples, method='tail', chain_axis=1, draw_axis=2)))
     converged = bool(np.isfinite(rhat) and rhat < 1.01 and ess >= 400 and tail >= 400)
     # Use every production draw; no observation noise is added to model intervals.
     draws = samples.reshape(-1, 8)
