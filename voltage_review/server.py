@@ -61,7 +61,7 @@ class Store:
             with h5py.File(ghost) as h:
                 for i,(s,t) in enumerate(zip(h['station'][:],h['time_ns'][:])):
                     data['omitted_measurements'].append(dict(id=f'{s}:{t}',station=int(s),time_ns=str(t),**{k:float(h[k][i]) for k in ('time_s','path_m','modeled_path_m','residual_beat_hz')}))
-        elif self.path(event)!=self.root/event:
+        elif self.path(event)!=self.root/event and (self.root/event/'plot.h5').exists():
             with h5py.File(self.root/event/'plot.h5') as h:
                 present=set(data['ids'])
                 for i,(s,t) in enumerate(zip(h['station'][:],h['time_ns'][:])):
@@ -72,7 +72,9 @@ class Store:
 
     def catalog(self):
         result=[]
-        for folder in sorted(self.root.glob('tri_*')):
+        folders={f.name:f for f in self.root.glob('tri_*')}
+        if self.refits:folders.update({f.name:f for f in self.refits.glob('tri_*')})
+        for folder in sorted(folders.values()):
             if not EVENT.fullmatch(folder.name):continue
             plot=self.path(folder.name)/'plot.h5'
             if not plot.exists():continue
@@ -91,7 +93,9 @@ class Store:
             if payload.get('version')!=old['version']: raise RuntimeError('Review changed elsewhere; reload before saving')
             if payload.get('fingerprint')!=data['fingerprint']:raise RuntimeError('Fit data changed; reload before saving')
             excluded=payload.get('excluded',[])
-            with h5py.File(self.root/event/'plot.h5') as original:
+            original_path=self.root/event/'plot.h5'
+            if not original_path.exists():original_path=self.path(event)/'plot.h5'
+            with h5py.File(original_path) as original:
                 all_station=original['station'][:];all_time=original['time_ns'][:]
             all_ids=[f'{s}:{t}' for s,t in zip(all_station,all_time)]
             if not isinstance(excluded,list) or any(not isinstance(i,str) or i not in all_ids for i in excluded):raise ValueError('Unknown measurement identity')
