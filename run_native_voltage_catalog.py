@@ -12,6 +12,8 @@ import subprocess
 import hashlib
 import h5py
 import numpy as np
+from scipy.signal import lfilter
+from voltage_noise_covariance import fit_noise, colored_noise
 # Legacy jcoord imports numpy.mat, removed in NumPy 2. Keep its matrix API local
 # to this process without changing the shared server installation.
 if not hasattr(np, 'mat'):
@@ -43,6 +45,7 @@ def frame_coefficients(times):
 def prepare(path, events, reference):
     rows, times, stations, sample_times, noise, gates = [], [], [], [], [], []
     n = 1280
+    filters=[];noise_audits=[]
     for station, event in enumerate(events):
         with h5py.File(event.path, 'r') as h:
             raw = h['raw'][()]
@@ -50,6 +53,8 @@ def prepare(path, events, reference):
             if not event.times_ns_are_utc:
                 ts -= int(event.source_timezone_offset_hours*3600*1e9)
             gate = h['range_gate'][()]
+            audit=fit_noise(raw,gate);noise_audits.append(audit)
+            whitening=np.zeros(17,complex);whitening[:len(audit['whitener'])]=audit['whitener']
             snr = h['snr_peak_db'][()]
             fs = float(h['sr_mhz'][()])*1e6
             bandwidth = float(h['bw_mhz'][()])*1e6
@@ -62,16 +67,17 @@ def prepare(path, events, reference):
                 if start<0 or start+n>raw.shape[1]:
                     continue
                 idx = np.arange(raw.shape[1])
-                quiet = abs(idx-gate[i])>600
+                quiet = (abs(idx-gate[i])>650)&(idx>=16)
                 if quiet.sum()<100:
                     raise ValueError('Insufficient off-pulse voltage for noise estimate')
-                variance = np.median(abs(raw[i,quiet])**2)/np.log(2)
+                innovations=lfilter(whitening,[1.],raw[i])
+                variance = np.median(abs(innovations[quiet])**2)/np.log(2)
                 if not np.isfinite(variance) or variance<=0:
                     continue
                 rows.append(raw[i,start:start+n]); times.append(ts[i]); stations.append(station)
                 # Catalogue gates represent chirp centres, not envelope leading edges.
                 sample_times.append(359.45540369317763e-6+(start+np.arange(n))/fs+100e-6)
-                noise.append(variance); gates.append(gate[i])
+                noise.append(variance); gates.append(gate[i]);filters.append(whitening)
     if len(rows)<12 or len(set(stations))!=3:
         raise ValueError('Insufficient usable pulses across all three receivers')
     times = np.array(times, dtype=np.int64)
@@ -84,6 +90,14 @@ def prepare(path, events, reference):
     data = dict(center=center,time_s=(times-reference['t0_ns'])*1e-9,time_ns=times,
                 frames=frames,tx=np.array(sc.p_san),rx=rx,station=np.array(stations),
                 real=np.array(rows).real,imag=np.array(rows).imag,noise_power=np.array(noise),
+                whitener_real=np.array(filters).real,whitener_imag=np.array(filters).imag,
+                noise_covariance_pass=np.array([a['whiteness_pass'] for a in noise_audits]),
+                noise_ar_order=np.array([a['order'] for a in noise_audits]),
+                noise_heldout_correlation=np.array([a['heldout_correlation'] for a in noise_audits]),
+                noise_temporal_correlation=np.array([a['temporal_correlation'] for a in noise_audits]),
+                noise_pseudocorrelation=np.array([a['heldout_pseudocorrelation'] for a in noise_audits]),
+                noise_mean_z=np.array([a['mean_z'] for a in noise_audits]),
+                noise_heldout_tolerance=np.array([a['heldout_tolerance'] for a in noise_audits]),
                 sample_time_s=np.array(sample_times),fs=fs,bandwidth=bandwidth,duration=200e-6,
                 wavelength=float(sc.RADAR_WAVELENGTH_M),gate=np.array(gates))
     with h5py.File(path,'w') as h:
@@ -101,6 +115,7 @@ def load_library(path):
     lib.voltage_len.argtypes=[ct.c_void_p];lib.voltage_len.restype=ct.c_size_t
     lib.voltage_residual.argtypes=[ct.c_void_p,pointer,pointer];lib.voltage_residual.restype=ct.c_int
     lib.voltage_free.argtypes=[ct.c_void_p]
+    lib.voltage_prediction.argtypes=[ct.c_void_p,pointer,pointer];lib.voltage_prediction.restype=ct.c_int
     lib.voltage_sample.argtypes=[ct.c_void_p,pointer,pointer,ct.c_size_t,ct.c_size_t,ct.c_uint64,ct.c_char_p]
     lib.voltage_sample.restype=ct.c_int
     return lib
@@ -177,9 +192,12 @@ def run_one(args, event, events, reference, lib):
         seeded,seed_beats,seed_paths,seed_residual=beat_seed(data,initial)
         result=least_squares(residual,seeded,x_scale='jac',max_nfev=args.max_nfev,
                              ftol=1e-8,xtol=1e-8,gtol=1e-7)
-        r=residual(result.x).reshape(data['real'].shape+(2,))
         raw=data['real']+1j*data['imag']
-        predicted=raw+(r[:,:,0]+1j*r[:,:,1])*np.sqrt(data['noise_power'][:,None]/2)
+        q=np.ascontiguousarray(result.x);prediction=np.empty(size)
+        if not lib.voltage_prediction(handle,q.ctypes.data_as(ptr),prediction.ctypes.data_as(ptr)):
+            raise RuntimeError('Native waveform prediction failed')
+        prediction=prediction.reshape(raw.shape+(2,))
+        predicted=prediction[:,:,0]+1j*prediction[:,:,1]
         beats=[];control_std=[]
         rng=np.random.default_rng(20261029)
         for i in range(len(raw)):
@@ -190,7 +208,8 @@ def run_one(args, event, events, reference, lib):
             # Conditional estimator precision; does not include model/calibration errors.
             draws=[]
             for _ in range(32):
-                noise=np.sqrt(data['noise_power'][i]/2)*(rng.normal(size=len(phase))+1j*rng.normal(size=len(phase)))
+                coeff=-(data['whitener_real'][i,1:]+1j*data['whitener_imag'][i,1:])
+                noise=colored_noise(rng,len(phase),coeff,data['noise_power'][i])
                 draws.append(beat_peak((predicted[i]+noise)*phase,data['fs']))
             control_std.append(np.std(draws,ddof=1))
         beats=np.array(beats);control_std=np.array(control_std)
@@ -215,7 +234,8 @@ def run_one(args, event, events, reference, lib):
             h.attrs.update(optimizer_success=result.success,optimizer_message=result.message,
                            cost=result.cost,nfev=result.nfev,elapsed_s=time.monotonic()-start,
                            beat_guard_pass=beat_guard,provisional=True,
-                           likelihood='Gaussian I/Q noise; per-pulse complex amplitude profiled',
+                           likelihood='Proper complex Gaussian AR innovations; shared whitening of waveform and data; amplitude profiled for optimization and marginalized for MCMC',
+                           noise_covariance_pass=bool(np.all(data['noise_covariance_pass'])),
                            limitations='Ideal waveform; cell-averaged rectangular support; receiver filtering and intrapulse motion unvalidated. Beat guard is diagnostic, not independent validation.')
         os.replace(out/'fit.h5.partial',out/'fit.h5')
         fig,axes=plt.subplots(3,1,figsize=(9,7),sharex=True,constrained_layout=True)
@@ -245,7 +265,7 @@ def run_one(args, event, events, reference, lib):
         for ax in axes.flat:ax.set_xlabel('Time from reference epoch (s)')
         axes[0,0].legend();fig.suptitle(event)
         fig.savefig(out/'event.png',dpi=160);fig.savefig(out/'event.pdf');plt.close(fig)
-        sampling_allowed=bool(args.draws>0 and beat_guard and result.success)
+        sampling_allowed=bool(args.draws>0 and beat_guard and result.success and np.all(data['noise_covariance_pass']))
         if sampling_allowed:
             widths=np.r_[np.full(3,1e-4),np.full(3,1e-3),.01,.01].astype(float)
             q=np.ascontiguousarray(result.x)
@@ -258,6 +278,7 @@ def run_one(args, event, events, reference, lib):
         with h5py.File(out/'complete.h5','w') as h:
             h.attrs.update(provisional=True,draws_per_chain=args.draws if sampling_allowed else 0,chains=4 if sampling_allowed else 0,
                            beat_guard_pass=beat_guard,optimizer_success=result.success,
+                           noise_covariance_pass=bool(np.all(data['noise_covariance_pass'])),
                            sampling_blocked_by_guard=bool(args.draws>0 and not sampling_allowed),
                            sampler='Rust random-walk Metropolis-Hastings; proposal frozen after warmup',
                            amplitude_prior='Flat complex Re/Im prior, amplitudes analytically marginalized in MCMC',

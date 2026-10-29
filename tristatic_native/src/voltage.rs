@@ -6,6 +6,7 @@ use crate::{C,metropolis};
 pub struct Voltage {
     center:Vec<f64>, time:Vec<f64>, frames:Vec<f64>, rx:Vec<f64>, tx:Vec<f64>,
     sample_time:Vec<f64>, real:Vec<f64>, imag:Vec<f64>, noise:Vec<f64>,
+    whiten_real:Vec<f64>,whiten_imag:Vec<f64>,white_real:Vec<f64>,white_imag:Vec<f64>,filter_len:usize,
     n:usize, fs:f64, bandwidth:f64, duration:f64, wavelength:f64,
 }
 impl Voltage {
@@ -15,14 +16,26 @@ impl Voltage {
         let time=r("time_s")?; let real=r("real")?;
         anyhow::ensure!(!time.is_empty() && real.len()%time.len()==0,"Invalid voltage shape");
         let n=real.len()/time.len();
-        let v=Self {center:r("center")?,frames:r("frames")?,rx:r("rx")?,tx:r("tx")?,
+        let mut v=Self {center:r("center")?,frames:r("frames")?,rx:r("rx")?,tx:r("tx")?,
             sample_time:r("sample_time_s")?,imag:r("imag")?,noise:r("noise_power")?,
             fs:h.dataset("fs")?.read_scalar()?,bandwidth:h.dataset("bandwidth")?.read_scalar()?,
             duration:h.dataset("duration")?.read_scalar()?,wavelength:h.dataset("wavelength")?.read_scalar()?,
+            whiten_real:r("whitener_real")?,whiten_imag:r("whitener_imag")?,white_real:Vec::new(),white_imag:Vec::new(),filter_len:17,
             time,real,n};
         anyhow::ensure!(v.center.len()==6 && v.frames.len()==42*v.time.len() &&
             v.rx.len()==3*v.time.len() && v.tx.len()==3 && v.sample_time.len()==v.real.len() &&
-            v.imag.len()==v.real.len() && v.noise.len()==v.time.len(),"Invalid prepared arrays");
+            v.imag.len()==v.real.len() && v.noise.len()==v.time.len() &&
+            v.whiten_real.len()==17*v.time.len() && v.whiten_imag.len()==v.whiten_real.len(),"Invalid prepared arrays");
+        v.white_real=vec![0.;v.real.len()];v.white_imag=vec![0.;v.imag.len()];
+        for i in 0..v.time.len() {
+            for j in v.filter_len-1..v.n {
+                for lag in 0..v.filter_len {
+                    let k=i*v.n+j-lag;let f=i*v.filter_len+lag;
+                    v.white_real[i*v.n+j]+=v.whiten_real[f]*v.real[k]-v.whiten_imag[f]*v.imag[k];
+                    v.white_imag[i*v.n+j]+=v.whiten_real[f]*v.imag[k]+v.whiten_imag[f]*v.real[k];
+                }
+            }
+        }
         Ok(v)
     }
     fn frame(&self,i:usize,x:Vector3<f64>,v:Vector3<f64>)->(Vector3<f64>,Vector3<f64>) {
@@ -31,6 +44,9 @@ impl Voltage {
          Vector3::from_column_slice(&f[3..6])+m(15)*x+m(33)*v)
     }
     pub fn residual(&self,q:&[f64],out:&mut[f64],log_norm:&mut f64)->bool {
+        self.evaluate(q,out,log_norm,false)
+    }
+    fn evaluate(&self,q:&[f64],out:&mut[f64],log_norm:&mut f64,prediction:bool)->bool {
         *log_norm=0.;
         if q.len()!=8 || q.iter().any(|x|!x.is_finite()) || q[..3].iter().any(|x|x.abs()>20.) ||
             q[3..6].iter().any(|x|x.abs()>40.) || !(-5. ..=5.).contains(&q[6]) ||
@@ -41,6 +57,7 @@ impl Voltage {
         let u=v0/speed; let a=10_f64.powf(q[6]); let b=10_f64.powf(q[7]);
         let tx=Vector3::from_column_slice(&self.tx);
         let mut model=vec![(0.,0.);self.n];
+        let mut white_model=vec![(0.,0.);self.n];
         for (i,&t) in self.time.iter().enumerate() {
             let e=(b*t).exp(); let v=speed-a*e;
             if !v.is_finite() || v<=100. {return false;}
@@ -60,16 +77,34 @@ impl Voltage {
                 let phase=std::f64::consts::TAU*(self.bandwidth/2.*tau-
                     self.bandwidth/(2.*self.duration)*tau*tau+fd*sample);
                 let (si,co)=phase.sin_cos();*m=(envelope*co,envelope*si);
-                ar+=m.0*self.real[k]+m.1*self.imag[k];
-                ai+=m.0*self.imag[k]-m.1*self.real[k];norm+=envelope*envelope;
+            }
+            // Condition on off-echo initial samples, whose distribution is independent
+            // of trajectory. Apply the same complex FIR to model and measured voltage.
+            if model[..self.filter_len-1].iter().any(|m|m.0*m.0+m.1*m.1>1e-20){return false;}
+            for j in self.filter_len-1..self.n {
+                let mut wr=0.;let mut wi=0.;
+                for lag in 0..self.filter_len {
+                    let m=model[j-lag];let f=i*self.filter_len+lag;
+                    wr+=self.whiten_real[f]*m.0-self.whiten_imag[f]*m.1;
+                    wi+=self.whiten_real[f]*m.1+self.whiten_imag[f]*m.0;
+                }
+                white_model[j]=(wr,wi);let k=i*self.n+j;
+                ar+=wr*self.white_real[k]+wi*self.white_imag[k];
+                ai+=wr*self.white_imag[k]-wi*self.white_real[k];norm+=wr*wr+wi*wi;
             }
             if norm<10. {return false;}
             *log_norm+=norm.ln();
             ar/=norm; ai/=norm; let sigma=(self.noise[i]/2.).sqrt();
             for (j,m) in model.iter().enumerate() {
                 let k=i*self.n+j;
-                out[2*k]=(ar*m.0-ai*m.1-self.real[k])/sigma;
-                out[2*k+1]=(ar*m.1+ai*m.0-self.imag[k])/sigma;
+                if prediction {
+                    out[2*k]=ar*m.0-ai*m.1;out[2*k+1]=ar*m.1+ai*m.0;
+                } else if j<self.filter_len-1 {out[2*k]=0.;out[2*k+1]=0.;}
+                else {
+                    let m=white_model[j];
+                    out[2*k]=(ar*m.0-ai*m.1-self.white_real[k])/sigma;
+                    out[2*k+1]=(ar*m.1+ai*m.0-self.white_imag[k])/sigma;
+                }
             }
         }
         true
@@ -89,6 +124,10 @@ impl Voltage {
     v.residual(std::slice::from_raw_parts(q,8),std::slice::from_raw_parts_mut(out,2*v.real.len()),&mut 0.) as i32
 }
 #[no_mangle] pub unsafe extern "C" fn voltage_free(v:*mut Voltage) {if !v.is_null(){drop(Box::from_raw(v));}}
+#[no_mangle] pub unsafe extern "C" fn voltage_prediction(v:*const Voltage,q:*const f64,out:*mut f64)->i32 {
+    let v=&*v;
+    v.evaluate(std::slice::from_raw_parts(q,8),std::slice::from_raw_parts_mut(out,2*v.real.len()),&mut 0.,true) as i32
+}
 #[no_mangle] pub unsafe extern "C" fn voltage_sample(v:*const Voltage,q:*const f64,widths:*const f64,
     warmup:usize,draws:usize,seed:u64,path:*const c_char)->i32 {
     let v=&*v;
@@ -124,7 +163,8 @@ impl Voltage {
             real.push(env*(2.*angle.cos()-angle.sin()));imag.push(env*(2.*angle.sin()+angle.cos()));
         }
         let model=Voltage {center:vec![0.,0.,100000.,0.,0.,-10000.],time:vec![0.],frames:frame,
-            rx:vec![0.;3],tx:vec![0.;3],sample_time,real,imag,noise:vec![1.],n,fs,bandwidth,duration,wavelength};
+            rx:vec![0.;3],tx:vec![0.;3],sample_time,white_real:real.clone(),white_imag:imag.clone(),
+            whiten_real:vec![1.],whiten_imag:vec![0.],filter_len:1,real,imag,noise:vec![1.],n,fs,bandwidth,duration,wavelength};
         let mut q=vec![0.,0.,0.,0.,0.,0.,2.,0.];let mut residual=vec![0.;2*n];let mut lognorm=0.;
         assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!(residual.iter().map(|r|r*r).sum::<f64>()<1e-12);
