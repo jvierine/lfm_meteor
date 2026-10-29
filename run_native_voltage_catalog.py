@@ -54,7 +54,7 @@ def prepare(path, events, reference):
                 ts -= int(event.source_timezone_offset_hours*3600*1e9)
             gate = h['range_gate'][()]
             audit=fit_noise(raw,gate);noise_audits.append(audit)
-            whitening=np.zeros(17,complex);whitening[:len(audit['whitener'])]=audit['whitener']
+            whitening=np.zeros(65,complex);whitening[:len(audit['whitener'])]=audit['whitener']
             snr = h['snr_peak_db'][()]
             fs = float(h['sr_mhz'][()])*1e6
             bandwidth = float(h['bw_mhz'][()])*1e6
@@ -67,7 +67,7 @@ def prepare(path, events, reference):
                 if start<0 or start+n>raw.shape[1]:
                     continue
                 idx = np.arange(raw.shape[1])
-                quiet = (abs(idx-gate[i])>650)&(idx>=16)
+                quiet = (abs(idx-gate[i])>714)&(idx>=64)
                 if quiet.sum()<100:
                     raise ValueError('Insufficient off-pulse voltage for noise estimate')
                 innovations=lfilter(whitening,[1.],raw[i])

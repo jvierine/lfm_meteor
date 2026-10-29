@@ -3,7 +3,7 @@ import numpy as np
 from scipy.signal import lfilter
 
 
-def fit_noise(rows, gates, max_order=16):
+def fit_noise(rows, gates, max_order=64):
     rows=np.asarray(rows,dtype=np.complex128)
     segments=[]
     for row, gate in zip(rows,gates):
@@ -24,7 +24,7 @@ def fit_noise(rows, gates, max_order=16):
         return np.concatenate(xs),np.concatenate(ys)
     x,y=matrices(train);xt,yt=matrices(test)
     candidates=[]
-    for p in (0,1,2,4,8,16):
+    for p in (0,1,2,4,8,16,32,64):
         if p>max_order:continue
         coeff=np.linalg.lstsq(x[:,:p],y,rcond=None)[0] if p else np.empty(0,complex)
         residual=y-x[:,:p]@coeff
@@ -47,9 +47,10 @@ def fit_noise(rows, gates, max_order=16):
     pseudo=np.mean(z*z)/np.mean(abs(z)**2)
     mean_z=abs(np.mean(z))/np.sqrt(np.mean(abs(z)**2)/len(z))
     numerator=0j;den1=0.;den2=0.;pairs=0
+    innovations=lfilter(whiten,[1.],rows,axis=1)
     for i in range(len(rows)-1):
-        idx=np.arange(rows.shape[1]);mask=(abs(idx-gates[i])>650)&(abs(idx-gates[i+1])>650)
-        a,b=rows[i,mask],rows[i+1,mask]
+        idx=np.arange(rows.shape[1]);mask=(abs(idx-gates[i])>650+max_order)&(abs(idx-gates[i+1])>650+max_order)&(idx>=max_order)
+        a,b=innovations[i,mask],innovations[i+1,mask]
         numerator+=np.vdot(a,b);den1+=np.vdot(a,a).real;den2+=np.vdot(b,b).real;pairs+=len(a)
     temporal=numerator/np.sqrt(den1*den2) if den1*den2>0 else complex(np.nan)
     temporal_pass=bool(pairs>0 and abs(temporal)<5/np.sqrt(pairs))

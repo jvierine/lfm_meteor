@@ -20,12 +20,12 @@ impl Voltage {
             sample_time:r("sample_time_s")?,imag:r("imag")?,noise:r("noise_power")?,
             fs:h.dataset("fs")?.read_scalar()?,bandwidth:h.dataset("bandwidth")?.read_scalar()?,
             duration:h.dataset("duration")?.read_scalar()?,wavelength:h.dataset("wavelength")?.read_scalar()?,
-            whiten_real:r("whitener_real")?,whiten_imag:r("whitener_imag")?,white_real:Vec::new(),white_imag:Vec::new(),filter_len:17,
+            whiten_real:r("whitener_real")?,whiten_imag:r("whitener_imag")?,white_real:Vec::new(),white_imag:Vec::new(),filter_len:h.dataset("whitener_real")?.shape()[1],
             time,real,n};
         anyhow::ensure!(v.center.len()==6 && v.frames.len()==42*v.time.len() &&
             v.rx.len()==3*v.time.len() && v.tx.len()==3 && v.sample_time.len()==v.real.len() &&
             v.imag.len()==v.real.len() && v.noise.len()==v.time.len() &&
-            v.whiten_real.len()==17*v.time.len() && v.whiten_imag.len()==v.whiten_real.len(),"Invalid prepared arrays");
+            v.filter_len>0 && v.filter_len<v.n && v.whiten_real.len()==v.filter_len*v.time.len() && v.whiten_imag.len()==v.whiten_real.len(),"Invalid prepared arrays");
         v.white_real=vec![0.;v.real.len()];v.white_imag=vec![0.;v.imag.len()];
         for i in 0..v.time.len() {
             for j in v.filter_len-1..v.n {
