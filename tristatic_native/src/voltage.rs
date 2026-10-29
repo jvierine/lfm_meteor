@@ -2,6 +2,11 @@
 use std::ffi::{c_char,CStr};
 use nalgebra::{Matrix3,Vector3};
 use crate::{C,metropolis};
+use rustfft::{Fft,FftPlanner,num_complex::Complex};
+use std::sync::Arc;
+mod compressed;
+
+struct WhiteningFft {forward:Arc<dyn Fft<f64>>,inverse:Arc<dyn Fft<f64>>,filters:Vec<Vec<Complex<f64>>>}
 
 pub struct Voltage {
     center:Vec<f64>, time:Vec<f64>, frames:Vec<f64>, rx:Vec<f64>, tx:Vec<f64>,
@@ -9,6 +14,7 @@ pub struct Voltage {
     whiten_real:Vec<f64>,whiten_imag:Vec<f64>,white_real:Vec<f64>,white_imag:Vec<f64>,filter_len:usize,
     n:usize, fs:f64, bandwidth:f64, duration:f64, wavelength:f64,
     atmosphere:Option<(Vec<f64>,Vec<f64>)>,
+    fft:Option<WhiteningFft>,
 }
 impl Voltage {
     fn load(path:&str)->anyhow::Result<Self> {
@@ -22,7 +28,7 @@ impl Voltage {
             fs:h.dataset("fs")?.read_scalar()?,bandwidth:h.dataset("bandwidth")?.read_scalar()?,
             duration:h.dataset("duration")?.read_scalar()?,wavelength:h.dataset("wavelength")?.read_scalar()?,
             whiten_real:r("whitener_real")?,whiten_imag:r("whitener_imag")?,white_real:Vec::new(),white_imag:Vec::new(),filter_len:h.dataset("whitener_real")?.shape()[1],
-            atmosphere:if h.link_exists("height_m") {Some((r("height_m")?,r("density_kg_m3")?))} else {None},time,real,n};
+            atmosphere:if h.link_exists("height_m") {Some((r("height_m")?,r("density_kg_m3")?))} else {None},fft:None,time,real,n};
         if let Some((height,rho))=&v.atmosphere {
             anyhow::ensure!(height.len()>=2 && height.len()==rho.len() && height.windows(2).all(|w|w[1]>w[0]) && rho.iter().all(|r|r.is_finite() && *r>0.),"Invalid atmosphere");
         }
@@ -40,7 +46,19 @@ impl Voltage {
                 }
             }
         }
+        v.prepare_fft();
         Ok(v)
+    }
+    fn prepare_fft(&mut self) {
+        let nfft=(self.n+self.filter_len-1).next_power_of_two();
+        let mut planner=FftPlanner::new();let forward=planner.plan_fft_forward(nfft);let inverse=planner.plan_fft_inverse(nfft);
+        let mut filters=Vec::new();
+        for i in 0..self.time.len() {
+            let mut f=vec![Complex::new(0.,0.);nfft];
+            for j in 0..self.filter_len {f[j]=Complex::new(self.whiten_real[i*self.filter_len+j],self.whiten_imag[i*self.filter_len+j]);}
+            forward.process(&mut f);filters.push(f);
+        }
+        self.fft=Some(WhiteningFft {forward,inverse,filters});
     }
     fn frame(&self,i:usize,x:Vector3<f64>,v:Vector3<f64>)->(Vector3<f64>,Vector3<f64>) {
         let f=&self.frames[i*42..(i+1)*42]; let m=|s|Matrix3::from_row_slice(&f[s..s+9]);
@@ -51,6 +69,24 @@ impl Voltage {
         self.evaluate(q,out,log_norm,false)
     }
     fn dimension(&self)->usize {if self.atmosphere.is_some(){7}else{8}}
+    fn observables(&self,q:&[f64])->Option<Vec<[f64;2]>> {
+        if q.len()!=self.dimension() || q.iter().any(|x|!x.is_finite()) || q[..3].iter().any(|x|x.abs()>20.) || q[3..6].iter().any(|x|x.abs()>40.) {return None;}
+        if self.atmosphere.is_some() && !(-7. ..=-2.).contains(&q[6]) {return None;}
+        let x0=Vector3::from_fn(|j,_|self.center[j]+1000.*q[j]);
+        let v0=Vector3::from_fn(|j,_|self.center[3+j]+1000.*q[3+j]);
+        let speed=v0.norm();if !(1000. ..150000.).contains(&speed){return None;}
+        let u=v0/speed;let tx=Vector3::from_column_slice(&self.tx);
+        let states=self.states(q)?;let mut result=Vec::with_capacity(states.len());
+        for (i,state) in states.iter().enumerate() {
+            if !state[1].is_finite() || state[1]<=100. {return None;}
+            let nominal=x0+u*state[0];let vel=u*state[1];let mut x=nominal;
+            for _ in 0..2 {let (p,_)=self.frame(i,x,vel);x=nominal-vel*((p-tx).norm()/C);}
+            let (p,w)=self.frame(i,x,vel);let rx=Vector3::from_column_slice(&self.rx[3*i..3*i+3]);
+            let a=p-tx;let b=p-rx;
+            result.push([a.norm()+b.norm(),-(a.normalize()+b.normalize()).dot(&w)/self.wavelength]);
+        }
+        Some(result)
+    }
     fn states(&self,q:&[f64])->Option<Vec<[f64;4]>> {
         let x0=Vector3::from_fn(|j,_|self.center[j]+1000.*q[j]);
         let v0=Vector3::from_fn(|j,_|self.center[3+j]+1000.*q[3+j]);
@@ -91,6 +127,7 @@ impl Voltage {
         let tx=Vector3::from_column_slice(&self.tx);
         let mut model=vec![(0.,0.);self.n];
         let mut white_model=vec![(0.,0.);self.n];
+        let mut spectrum=vec![Complex::new(0.,0.);self.fft.as_ref().map_or(0,|f|f.forward.len())];
         for (i,state) in states.iter().enumerate() {
             let v=state[1];
             if !v.is_finite() || v<=100. {return false;}
@@ -114,13 +151,22 @@ impl Voltage {
             // Condition on off-echo initial samples, whose distribution is independent
             // of trajectory. Apply the same complex FIR to model and measured voltage.
             if model[..self.filter_len-1].iter().any(|m|m.0*m.0+m.1*m.1>1e-20){return false;}
+            if let Some(fft)=&self.fft {
+                spectrum.fill(Complex::new(0.,0.));
+                for (j,m) in model.iter().enumerate(){spectrum[j]=Complex::new(m.0,m.1);}
+                fft.forward.process(&mut spectrum);
+                for (a,b) in spectrum.iter_mut().zip(&fft.filters[i]){*a*=b;}
+                fft.inverse.process(&mut spectrum);
+                let scale=1./spectrum.len() as f64;
+                for j in self.filter_len-1..self.n {white_model[j]=(spectrum[j].re*scale,spectrum[j].im*scale);}
+            }
             for j in self.filter_len-1..self.n {
-                let mut wr=0.;let mut wi=0.;
-                for lag in 0..self.filter_len {
+                let (mut wr,mut wi)=white_model[j];
+                if self.fft.is_none() {wr=0.;wi=0.;for lag in 0..self.filter_len {
                     let m=model[j-lag];let f=i*self.filter_len+lag;
                     wr+=self.whiten_real[f]*m.0-self.whiten_imag[f]*m.1;
                     wi+=self.whiten_real[f]*m.1+self.whiten_imag[f]*m.0;
-                }
+                }}
                 white_model[j]=(wr,wi);let k=i*self.n+j;
                 ar+=wr*self.white_real[k]+wi*self.white_imag[k];
                 ai+=wr*self.white_imag[k]-wi*self.white_real[k];norm+=wr*wr+wi*wi;
@@ -152,6 +198,10 @@ impl Voltage {
     }
 }
 #[no_mangle] pub unsafe extern "C" fn voltage_len(v:*const Voltage)->usize {2*(*v).real.len()}
+#[no_mangle] pub unsafe extern "C" fn voltage_logp(v:*const Voltage,q:*const f64)->f64 {
+    let v=&*v;let q=std::slice::from_raw_parts(q,v.dimension());let mut r=vec![0.;2*v.real.len()];let mut norm=0.;
+    if v.residual(q,&mut r,&mut norm){-0.5*r.iter().map(|x|x*x).sum::<f64>()-norm}else{f64::NEG_INFINITY}
+}
 #[no_mangle] pub unsafe extern "C" fn voltage_states(v:*const Voltage,q:*const f64,out:*mut f64)->i32 {
     let v=&*v;
     if let Some(states)=v.states(std::slice::from_raw_parts(q,v.dimension())) {
@@ -205,7 +255,7 @@ impl Voltage {
         }
         let model=Voltage {center:vec![0.,0.,100000.,0.,0.,-10000.],time:vec![0.],frames:frame,
             rx:vec![0.;3],tx:vec![0.;3],sample_time,white_real:real.clone(),white_imag:imag.clone(),
-            whiten_real:vec![1.],whiten_imag:vec![0.],filter_len:1,real,imag,noise:vec![1.],n,fs,bandwidth,duration,wavelength,atmosphere:None};
+            whiten_real:vec![1.],whiten_imag:vec![0.],filter_len:1,real,imag,noise:vec![1.],n,fs,bandwidth,duration,wavelength,atmosphere:None,fft:None};
         let mut q=vec![0.,0.,0.,0.,0.,0.,2.,0.];let mut residual=vec![0.;2*n];let mut lognorm=0.;
         assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!(residual.iter().map(|r|r*r).sum::<f64>()<1e-12);
