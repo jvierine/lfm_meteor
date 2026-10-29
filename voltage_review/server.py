@@ -18,14 +18,16 @@ EVENT=re.compile(r'^tri_\d+_\d+$')
 
 
 class Store:
-    def __init__(self, root, flags, refits=None, latest=None):
+    def __init__(self, root, flags, refits=None, latest=None, previous=None):
         self.root=Path(root);self.flags=Path(flags);self.flags.mkdir(parents=True,exist_ok=True)
         self.refits=Path(refits) if refits else None
         self.latest=Path(latest) if latest else None
+        self.previous=Path(previous) if previous else None
 
     def path(self,event):
         if not EVENT.fullmatch(event): raise ValueError('Invalid event identifier')
         if self.latest and (self.latest/event/'plot.h5').exists():return self.latest/event
+        if self.previous and (self.previous/event/'plot.h5').exists():return self.previous/event
         if self.refits and (self.refits/event/'plot.h5').exists():return self.refits/event
         return self.root/event
 
@@ -100,6 +102,7 @@ class Store:
         result=[]
         folders={f.name:f for f in self.root.glob('tri_*')}
         if self.refits:folders.update({f.name:f for f in self.refits.glob('tri_*')})
+        if self.previous:folders.update({f.name:f for f in self.previous.glob('tri_*')})
         if self.latest:folders.update({f.name:f for f in self.latest.glob('tri_*')})
         for folder in sorted(folders.values(),key=lambda f:f.name):
             if not EVENT.fullmatch(folder.name):continue
@@ -203,9 +206,10 @@ if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--data',required=True);p.add_argument('--flags',required=True)
     p.add_argument('--refits')
     p.add_argument('--latest')
+    p.add_argument('--previous')
     p.add_argument('--wasm',required=True)
     p.add_argument('--port',type=int,default=8767);p.add_argument('--host',default='127.0.0.1');a=p.parse_args()
     if a.host not in ('127.0.0.1','localhost'):
         p.error('The token-free reviewer must bind to localhost')
-    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags,a.refits,a.latest),Path(__file__).parent,Path(a.wasm)))
+    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags,a.refits,a.latest,a.previous),Path(__file__).parent,Path(a.wasm)))
     print(f'Listening on {a.host}:{a.port}',flush=True);server.serve_forever()
