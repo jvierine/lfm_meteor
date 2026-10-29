@@ -52,10 +52,12 @@ def covariance(cache,q):
     for attempt in range(5):
         eye=np.diag(step);h=np.empty((7,7));f=cache.logp(q)
         one=np.array([cache.logp(q+e) for e in eye])
+        minus=np.array([cache.logp(q-e) for e in eye])
         for i in range(7):
-            h[i,i]=-(cache.logp(q+2*eye[i])-2*one[i]+f)
+            h[i,i]=-(one[i]-2*f+minus[i]) if np.isfinite(minus[i]) else -(cache.logp(q+2*eye[i])-2*one[i]+f)
             for j in range(i):
-                h[i,j]=h[j,i]=-(cache.logp(q+eye[i]+eye[j])-one[i]-one[j]+f)
+                values=[cache.logp(q+si*eye[i]+sj*eye[j]) for si,sj in [(1,1),(1,-1),(-1,1),(-1,-1)]]
+                h[i,j]=h[j,i]=-(values[0]-values[1]-values[2]+values[3])/4 if np.all(np.isfinite(values)) else -(values[0]-one[i]-one[j]+f)
         if np.all(np.isfinite(h)):break
         step*=.2
     else:raise RuntimeError('Curvature stencil outside cache; need recentering')
@@ -115,6 +117,12 @@ def run(args,event):
             with h5py.File(path) as h:previous_seconds+=float(h['elapsed_seconds'][()]) if 'elapsed_seconds' in h else 0.
     if (folder/'uncertainty_budget.h5').exists():
         with h5py.File(folder/'uncertainty_budget.h5') as h:previous_seconds=max(previous_seconds,float(h.attrs['used_seconds']))
+    historical_seconds=previous_seconds
+    if args.budget_generation:
+        same=False
+        if (folder/'uncertainty_budget.h5').exists():
+            with h5py.File(folder/'uncertainty_budget.h5') as h:same=h.attrs.get('generation','')==args.budget_generation
+        if not same:previous_seconds=0.
     proposal=None
     if len(list(folder.glob('chain_*.h5')))==4:
         draws=[]
@@ -182,8 +190,8 @@ def run(args,event):
          path_measurement_lower95_m=intervals[:,0],path_measurement_upper95_m=intervals[:,1]),dict(confidence=.95,conditional=True))
     print('FIT',event,'radius_m',10**q[6],'elapsed',time.monotonic()-began,flush=True)
     if args.validate_only:return
-    if proposal is not None and np.all(np.isfinite(proposal)):
-        cov=.95*proposal+.05*cov
+    # Start in the posterior, not merely somewhere with finite likelihood.
+    # The centered Hessian proposal keeps the measured path/rate correlations.
     started=time.monotonic();chains=[];rng=np.random.default_rng(82304)
     for i in range(4):
         remaining=args.budget-previous_seconds-(time.monotonic()-started)-8
@@ -192,15 +200,15 @@ def run(args,event):
         start=q.copy()
         for _ in range(100):
             candidate=q+rng.multivariate_normal(np.zeros(7),cov)*2
-            if np.isfinite(cache.logp(candidate)):start=candidate;break
+            if cache.logp(candidate)>cache.logp(q)-10.:start=candidate;break
         start=np.ascontiguousarray(start);matrix=np.ascontiguousarray(cov)
         target=folder/f'chain_{i}.h5'
         ok=lib.voltage_cache_sample(cache.handle,model.handle,start.ctypes.data_as(PTR),matrix.ctypes.data_as(PTR),
-                                    min(args.warmup,500) if proposal is not None else args.warmup,args.draws,seconds,20262000+i,os.fsencode(str(target)+'.partial'))
+                                    args.warmup,args.draws,seconds,20262000+i,os.fsencode(str(target)+'.partial'))
         if not ok:raise RuntimeError('Native cached MH failed')
         os.replace(str(target)+'.partial',target)
         with h5py.File(target) as h:chains.append(h['samples'][:])
-        save(folder/'uncertainty_budget.h5',{},dict(used_seconds=previous_seconds+time.monotonic()-started,limit_seconds=args.budget))
+        save(folder/'uncertainty_budget.h5',{},dict(used_seconds=previous_seconds+time.monotonic()-started,limit_seconds=args.budget,generation=args.budget_generation,previous_attempt_seconds=historical_seconds))
         print('CHAIN',event,i,len(chains[-1]),'elapsed',time.monotonic()-started,flush=True)
     length=min(map(len,chains))
     if length<1000:raise RuntimeError('Budget-limited: fewer than 1000 retained draws per chain')
@@ -212,7 +220,7 @@ def run(args,event):
     if np.max(abs(err))>.2:raise RuntimeError('Posterior left validated interpolation accuracy region; refine cache')
     if margin<=.1:raise RuntimeError('Posterior approaches cache boundary; expand cache before reporting intervals')
     attrs=export(folder,model,q,meta,chains)
-    save(folder/'uncertainty_budget.h5',{},dict(used_seconds=previous_seconds+time.monotonic()-started,limit_seconds=args.budget))
+    save(folder/'uncertainty_budget.h5',{},dict(used_seconds=previous_seconds+time.monotonic()-started,limit_seconds=args.budget,generation=args.budget_generation,previous_attempt_seconds=historical_seconds))
     attrs.update(uncertainty_elapsed_seconds=time.monotonic()-started,uncertainty_budget_seconds=args.budget,
                  uncertainty_total_seconds=previous_seconds+time.monotonic()-started,
                  total_elapsed_seconds=time.monotonic()-began,cache_validated=True)
@@ -227,6 +235,7 @@ def main():
     p.add_argument('--library',required=True);p.add_argument('--event');p.add_argument('--budget',type=float,default=300)
     p.add_argument('--warmup',type=int,default=4000);p.add_argument('--draws',type=int,default=96000)
     p.add_argument('--expand',type=float,default=1.);p.add_argument('--validate-only',action='store_true')
+    p.add_argument('--budget-generation',default='',help='Explicitly authorized fresh bounded attempt; old timings retained')
     args=p.parse_args();comm=MPI.COMM_WORLD
     events=[args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5'))
     for event in events[comm.rank::comm.size]:
