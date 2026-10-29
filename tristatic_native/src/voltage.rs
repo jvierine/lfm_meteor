@@ -8,6 +8,7 @@ pub struct Voltage {
     sample_time:Vec<f64>, real:Vec<f64>, imag:Vec<f64>, noise:Vec<f64>,
     whiten_real:Vec<f64>,whiten_imag:Vec<f64>,white_real:Vec<f64>,white_imag:Vec<f64>,filter_len:usize,
     n:usize, fs:f64, bandwidth:f64, duration:f64, wavelength:f64,
+    atmosphere:Option<(Vec<f64>,Vec<f64>)>,
 }
 impl Voltage {
     fn load(path:&str)->anyhow::Result<Self> {
@@ -21,7 +22,10 @@ impl Voltage {
             fs:h.dataset("fs")?.read_scalar()?,bandwidth:h.dataset("bandwidth")?.read_scalar()?,
             duration:h.dataset("duration")?.read_scalar()?,wavelength:h.dataset("wavelength")?.read_scalar()?,
             whiten_real:r("whitener_real")?,whiten_imag:r("whitener_imag")?,white_real:Vec::new(),white_imag:Vec::new(),filter_len:h.dataset("whitener_real")?.shape()[1],
-            time,real,n};
+            atmosphere:if h.link_exists("height_m") {Some((r("height_m")?,r("density_kg_m3")?))} else {None},time,real,n};
+        if let Some((height,rho))=&v.atmosphere {
+            anyhow::ensure!(height.len()>=2 && height.len()==rho.len() && height.windows(2).all(|w|w[1]>w[0]) && rho.iter().all(|r|r.is_finite() && *r>0.),"Invalid atmosphere");
+        }
         anyhow::ensure!(v.center.len()==6 && v.frames.len()==42*v.time.len() &&
             v.rx.len()==3*v.time.len() && v.tx.len()==3 && v.sample_time.len()==v.real.len() &&
             v.imag.len()==v.real.len() && v.noise.len()==v.time.len() &&
@@ -46,22 +50,51 @@ impl Voltage {
     pub fn residual(&self,q:&[f64],out:&mut[f64],log_norm:&mut f64)->bool {
         self.evaluate(q,out,log_norm,false)
     }
+    fn dimension(&self)->usize {if self.atmosphere.is_some(){7}else{8}}
+    fn states(&self,q:&[f64])->Option<Vec<[f64;4]>> {
+        let x0=Vector3::from_fn(|j,_|self.center[j]+1000.*q[j]);
+        let v0=Vector3::from_fn(|j,_|self.center[3+j]+1000.*q[3+j]);
+        let speed=v0.norm();let u=v0/speed;
+        if let Some((height,rho))=&self.atmosphere {
+            let mut order:Vec<usize>=(0..self.time.len()).collect();
+            order.sort_by(|&a,&b|self.time[a].total_cmp(&self.time[b]));
+            let times:Vec<f64>=order.iter().map(|&i|self.time[i]).collect();
+            let first=order[0];
+            let density=|s:f64| {
+                let (p,_)=self.frame(first,x0+u*s,Vector3::zeros());
+                let z=crate::event::geodetic_height(p);
+                if z<height[0] || z>*height.last().unwrap(){return f64::NAN;}
+                let j=height.partition_point(|h|*h<z).clamp(1,height.len()-1);
+                let w=(z-height[j-1])/(height[j]-height[j-1]);
+                rho[j-1]*(1.-w)+rho[j]*w
+            };
+            let sorted=crate::shrinking_trajectory(&times,speed,10_f64.powf(q[6]),3000.,1e-8,density).ok()?;
+            let mut states=vec![[0.;4];order.len()];
+            for (j,&i) in order.iter().enumerate(){states[i]=sorted[j];}
+            Some(states)
+        } else {
+            let a=10_f64.powf(q[6]);let b=10_f64.powf(q[7]);
+            Some(self.time.iter().map(|&t|[speed*t-a*(b*t).exp_m1()/b,speed-a*(b*t).exp(),0.,0.]).collect())
+        }
+    }
     fn evaluate(&self,q:&[f64],out:&mut[f64],log_norm:&mut f64,prediction:bool)->bool {
         *log_norm=0.;
-        if q.len()!=8 || q.iter().any(|x|!x.is_finite()) || q[..3].iter().any(|x|x.abs()>20.) ||
-            q[3..6].iter().any(|x|x.abs()>40.) || !(-5. ..=5.).contains(&q[6]) ||
-            !(-4. ..=3.).contains(&q[7]) {return false;}
+        if q.len()!=self.dimension() || q.iter().any(|x|!x.is_finite()) || q[..3].iter().any(|x|x.abs()>20.) ||
+            q[3..6].iter().any(|x|x.abs()>40.) {return false;}
+        if self.atmosphere.is_some() {if !(-7. ..=-2.).contains(&q[6]){return false;}}
+        else if !(-5. ..=5.).contains(&q[6]) || !(-4. ..=3.).contains(&q[7]){return false;}
         let x0=Vector3::from_fn(|j,_|self.center[j]+1000.*q[j]);
         let v0=Vector3::from_fn(|j,_|self.center[3+j]+1000.*q[3+j]);
         let speed=v0.norm(); if !(1000. ..150000.).contains(&speed) {return false;}
-        let u=v0/speed; let a=10_f64.powf(q[6]); let b=10_f64.powf(q[7]);
+        let u=v0/speed;
+        let Some(states)=self.states(q) else{return false;};
         let tx=Vector3::from_column_slice(&self.tx);
         let mut model=vec![(0.,0.);self.n];
         let mut white_model=vec![(0.,0.);self.n];
-        for (i,&t) in self.time.iter().enumerate() {
-            let e=(b*t).exp(); let v=speed-a*e;
+        for (i,state) in states.iter().enumerate() {
+            let v=state[1];
             if !v.is_finite() || v<=100. {return false;}
-            let s=speed*t-a*(b*t).exp_m1()/b;
+            let s=state[0];
             let nominal=x0+u*s; let vel=u*v; let mut x=nominal;
             for _ in 0..2 {let (p,_)=self.frame(i,x,vel);x=nominal-vel*((p-tx).norm()/C);}
             let (p,w)=self.frame(i,x,vel); let rx=Vector3::from_column_slice(&self.rx[i*3..i*3+3]);
@@ -119,14 +152,22 @@ impl Voltage {
     }
 }
 #[no_mangle] pub unsafe extern "C" fn voltage_len(v:*const Voltage)->usize {2*(*v).real.len()}
+#[no_mangle] pub unsafe extern "C" fn voltage_states(v:*const Voltage,q:*const f64,out:*mut f64)->i32 {
+    let v=&*v;
+    if let Some(states)=v.states(std::slice::from_raw_parts(q,v.dimension())) {
+        let out=std::slice::from_raw_parts_mut(out,4*v.time.len());
+        for (i,s) in states.iter().enumerate(){out[4*i..4*i+4].copy_from_slice(s);}
+        1
+    }else{0}
+}
 #[no_mangle] pub unsafe extern "C" fn voltage_residual(v:*const Voltage,q:*const f64,out:*mut f64)->i32 {
     let v=&*v;
-    v.residual(std::slice::from_raw_parts(q,8),std::slice::from_raw_parts_mut(out,2*v.real.len()),&mut 0.) as i32
+    v.residual(std::slice::from_raw_parts(q,v.dimension()),std::slice::from_raw_parts_mut(out,2*v.real.len()),&mut 0.) as i32
 }
 #[no_mangle] pub unsafe extern "C" fn voltage_free(v:*mut Voltage) {if !v.is_null(){drop(Box::from_raw(v));}}
 #[no_mangle] pub unsafe extern "C" fn voltage_prediction(v:*const Voltage,q:*const f64,out:*mut f64)->i32 {
     let v=&*v;
-    v.evaluate(std::slice::from_raw_parts(q,8),std::slice::from_raw_parts_mut(out,2*v.real.len()),&mut 0.,true) as i32
+    v.evaluate(std::slice::from_raw_parts(q,v.dimension()),std::slice::from_raw_parts_mut(out,2*v.real.len()),&mut 0.,true) as i32
 }
 #[no_mangle] pub unsafe extern "C" fn voltage_sample(v:*const Voltage,q:*const f64,widths:*const f64,
     warmup:usize,draws:usize,seed:u64,path:*const c_char)->i32 {
@@ -136,10 +177,10 @@ impl Voltage {
         // treating its profiled estimate as known during posterior sampling.
         if v.residual(q,&mut r,&mut log_norm){-0.5*r.iter().map(|x|x*x).sum::<f64>()-log_norm}else{f64::NEG_INFINITY}};
     let result=(||->anyhow::Result<()> {
-        let chain=metropolis(logp,std::slice::from_raw_parts(q,8),std::slice::from_raw_parts(widths,8),warmup,draws,seed)?;
+        let chain=metropolis(logp,std::slice::from_raw_parts(q,v.dimension()),std::slice::from_raw_parts(widths,v.dimension()),warmup,draws,seed)?;
         let h=hdf5::File::create(CStr::from_ptr(path).to_str()?)?;
         let flat:Vec<f64>=chain.samples.iter().flatten().copied().collect();
-        h.new_dataset::<f64>().shape((draws,8)).create("samples")?.write_raw(&flat)?;
+        h.new_dataset::<f64>().shape((draws,v.dimension())).create("samples")?.write_raw(&flat)?;
         h.new_dataset_builder().with_data(&chain.log_probability).create("log_probability")?;
         h.new_dataset::<u64>().create("accepted")?.write_scalar(&(chain.accepted as u64))?;
         h.flush()?;Ok(())
@@ -164,7 +205,7 @@ impl Voltage {
         }
         let model=Voltage {center:vec![0.,0.,100000.,0.,0.,-10000.],time:vec![0.],frames:frame,
             rx:vec![0.;3],tx:vec![0.;3],sample_time,white_real:real.clone(),white_imag:imag.clone(),
-            whiten_real:vec![1.],whiten_imag:vec![0.],filter_len:1,real,imag,noise:vec![1.],n,fs,bandwidth,duration,wavelength};
+            whiten_real:vec![1.],whiten_imag:vec![0.],filter_len:1,real,imag,noise:vec![1.],n,fs,bandwidth,duration,wavelength,atmosphere:None};
         let mut q=vec![0.,0.,0.,0.,0.,0.,2.,0.];let mut residual=vec![0.;2*n];let mut lognorm=0.;
         assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!(residual.iter().map(|r|r*r).sum::<f64>()<1e-12);
