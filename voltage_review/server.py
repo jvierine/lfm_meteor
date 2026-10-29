@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -144,7 +143,7 @@ class Store:
             return revision
 
 
-def handler(store,token,static,wasm):
+def handler(store,static,wasm):
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self,*args,**kwargs):super().__init__(*args,directory=str(static),**kwargs)
         def end_headers(self):
@@ -154,11 +153,9 @@ def handler(store,token,static,wasm):
             body=json.dumps(obj,allow_nan=False).encode();self.send_response(status)
             self.send_header('Content-Type','application/json')
             self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
-        def authorized(self):return secrets.compare_digest(self.headers.get('Authorization',''),'Bearer '+token)
         def do_GET(self):
             path=urlsplit(self.path).path
             if path.startswith('/api/'):
-                if not self.authorized():return self.reply(401,{'error':'Access token required'})
                 try:
                     with LOCK:
                         if path=='/api/events':return self.reply(200,store.catalog())
@@ -174,7 +171,11 @@ def handler(store,token,static,wasm):
             if path not in ('/','/index.html','/app.js','/beam.js','/style.css'):return self.send_error(404)
             return super().do_GET()
         def do_POST(self):
-            if not self.authorized():return self.reply(401,{'error':'Access token required'})
+            origin=self.headers.get('Origin')
+            if origin and origin != 'http://'+self.headers.get('Host',''):
+                return self.reply(403,{'error':'Cross-origin writes are not allowed'})
+            if self.headers.get('Content-Type','').split(';')[0]!='application/json':
+                return self.reply(415,{'error':'Expected application/json'})
             path=urlsplit(self.path).path
             if not path.startswith('/api/flags/'):return self.reply(404,{'error':'Not found'})
             try:
@@ -195,11 +196,9 @@ if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--data',required=True);p.add_argument('--flags',required=True)
     p.add_argument('--refits')
     p.add_argument('--latest')
-    p.add_argument('--wasm',required=True);p.add_argument('--token-file',required=True)
+    p.add_argument('--wasm',required=True)
     p.add_argument('--port',type=int,default=8767);p.add_argument('--host',default='127.0.0.1');a=p.parse_args()
-    token_path=Path(a.token_file)
-    if not token_path.exists():
-        fd=os.open(token_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-        with os.fdopen(fd,'w') as f:f.write(secrets.token_urlsafe(32))
-    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags,a.refits,a.latest),token_path.read_text().strip(),Path(__file__).parent,Path(a.wasm)))
+    if a.host not in ('127.0.0.1','localhost'):
+        p.error('The token-free reviewer must bind to localhost')
+    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags,a.refits,a.latest),Path(__file__).parent,Path(a.wasm)))
     print(f'Listening on {a.host}:{a.port}',flush=True);server.serve_forever()
