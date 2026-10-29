@@ -6,7 +6,7 @@ const source=fs.readFileSync(__dirname+'/app.js','utf8');
 const saveSource=source.slice(source.indexOf('async function save('),source.indexOf('\nfunction table('));
 function fixture(conflict){
  const annotation={version:1,excluded:[],bad:false,note:''},calls=[],elements={};
- const context={structuredClone,data:{event:'test',fingerprint:'old',annotation},busy:false,undo:[],catalog:[],
+ const context={structuredClone,data:{event:'test',fingerprint:'old',annotation},busy:false,request:0,pendingEvent:null,undo:[],catalog:[],
   $:id=>elements[id]??={},controls(){},sidebar(){},table(){},draw(){},status(message){context.message=message;},
   async api(path,body){calls.push({path,body});if(calls.length===1)throw Error('Fit data changed; reload before saving');
    if(!body)return {event:'test',fingerprint:'new',annotation:{...annotation,version:conflict?2:1}};
@@ -27,4 +27,15 @@ test('a conflicting review is never overwritten',async()=>{
 test('beam plots take keyboard focus before selection',()=>{
  const beam=fs.readFileSync(__dirname+'/beam.js','utf8');
  assert.match(beam,/pointerdown.*canvas\.focus/);
+});
+test('navigation waits for a confirmed save and invalidates earlier loads',async()=>{
+ const {context}=fixture(false);context.pendingEvent='next';
+ context.load=async id=>{assert.equal(context.busy,false);assert.equal(context.data.annotation.version,2);context.navigated=id;};
+ await context.save({excluded:['0:123']});
+ assert.equal(context.request,1);assert.equal(context.navigated,'next');assert.equal(context.pendingEvent,null);
+});
+test('failed save does not navigate away and lose selected work',async()=>{
+ const {context}=fixture(true);context.pendingEvent='next';
+ context.load=()=>assert.fail('must stay on unsaved event');
+ await context.save({excluded:['0:123']});assert.equal(context.pendingEvent,null);
 });
