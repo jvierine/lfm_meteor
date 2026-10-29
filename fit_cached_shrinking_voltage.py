@@ -192,9 +192,12 @@ def run(args,event):
         if remaining<=0:raise RuntimeError('Uncertainty budget exhausted before four chains')
         seconds=remaining/(4-i)
         start=q.copy()
-        for _ in range(100):
-            candidate=q+rng.multivariate_normal(np.zeros(7),cov)*2
+        for _ in range(8):
+            candidate=q+rng.multivariate_normal(np.zeros(7),cov)*.2
             if cache.logp(candidate)>cache.logp(q)-10.:start=candidate;break
+        remaining=args.budget-previous_seconds-(time.monotonic()-started)-8
+        if remaining<=0:raise RuntimeError('Uncertainty budget exhausted while initializing chains')
+        seconds=remaining/(4-i)
         start=np.ascontiguousarray(start);matrix=np.ascontiguousarray(cov)
         target=folder/f'chain_{i}.h5'
         ok=lib.voltage_cache_sample(cache.handle,model.handle,start.ctypes.data_as(PTR),matrix.ctypes.data_as(PTR),
