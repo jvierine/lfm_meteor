@@ -39,11 +39,11 @@ function uncertaintyMath(symbol,lo,best,hi,unit,scientific){
  return `<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><msub><mi>${symbol}</mi><mn>0</mn></msub><mo>=</mo><mn>${number(best/factor)}</mn>${interval}${power}<mspace width="0.3em"/><mtext>${unit}</mtext><mspace width="0.6em"/><mtext>${valid?'(95%)':'(interval unavailable)'}</mtext></mrow></math>`;
 }
 function fitSummary(){
- $('fitstamp').textContent=data.fit_unix_time?`Fit: ${new Date(data.fit_unix_time*1000).toISOString()} · flag revision ${data.fit_flag_revision||0} · ${data.fit_excluded_count||0} excluded · ${data.fit_timestamp_source}${data.annotation.version>(data.fit_flag_revision||0)?' · newer review revision exists':''}`:'Fit timestamp unavailable';
+ $('fitstamp').textContent=data.fit_unix_time?`${data.trajectory_model||'Legacy Whipple–Jacchia fit'} · Fit: ${new Date(data.fit_unix_time*1000).toISOString()} · flag revision ${data.fit_flag_revision||0} · ${data.fit_excluded_count||0} excluded${data.annotation.version>(data.fit_flag_revision||0)?' · newer review revision exists':''}`:'Fit timestamp unavailable';
  const root=$('masssummary');root.replaceChildren();
  for(const [symbol,key,bestKey,scale,unit,scientific] of [['m','initial_mass_kg_quantiles','best_initial_mass_kg',1,'kg',true],['d','initial_radius_m_quantiles','best_initial_radius_m',2e6,'µm',false]]){
-  const q=data[key];if(!q)continue;
-  const span=document.createElement('span');const [lo,mid,hi]=q.map(v=>v*scale);
+  const q=data[key];if(!q&&!Number.isFinite(data[bestKey]))continue;
+  const span=document.createElement('span');const [lo,mid,hi]=q?q.map(v=>v*scale):[null,data[bestKey]*scale,null];
   const best=data[bestKey];
   span.className='mass-estimate';span.innerHTML=uncertaintyMath(symbol,lo,best===undefined?mid:best*scale,hi,unit,scientific);if(best===undefined)span.append(document.createTextNode(' (posterior median)'));root.append(span);
  }
