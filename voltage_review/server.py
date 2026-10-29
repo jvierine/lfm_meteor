@@ -1,0 +1,147 @@
+"""Read-only fit products with separately versioned, atomic HDF5 review flags."""
+import argparse
+import hashlib
+import json
+import os
+import re
+import secrets
+import threading
+import time
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import h5py
+import numpy as np
+
+LOCK=threading.RLock()
+EVENT=re.compile(r'^tri_\d+_\d+$')
+
+
+class Store:
+    def __init__(self, root, flags):
+        self.root=Path(root);self.flags=Path(flags);self.flags.mkdir(parents=True,exist_ok=True)
+
+    def path(self,event):
+        if not EVENT.fullmatch(event): raise ValueError('Invalid event identifier')
+        return self.root/event
+
+    def annotation(self,event):
+        path=self.flags/(event+'.h5')
+        if not path.exists(): return dict(version=0,excluded=[],bad=False,note='')
+        with h5py.File(path) as h:
+            return dict(version=int(h.attrs['version']),excluded=h['excluded'].asstr()[:].tolist(),
+                        bad=bool(h.attrs['bad']),note=str(h.attrs['note']))
+
+    def data(self,event):
+        with h5py.File(self.path(event)/'plot.h5') as h:
+            data={k:h[k][:].tolist() for k in h}
+            data['beat_pass']=bool(h.attrs['beat_guard_pass'])
+        data['time_ns']=[str(t) for t in data['time_ns']]
+        data['ids']=[f'{s}:{t}' for s,t in zip(data['station'],data['time_ns'])]
+        if len(set(data['ids']))!=len(data['ids']): raise ValueError('Duplicate station/pulse identity')
+        # This fingerprint is stable when the same data are re-exported.
+        data['fingerprint']=hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
+        data['event']=event;data['annotation']=self.annotation(event)
+        return data
+
+    def catalog(self):
+        result=[]
+        for folder in sorted(self.root.glob('tri_*')):
+            if not EVENT.fullmatch(folder.name):continue
+            plot=folder/'plot.h5'
+            if not plot.exists():continue
+            try:
+                with h5py.File(plot) as h:
+                    item=dict(event=folder.name,n=len(h['time_s']),beat_pass=bool(h.attrs['beat_guard_pass']))
+                a=self.annotation(folder.name)
+                item.update(flagged=len(a['excluded']),bad=a['bad'],version=a['version'])
+                result.append(item)
+            except OSError:continue
+        return result
+
+    def save(self,event,payload):
+        with LOCK:
+            data=self.data(event);old=data['annotation']
+            if payload.get('version')!=old['version']: raise RuntimeError('Review changed elsewhere; reload before saving')
+            if payload.get('fingerprint')!=data['fingerprint']:raise RuntimeError('Fit data changed; reload before saving')
+            excluded=payload.get('excluded',[])
+            if not isinstance(excluded,list) or any(not isinstance(i,str) or i not in data['ids'] for i in excluded):raise ValueError('Unknown measurement identity')
+            if type(payload.get('bad')) is not bool:raise ValueError('Bad state must be boolean')
+            note=payload.get('note','')
+            if not isinstance(note,str) or len(note)>4000:raise ValueError('Invalid review note')
+            target=self.flags/(event+'.h5');tmp=target.with_suffix('.h5.partial')
+            revision=dict(version=old['version']+1,excluded=sorted(set(excluded)),bad=payload['bad'],note=note)
+            with h5py.File(tmp,'w') as h:
+                if target.exists():
+                    with h5py.File(target) as source:
+                        if 'history' in source: source.copy('history',h)
+                history=h.require_group('history');entry=history.create_group(str(revision['version']))
+                entry.attrs.update(unix_time=time.time(),bad=revision['bad'],note=note,fingerprint=data['fingerprint'])
+                entry['excluded']=np.array(revision['excluded'],dtype=h5py.string_dtype())
+                h.attrs.update(event=event,version=revision['version'],bad=revision['bad'],note=note,
+                               fingerprint=data['fingerprint'],format='station:UTC-unix-nanoseconds manual exclusions')
+                h['excluded']=np.array(revision['excluded'],dtype=h5py.string_dtype())
+                h['station']=np.asarray(data['station'],dtype=np.int64)
+                h['time_ns']=np.asarray(data['time_ns'],dtype=np.int64)
+                h['manual_reject_mask']=np.array([i in revision['excluded'] for i in data['ids']],dtype=bool)
+                h.flush()
+            with open(tmp,'rb') as f:os.fsync(f.fileno())
+            os.replace(tmp,target)
+            return revision
+
+
+def handler(store,token,static,wasm):
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self,*args,**kwargs):super().__init__(*args,directory=str(static),**kwargs)
+        def reply(self,status,obj):
+            body=json.dumps(obj,allow_nan=False).encode();self.send_response(status)
+            self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store')
+            self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+        def authorized(self):return secrets.compare_digest(self.headers.get('Authorization',''),'Bearer '+token)
+        def do_GET(self):
+            path=urlsplit(self.path).path
+            if path.startswith('/api/'):
+                if not self.authorized():return self.reply(401,{'error':'Access token required'})
+                try:
+                    with LOCK:
+                        if path=='/api/events':return self.reply(200,store.catalog())
+                        if path.startswith('/api/event/'):return self.reply(200,store.data(path.rsplit('/',1)[1]))
+                    return self.reply(404,{'error':'Not found'})
+                except (OSError,ValueError,KeyError) as e:return self.reply(404,{'error':str(e)})
+            if path.startswith('/pkg/'):
+                name=path.removeprefix('/pkg/')
+                if name not in ('rustplotlib_web.js','rustplotlib_web_bg.wasm'):return self.send_error(404)
+                content=(wasm/name).read_bytes();self.send_response(200)
+                self.send_header('Content-Type','application/wasm' if name.endswith('.wasm') else 'text/javascript')
+                self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content);return
+            if path not in ('/','/index.html','/app.js','/style.css'):return self.send_error(404)
+            return super().do_GET()
+        def do_POST(self):
+            if not self.authorized():return self.reply(401,{'error':'Access token required'})
+            path=urlsplit(self.path).path
+            if not path.startswith('/api/flags/'):return self.reply(404,{'error':'Not found'})
+            try:
+                n=int(self.headers.get('Content-Length','0'))
+                if not 0<n<=65536:raise ValueError('Invalid request size')
+                payload=json.loads(self.rfile.read(n))
+                if not isinstance(payload,dict):raise ValueError('Expected object')
+                return self.reply(200,store.save(path.rsplit('/',1)[1],payload))
+            except RuntimeError as e:return self.reply(409,{'error':str(e)})
+            except (ValueError,KeyError,OSError) as e:return self.reply(400,{'error':str(e)})
+        def log_message(self,format,*args):
+            # Request bodies and access tokens are never logged.
+            super().log_message(format,*args)
+    return Handler
+
+
+if __name__=='__main__':
+    p=argparse.ArgumentParser();p.add_argument('--data',required=True);p.add_argument('--flags',required=True)
+    p.add_argument('--wasm',required=True);p.add_argument('--token-file',required=True)
+    p.add_argument('--port',type=int,default=8767);p.add_argument('--host',default='127.0.0.1');a=p.parse_args()
+    token_path=Path(a.token_file)
+    if not token_path.exists():
+        fd=os.open(token_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'w') as f:f.write(secrets.token_urlsafe(32))
+    server=ThreadingHTTPServer((a.host,a.port),handler(Store(a.data,a.flags),token_path.read_text().strip(),Path(__file__).parent,Path(a.wasm)))
+    print(f'Listening on {a.host}:{a.port}',flush=True);server.serve_forever()

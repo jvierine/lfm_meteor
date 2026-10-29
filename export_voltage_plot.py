@@ -16,6 +16,7 @@ def export(folder):
                 'residual_beat_hz','conditional_beat_std_hz')}
         passed=bool(h.attrs['beat_guard_pass'])
     fields['modeled_path_m']=apparent_paths(q,data)
+    fields['time_ns']=data['time_ns']
     t=np.linspace(data['time_s'].min(),data['time_s'].max(),200)
     fields['speed_time_s']=t
     fields['speed_km_s']=(np.linalg.norm(data['center'][3:]+1000*q[3:6])-10**q[6]*np.exp(10**q[7]*t))/1000

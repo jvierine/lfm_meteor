@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SYISR trajectory review</title><link rel="stylesheet" href="style.css">
+<body><header><strong>SYISR / Tri-static review</strong><span id="counts"></span><button id="refresh">Refresh</button><span id="connection" role="status">Connecting</span></header>
+<div id="login" hidden><label>Access token <input id="token" type="password"></label><button id="connect">Connect</button></div>
+<div class="layout"><aside><input id="search" type="search" aria-label="Search events" placeholder="Event ID">
+<select id="filter" aria-label="Filter events"><option value="all">All events</option><option value="pass">Beat check passed</option><option value="fail">Beat check failed</option><option value="flagged">Manually flagged</option></select><nav id="events"></nav></aside>
+<main><section class="eventhead"><div><h1 id="eventname">Trajectory review</h1><span id="quality"></span></div><div><button id="previous" title="Previous event">&#8592;</button><button id="next" title="Next event">&#8594;</button></div></section>
+<div class="toolbar"><button id="flag" disabled>Flag selected</button><button id="restore" disabled>Restore selected</button><button id="clear" disabled>Clear selection</button><button id="undo" disabled>Undo</button><label><input id="bad" type="checkbox">Bad event</label><button id="reset">Reset view</button><span id="selection">0 selected</span></div>
+<div class="legend"><span class="sanya">Sanya</span><span class="danzhou">Danzhou</span><span class="wenchang">Wenchang</span><span class="excluded">Excluded</span><span id="saved" role="status"></span></div>
+<div id="plots"></div><div id="hover" role="status">&nbsp;</div>
+<details><summary>Measurements</summary><div class="tablewrap"><table><thead><tr><th>Select</th><th>Station</th><th>UTC pulse timestamp (ns)</th><th>Time (s)</th><th>Beat residual (Hz)</th><th>Status</th></tr></thead><tbody id="points"></tbody></table></div></details>
+<label class="note">Review note <textarea id="note" rows="2" maxlength="4000"></textarea></label><button id="savenote">Save note</button>
+</main></div><script type="module" src="app.js"></script></body></html>

@@ -1,0 +1,41 @@
+import h5py
+import numpy as np
+import pytest
+from voltage_review.server import Store
+
+
+@pytest.fixture
+def store(tmp_path):
+    event=tmp_path/'data'/'tri_0003_1713794570204349518';event.mkdir(parents=True)
+    with h5py.File(event/'plot.h5','w') as h:
+        h['station']=[0,1];h['time_ns']=np.array([1713794570204349518,1713794570204349519],dtype=np.int64)
+        h['time_s']=[0.,.01];h.attrs['beat_guard_pass']=False
+    return Store(tmp_path/'data',tmp_path/'flags')
+
+
+def payload(data):
+    return dict(version=data['annotation']['version'],fingerprint=data['fingerprint'],excluded=[data['ids'][0]],bad=False,note='early pulse')
+
+
+def test_persistence_exact_ns_and_source_unchanged(store):
+    e='tri_0003_1713794570204349518';source=(store.path(e)/'plot.h5').read_bytes()
+    d=store.data(e);assert d['time_ns']==['1713794570204349518','1713794570204349519']
+    assert store.save(e,payload(d))['version']==1
+    fresh=Store(store.root,store.flags);assert fresh.data(e)['annotation']['excluded']==[d['ids'][0]]
+    assert (store.path(e)/'plot.h5').read_bytes()==source
+    with h5py.File(store.flags/(e+'.h5')) as h:assert h['manual_reject_mask'][:].tolist()==[True,False]
+
+
+def test_conflict_unknown_ids_and_history(store):
+    e='tri_0003_1713794570204349518';d=store.data(e);p=payload(d);store.save(e,p)
+    with pytest.raises(RuntimeError):store.save(e,p)
+    p=payload(store.data(e));p['excluded']=['0:123']
+    with pytest.raises(ValueError):store.save(e,p)
+    p['excluded']=[];store.save(e,p)
+    with h5py.File(store.flags/(e+'.h5')) as h:assert list(h['history'])==['1','2']
+
+
+def test_data_change_and_traversal_rejected(store):
+    e='tri_0003_1713794570204349518';p=payload(store.data(e));p['fingerprint']='wrong'
+    with pytest.raises(RuntimeError):store.save(e,p)
+    with pytest.raises(ValueError):store.data('../secret')
