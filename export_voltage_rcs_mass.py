@@ -35,6 +35,9 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
     interpolator = RegularGridInterpolator((ah, av), values, bounds_error=False, fill_value=np.nan)
     beam = np.isfinite(gain) & (gain >= -10)
     observed = beam & np.isfinite(rcs) & ~rejected
+    rms=float(np.sqrt(np.mean((rcs[observed]-np.mean(rcs[observed]))**2))) if observed.sum()>=2 else np.nan
+    # A shared event-level offset avoids assuming independent scatter samples.
+    offsets=rng['generator'].normal(size=2048)*rms
     pieces = np.split(np.arange(len(t)), np.flatnonzero(np.diff(beam.astype(int)))+1)
     result = []; masses = []; draws = []; requested = 0.
     for indices in pieces:
@@ -56,11 +59,7 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
         active = weights > 0
         if not active.any(): continue
         masses.append(weights[active]@rate[active])
-        # Conditional, receiver-noise-only intervals; shared anchor draws retain
-        # the strong correlation introduced by interpolation across a gap.
-        snr = 10**(rng['snr'][anchors]/10)
-        error = 10/np.log(10)*np.sqrt(1+2*snr)/snr
-        noisy = rcs[anchors]+rng['generator'].normal(size=(256,len(anchors)))*error
+        noisy = rcs[anchors]+offsets[:,None]
         noisy_grid = np.array([np.interp(grid,t[anchors],row) for row in noisy])
         samples = np.array([RATE_FACTOR*10**invert(c,noisy_grid[:,j],source)[0] for j,c in enumerate(curves)]).T
         draws.append(samples[:,active]@weights[active])
@@ -68,12 +67,12 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
                            log10_source=roots, rate_kg_s=rate, integration_weights_s=weights,
                            interpolated_curves_dbsm=curves, anchor_indices=anchors))
     mass=float(sum(masses)) if masses else np.nan
-    samples=np.sum(draws,axis=0) if draws else np.full(256,np.nan)
+    samples=np.sum(draws,axis=0) if draws else np.full(2048,np.nan)
     fraction=float(np.isfinite(samples).mean())
-    interval=np.nanpercentile(samples,[2.5,97.5]) if fraction>=.95 else [np.nan,np.nan]
+    interval=np.percentile(samples,[2.5,97.5]) if fraction==1. else [np.nan,np.nan]
     duration=sum(r['integration_weights_s'].sum() for r in result)
-    return result, dict(mass_kg=mass, lo95_noise_kg=interval[0],hi95_noise_kg=interval[1],
-                       noise_valid_fraction=fraction,covered_duration_s=duration,
+    return result, dict(mass_kg=mass, lo95_scatter_kg=interval[0],hi95_scatter_kg=interval[1],
+                       rcs_rms_db=rms,scatter_valid_fraction=fraction,covered_duration_s=duration,
                        requested_duration_s=requested,n_measured=int(observed.sum()),
                        n_missing_in_beam=int((beam&~observed).sum())), samples
 
@@ -117,10 +116,10 @@ def export(folder, lookup, flags):
             beam_sha256=hashlib.sha256(paths[1].read_bytes()).hexdigest(),
             flag_sha256=hashlib.sha256(flag.read_bytes() if flag.exists() else b'').hexdigest(),
             meaning='Observed ablated mass over bounded in-beam intervals, not initial mass',
-            uncertainty='Conditional receiver noise only; excludes calibration, trajectory, interpolation and scattering-model uncertainty',
+            uncertainty='Event RMS about mean in-beam measured dBsm; shared Gaussian offset across all anchors and intervals, 2048 draws; conditional on trajectory and lookup; includes real RCS evolution, not calibrated total uncertainty',
             lookup_warning='Pilot head-on collisionless FDTD; mesh/time convergence not certified',
             source_program=Path(__file__).read_text(),lookup_file=str(lookup),lookup_correction=correction,rate_factor=RATE_FACTOR)
-        h['mass_noise_samples_kg']=samples
+        h['mass_scatter_samples_kg']=samples
         for k,val in beam.items():h['measurements/'+k]=val
         h['measurements/altitude_km']=altitude;h['measurements/speed_km_s']=speed;h['measurements/rejected']=rejected
         for i,piece in enumerate(pieces):

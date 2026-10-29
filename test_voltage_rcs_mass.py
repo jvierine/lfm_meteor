@@ -30,6 +30,13 @@ def test_no_lookup_extrapolation():
     _,s,_=run([-10.,-10.])
     assert np.isnan(s['mass_kg'])
 
+def test_event_rms_shared_scatter():
+    _,s,draws=run([9.,11.])
+    np.testing.assert_allclose(s['rcs_rms_db'],1.)
+    assert s['lo95_scatter_kg']<s['mass_kg']<s['hi95_scatter_kg']
+    # A shared offset maps to a common multiplicative rate error for this table.
+    np.testing.assert_allclose(np.std(np.log10(draws/s['mass_kg'])),.1,rtol=.05)
+
 def test_bilinear_altitude_velocity_values():
     values=np.array([[[0.,10.,20.,30.],[10.,20.,30.,40.]],
                      [[20.,30.,40.,50.],[30.,40.,50.,60.]]])

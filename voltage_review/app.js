@@ -49,15 +49,15 @@ function fitSummary(){
  const r=data.rcs_mass;
  if(r?.mass_kg>0){
   const span=document.createElement('span');span.className='mass-estimate';
-  if(r.lo95_noise_kg!==null&&r.hi95_noise_kg!==null)span.innerHTML=uncertaintyMath('m',r.lo95_noise_kg,r.mass_kg,r.hi95_noise_kg,'kg',true).replace('<mn>0</mn>','<mtext>RCS</mtext>');
+  if(r.lo95_scatter_kg!=null&&r.hi95_scatter_kg!=null)span.innerHTML=uncertaintyMath('m',r.lo95_scatter_kg,r.mass_kg,r.hi95_scatter_kg,'kg',true).replace('<mn>0</mn>','<mtext>RCS</mtext>');
   else span.textContent=`RCS mass: ${r.mass_kg.toExponential(2)} kg (interval unavailable)`;
   root.append(span);
   const diameter=m=>1e6*Math.cbrt(6*m/(Math.PI*3000));
   const size=document.createElement('span');size.className='mass-estimate';
-  if(r.lo95_noise_kg!==null&&r.hi95_noise_kg!==null)size.innerHTML=uncertaintyMath('d',diameter(r.lo95_noise_kg),diameter(r.mass_kg),diameter(r.hi95_noise_kg),'µm',false).replace('<mn>0</mn>','<mtext>RCS</mtext>');
+  if(r.lo95_scatter_kg!=null&&r.hi95_scatter_kg!=null)size.innerHTML=uncertaintyMath('d',diameter(r.lo95_scatter_kg),diameter(r.mass_kg),diameter(r.hi95_scatter_kg),'µm',false).replace('<mn>0</mn>','<mtext>RCS</mtext>');
   else size.innerHTML=`<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><msub><mi>d</mi><mtext>RCS</mtext></msub><mo>=</mo><mn>${Number(diameter(r.mass_kg).toPrecision(3))}</mn><mspace width="0.3em"/><mtext>µm</mtext></mrow></math> (interval unavailable)`;
   root.append(size);const detail=document.createElement('span');detail.className='mass-status';
-  detail.textContent=`Observed mass loss over ${r.covered_duration_s.toFixed(3)} s; equivalent spherical diameter at 3000 kg/m³, not initial diameter; gain ≥ −10 dB one-way. 95% receiver-noise interval only, not total uncertainty; pilot FDTD lookup.${r.covered_duration_s<.999*r.requested_duration_s?' Partial coverage: some RCS values are outside or ambiguous in the lookup.':''}`;root.append(detail);
+  detail.textContent=`RCS RMS scatter: ${r.rcs_rms_db?.toFixed(2)} dB. 95% empirical scatter interval, using a shared Gaussian RCS offset; not total physical uncertainty. Observed mass loss over ${r.covered_duration_s.toFixed(3)} s; equivalent diameter at 3000 kg/m³, not initial diameter; gain ≥ −10 dB one-way.${r.lo95_scatter_kg==null?' Interval lookup-limited: perturbations leave the tabulated domain or have ambiguous inversions.':''}${r.covered_duration_s<.999*r.requested_duration_s?' Partial coverage.':''}`;root.append(detail);
  }
 }
 function navigate(v,method,args){
