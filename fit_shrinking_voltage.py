@@ -95,7 +95,7 @@ def optimize(model,initial):
     for logr in np.unique(np.clip([initial[6],-5.,-4.,-3.],-6.9,-2.1)):
         q=initial.copy();q[6]=logr
         if np.max(np.abs(model.residual(q)))>=1e9:continue
-        fit=least_squares(model.residual,q,bounds=bounds,x_scale='jac',max_nfev=300,ftol=1e-9,xtol=1e-9,gtol=1e-8)
+        fit=least_squares(model.residual,q,bounds=bounds,jac='3-point',x_scale='jac',max_nfev=800,ftol=1e-11,xtol=1e-11,gtol=1e-9)
         if np.max(np.abs(model.residual(fit.x)))<1e9:candidates.append(fit)
     if not candidates:raise RuntimeError('No valid physical waveform seed')
     return min(candidates,key=lambda f:f.cost)
