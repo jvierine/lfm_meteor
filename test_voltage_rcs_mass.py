@@ -26,20 +26,20 @@ def test_rejected_value_not_used():
     _,b,_=run([10.,np.nan,10.])
     assert a['mass_kg']==b['mass_kg']
 
-def test_no_lookup_extrapolation():
+def test_lookup_boundary_clamping():
     _,s,_=run([-10.,-10.])
-    assert np.isnan(s['mass_kg'])
+    np.testing.assert_allclose(s['mass_kg'],RATE_FACTOR*1e12)
 
 def test_scatter_tails_extend_edge_slopes():
     root,extended=invert_scatter(np.array([0.,10.,20.,30.]),np.array([-10.,15.,40.]),np.array([12.,13.,14.,15.]))
-    np.testing.assert_allclose(root,[11.,13.5,16.])
+    np.testing.assert_allclose(root,[12.,13.5,15.])
     np.testing.assert_array_equal(extended,[True,False,True])
 
 def test_large_scatter_retains_interval():
     _,s,_=run([1.,29.])
     assert s['rcs_rms_db']==14.
     assert np.isfinite(s['lo95_scatter_kg']+s['hi95_scatter_kg'])
-    assert s['uncertainty_extrapolated_fraction']>0
+    assert s['uncertainty_clamped_fraction']>0
 
 def test_event_rms_shared_scatter():
     _,s,draws=run([9.,11.])

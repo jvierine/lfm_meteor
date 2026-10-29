@@ -26,13 +26,13 @@ def invert(curve, measured, source):
 
 
 def invert_scatter(curve, measured, source):
-    """Extend monotone lookup edge slopes for uncertainty tails only."""
+    """Invert with source-boundary clamping, including uncertainty draws."""
     roots,count=invert(curve,measured,source)
     measured=np.asarray(measured)
     extended=np.zeros(measured.shape,dtype=bool)
     if np.all(np.isfinite(curve)) and np.all(np.diff(curve)>0):
         for mask,j in ((measured<curve[0],0),(measured>curve[-1],len(source)-2)):
-            value=source[j]+(measured-curve[j])*(source[j+1]-source[j])/(curve[j+1]-curve[j])
+            value=source[0] if j==0 else source[-1]
             roots=np.where(mask,value,roots);extended|=mask
     return roots,extended
 
@@ -41,7 +41,7 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
     """Interpolate bounded gaps in dBsm; never bridge an out-of-beam interval.
 
     Noise draws belong to measured anchors, not interpolated pseudo-measurements.
-    Nonunique/out-of-table inversions break the integration instead of clipping.
+    Altitude, speed and inferred source strength are clamped to table bounds.
     """
     ah, av, source, values = table
     interpolator = RegularGridInterpolator((ah, av), values, bounds_error=False, fill_value=np.nan)
@@ -60,9 +60,9 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
         requested += end-start
         grid = np.unique(np.r_[t[anchors], np.linspace(start, end, max(33, int(np.ceil((end-start)/.001))+1))])
         a = np.interp(grid, t, altitude); v = np.interp(grid, t, speed)
-        curves = interpolator(np.c_[a,v])
+        curves = interpolator(np.c_[np.clip(a,ah[0],ah[-1]),np.clip(v,av[0],av[-1])])
         power = np.interp(grid, t[anchors], rcs[anchors])
-        roots = np.array([invert(c, p, source)[0] for c,p in zip(curves,power)])
+        roots = np.array([invert_scatter(c, p, source)[0] for c,p in zip(curves,power)])
         rate = RATE_FACTOR*10**roots
         ok = np.isfinite(rate)
         pairs = ok[:-1]&ok[1:]
@@ -86,7 +86,7 @@ def integrate(t, rcs, altitude, speed, gain, rejected, table, rng):
     interval=np.percentile(samples,[2.5,97.5]) if fraction==1. else [np.nan,np.nan]
     duration=sum(r['integration_weights_s'].sum() for r in result)
     return result, dict(mass_kg=mass, lo95_scatter_kg=interval[0],hi95_scatter_kg=interval[1],
-                       uncertainty_extrapolated_fraction=float(extrapolated.mean()),
+                       uncertainty_clamped_fraction=float(extrapolated.mean()),
                        rcs_rms_db=rms,scatter_valid_fraction=fraction,covered_duration_s=duration,
                        requested_duration_s=requested,n_measured=int(observed.sum()),
                        n_missing_in_beam=int((beam&~observed).sum())), samples
@@ -131,7 +131,7 @@ def export(folder, lookup, flags):
             beam_sha256=hashlib.sha256(paths[1].read_bytes()).hexdigest(),
             flag_sha256=hashlib.sha256(flag.read_bytes() if flag.exists() else b'').hexdigest(),
             meaning='Observed ablated mass over bounded in-beam intervals, not initial mass',
-            uncertainty='Event RMS about mean in-beam measured dBsm; shared Gaussian offset across all anchors and intervals, 2048 draws; monotone log-source edge slopes extended for uncertainty tails; nominal observed interval unchanged; conditional on trajectory and lookup, not calibrated total uncertainty',
+            uncertainty='Event RMS about mean in-beam measured dBsm; shared Gaussian offset across all anchors and intervals, 2048 draws; altitude, speed and source strength clamped to lookup boundaries for nominal and uncertainty estimates; boundary-limited conditional interval, not calibrated total uncertainty',
             lookup_warning='Pilot head-on collisionless FDTD; mesh/time convergence not certified',
             source_program=Path(__file__).read_text(),lookup_file=str(lookup),lookup_correction=correction,rate_factor=RATE_FACTOR)
         h['mass_scatter_samples_kg']=samples
