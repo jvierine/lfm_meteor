@@ -3,13 +3,12 @@ use anyhow::Result;
 use rustplotlib::*;
 pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let pulse = h.group("pulses")?;
-    let event = h.group("events")?;
+    let event = h.group("mass_comparison")?;
     let rcs = array(&pulse, "rcs_dbsm")?;
     let alt = array(&pulse, "alt_km")?;
     let speed = array(&pulse, "speed_km_s")?;
-    let power = array(&event, "aero_power_scale_w_weighted_mean")?;
-    let sigma = array(&event, "rcs_m2_weighted_mean")?;
-    let espeed = array(&event, "speed_km_s")?;
+    let power = array(&event, "dynamic_mass_kg")?;
+    let sigma = array(&event, "rcs_mass_kg")?;
     let mut f = Figure::new(IntendedUse::Custom {
         width_mm: 230.,
         font_pt: 9.,
@@ -64,11 +63,10 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         .collect();
     let x: Vec<_> = good.iter().map(|&i| power[i]).collect();
     let y: Vec<_> = good.iter().map(|&i| sigma[i]).collect();
-    let s: Vec<_> = good.iter().map(|&i| espeed[i]).collect();
-    let xlo = array(&event, "aero_power_scale_w_p16")?;
-    let xhi = array(&event, "aero_power_scale_w_p84")?;
-    let ylo = array(&event, "rcs_m2_p16")?;
-    let yhi = array(&event, "rcs_m2_p84")?;
+    let xlo = array(&event, "dynamic_lo95_kg")?;
+    let xhi = array(&event, "dynamic_hi95_kg")?;
+    let ylo = array(&event, "delta_mass_lo95_noise_only_kg")?;
+    let yhi = array(&event, "delta_mass_hi95_noise_only_kg")?;
     let xb: Vec<_> = good
         .iter()
         .map(|&i| [xlo[i].min(power[i]), xhi[i].max(power[i])])
@@ -77,56 +75,35 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         .iter()
         .map(|&i| [ylo[i].min(sigma[i]), yhi[i].max(sigma[i])])
         .collect();
-    let xr = limits(
-        &xb.iter().flatten().map(|v| v.log10()).collect::<Vec<_>>(),
-        0.05,
-    )
-    .map(|v| 10_f64.powf(v));
-    let yr = limits(
-        &yb.iter().flatten().map(|v| v.log10()).collect::<Vec<_>>(),
-        0.05,
-    )
-    .map(|v| 10_f64.powf(v));
+    let xr = [10_f64, 1000_f64].map(|r| 4. * std::f64::consts::PI / 3. * 3000. * (r * 1e-6).powi(3));
+    let yr = xr;
     let mut a = Axes::new(
         xr,
         yr,
-        r"$\rho_a A v_g^3$ (W)",
-        r"$\sigma_{\mathrm{RCS}}$ ($\mathrm{m^2}$)",
+        r"$m_{\mathrm{dyn}}$ (kg)",
+        r"$m_{\mathrm{RCS}}$ (kg)",
     );
     a.set_xscale(AxisScale::Log10)?;
     a.set_yscale(AxisScale::Log10)?;
+    a.xticks = vec![1e-10, 1e-8, 1e-6];
+    a.yticks = a.xticks.clone();
+    a.xticklabels = Some(vec![r"$10^{-10}$".into(), r"$10^{-8}$".into(), r"$10^{-6}$".into()]);
+    a.yticklabels = a.xticklabels.clone();
     let mut p = Panel::new(Rect::new(156., 10., 47., 53.), a);
     p.major_grid("#e4e4e4", 0.4);
     p.errorbars(
         &points(&x, &y),
         Some(&xb),
         Some(&yb),
-        "#888888",
-        0.6,
+        "#000000",
+        0.4,
         0.,
-        0.42,
+        0.5,
     )?;
-    p.scatter_colored(&points(&x, &y), &s, &color, 4.3, 0.86, "#333333")?;
-    let b = 10_f64.powf(
-        x.iter()
-            .zip(&y)
-            .map(|(x, y)| y.log10() - x.log10())
-            .sum::<f64>()
-            / x.len() as f64,
-    );
-    let mut l = Line::new(vec![[xr[0], b * xr[0]], [xr[1], b * xr[1]]], "#222222");
+    dots(&mut p, &x, &y, "#000000", 1.8, 1., false)?;
+    let mut l = Line::new(vec![[xr[0], xr[0]], [xr[1], xr[1]]], "#666666");
     l.dash = Some("2 1".into());
     p.push(Layer::Line(l));
-    let text = scientific_text(&format!(
-        "$\\sigma_{{\\mathrm{{RCS}}}}=b x,\\quad b={b:.1e}\\,\\mathrm{{m^2 W^{{-1}}}}$"
-    ));
-    let mut label = Label::new(
-        text,
-        156.,
-        4.5,
-    );
-    label.background = Some("white".into());
-    f.labels.push(label);
     panel_label(&mut f, &p, "(c)");
     f.panels.push(p);
     f.colorbars.push(Colorbar::new(
