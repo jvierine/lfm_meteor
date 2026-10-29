@@ -33,6 +33,7 @@ def main():
     p.add_argument('--library', type=Path, required=True)
     p.add_argument('--replicates', type=int, default=128)
     p.add_argument('--resume', action='store_true')
+    p.add_argument('--block-seconds', type=float, default=.04)
     a = p.parse_args()
     comm = MPI.COMM_WORLD; rank = comm.rank
     started = time.monotonic()
@@ -61,7 +62,8 @@ def main():
         print('CENTRAL', ok, cache.logp(center)-cache.logp(q), flush=True)
     else: center = None
     center = comm.bcast(center, root=0)
-    jobs = [(width, j) for width in (.02, .04, .08) for j in range(a.replicates)]
+    block_widths=np.array([.5,1.,2.])*a.block_seconds
+    jobs = [(width, j) for width in block_widths for j in range(a.replicates)]
     rows = []
     for index in range(rank, len(jobs), comm.size):
         width, j = jobs[index]
@@ -85,10 +87,10 @@ def main():
         widths = np.array([r[0] for r in rows]); ok = np.array([r[2] for r in rows]); params = np.array([r[3] for r in rows])
         masses = 4*np.pi/3*3000*10**(3*params[:,6])
         save(a.output/'bootstrap.h5', dict(block_seconds=widths, converged=ok, params=params, mass_kg=masses),
-             dict(method='time-block exponential multiplier likelihood bootstrap', primary_block_seconds=.04,
+             dict(method='time-block exponential multiplier likelihood bootstrap', primary_block_seconds=a.block_seconds,
                   flag_revision=flag_revision, source=str(a.source), elapsed_seconds=time.monotonic()-started,
                   replicates_per_width=a.replicates, physical_parameters_fixed=True))
-        for width in (.02,.04,.08):
+        for width in block_widths:
             select=(widths==width)&ok
             print('SUMMARY', width, int(select.sum()), np.quantile(masses[select],[.025,.5,.975]), flush=True)
         if not np.all(ok):

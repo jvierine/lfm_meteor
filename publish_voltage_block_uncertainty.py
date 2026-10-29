@@ -15,13 +15,21 @@ def main():
     p.add_argument('--event-folder',type=Path,required=True)
     p.add_argument('--bootstrap',type=Path,required=True)
     p.add_argument('--library',type=Path,required=True)
+    p.add_argument('--flags',type=Path)
     a=p.parse_args(); folder=a.event_folder
     with h5py.File(a.bootstrap/'bootstrap.h5') as h:
         assert np.all(h['converged'][:]), 'Failed bootstrap optimization'
-        selected=h['block_seconds'][:]==.04
+        block=float(h.attrs['primary_block_seconds'])
+        selected=np.isclose(h['block_seconds'][:],block,rtol=1e-10,atol=0.)
         draws=h['params'][:][selected]
         revision=int(h.attrs['flag_revision'])
         assert len(draws)>=500
+    if a.flags:
+        flag=a.flags/(folder.name+'.h5')
+        if flag.exists():
+            with h5py.File(flag) as h:
+                assert int(h.attrs.get('version',0))==revision, 'Manual flags changed; refit before publishing'
+        else: assert revision==0, 'Missing flags file for nonzero revision'
     with h5py.File(a.bootstrap/'central_refit.h5') as h:
         assert h.attrs['converged'] and abs(h.attrs['logp_gain'])<.01, 'Central optimum changed; regenerate fit products first'
     with h5py.File(folder/'input.h5') as h:
@@ -44,9 +52,9 @@ def main():
     fields['speed_lower95_km_s'],fields['speed_upper95_km_s']=np.quantile(speeds,[.025,.975],axis=0)
     method='time-block exponential multiplier likelihood bootstrap'
     updates=dict(uncertainty_status='95% empirical time-block bootstrap interval',uncertainty_method=method,
-                 uncertainty_updated_unix=time.time(),uncertainty_bootstrap_block_s=.04,
+                 uncertainty_updated_unix=time.time(),uncertainty_bootstrap_block_s=block,
                  uncertainty_bootstrap_replicates=len(draws),uncertainty_converged=True,
-                 mass_status='Direct shrinking-radius mass; 40 ms block-bootstrap uncertainty; density 3000 kg/m3, Gamma=1, sigma=1e-8 fixed; physical systematic errors excluded')
+                 mass_status=f'Direct shrinking-radius mass; {block*1000:.1f} ms block-bootstrap uncertainty; density 3000 kg/m3, Gamma=1, sigma=1e-8 fixed; physical systematic errors excluded')
     attrs.update(updates)
     for k in list(attrs):
         if k.startswith('posterior_'): del attrs[k]
@@ -56,7 +64,7 @@ def main():
         shutil.copy2(folder/name,backup/name)
     save(folder/'dynamic_mass_posterior.h5',dict(radius_m=radius,mass_kg=mass),
          dict(model='direct shrinking radius',uncertainty_method=method,bootstrap_optimizer_converged=True,
-              is_mcmc_posterior=False,confidence=.95,block_seconds=.04))
+              is_mcmc_posterior=False,confidence=.95,block_seconds=block))
     save(folder/'block_bootstrap_states.h5',dict(params=draws,paths_m=paths,speeds_km_s=speeds),updates)
     save(folder/'plot.h5',fields,attrs)
     with h5py.File(folder/'complete.h5') as h: complete=dict(h.attrs)
