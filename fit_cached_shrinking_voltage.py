@@ -45,29 +45,32 @@ class Cached:
 
 
 def covariance(cache,q):
-    # Numerical curvature in scaled coordinates; retain cross-parameter terms.
-    step=np.r_[np.full(3,1e-4),np.full(3,1e-3),.003]
+    # Profile-residual Fisher metric avoids subtracting large log likelihoods.
+    # Raw voltages are evaluated only here, never inside the MCMC loop.
+    step=np.r_[np.full(3,1e-5),np.full(3,1e-4),1e-4]
     upper=np.r_[np.full(3,20.),np.full(3,40.),-2.]
+    lower=np.r_[np.full(3,-20.),np.full(3,-40.),-7.]
     step=np.where(q+2*step>upper,-step,step)
+    baseline=cache.model.residual(q)
     for attempt in range(5):
-        eye=np.diag(step);h=np.empty((7,7));f=cache.logp(q)
-        one=np.array([cache.logp(q+e) for e in eye])
-        minus=np.array([cache.logp(q-e) for e in eye])
+        eye=np.diag(step);columns=[]
         for i in range(7):
-            h[i,i]=-(one[i]-2*f+minus[i]) if np.isfinite(minus[i]) else -(cache.logp(q+2*eye[i])-2*one[i]+f)
-            for j in range(i):
-                values=[cache.logp(q+si*eye[i]+sj*eye[j]) for si,sj in [(1,1),(1,-1),(-1,1),(-1,-1)]]
-                h[i,j]=h[j,i]=-(values[0]-values[1]-values[2]+values[3])/4 if np.all(np.isfinite(values)) else -(values[0]-one[i]-one[j]+f)
-        if np.all(np.isfinite(h)):break
+            plus=cache.model.residual(q+eye[i])
+            minus=cache.model.residual(q-eye[i]) if np.all(q-eye[i]>=lower) and np.all(q-eye[i]<=upper) else None
+            if np.max(abs(plus))>=1e9:break
+            columns.append((plus-minus)/2 if minus is not None and np.max(abs(minus))<1e9 else plus-baseline)
+        if len(columns)==7:
+            jac=np.asarray(columns);h=jac@jac.T
+            if np.all(np.isfinite(h)):break
         step*=.2
-    else:raise RuntimeError('Curvature stencil outside cache; need recentering')
+    else:raise RuntimeError('Invalid physical derivative stencil')
     w,u=np.linalg.eigh(h)
     # Regularization affects proposal only, never likelihood or prior.
-    inv=(u/np.maximum(w,max(np.max(w)*1e-8,1e-6)))@u.T
+    inv=(u/np.maximum(w,max(np.max(w)*1e-12,1e-12)))@u.T
     cov=step[:,None]*inv*step[None,:]
-    limit=np.r_[np.full(3,.01),np.full(3,.1),.5]
-    scale=np.minimum(1.,limit/np.sqrt(np.diag(cov)))
-    return scale[:,None]*cov*scale[None,:]
+    limit=np.r_[np.full(3,1.),np.full(3,10.),1.]
+    scale=min(1.,float(np.min(limit/np.sqrt(np.diag(cov)))))
+    return cov*scale**2
 
 
 def optimize(cache,q):
