@@ -141,6 +141,15 @@ impl Cache {
     })();match result {Ok(())=>1,Err(e)=>{eprintln!("{e:#}");0}}
 }
 
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_margin(c:*const Cache,v:*const Voltage,q:*const f64)->f64 {
+    let v=&*v;let c=&*c;let q=std::slice::from_raw_parts(q,v.dimension());
+    let Some(obs)=v.observables(q) else{return -1.;};let k=v.bandwidth/v.duration/C;
+    obs.iter().enumerate().flat_map(|(i,o)|{
+        let s=&c.surfaces[i];let b=o[1]+k*o[0];
+        [1.-((o[0]-s.origin[0])/s.half[0]).abs(),1.-((b-s.origin[1])/s.half[1]).abs()]
+    }).fold(1.,f64::min)
+}
+
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn cubic_recovers_polynomial() {

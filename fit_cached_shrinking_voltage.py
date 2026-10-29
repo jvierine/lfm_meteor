@@ -21,6 +21,7 @@ def native(path):
     lib.voltage_cache_build.argtypes=[ct.c_void_p,PTR,ct.c_size_t,ct.c_double,ct.c_char_p];lib.voltage_cache_build.restype=ct.c_void_p
     lib.voltage_cache_free.argtypes=[ct.c_void_p]
     lib.voltage_cache_logp.argtypes=[ct.c_void_p,ct.c_void_p,PTR,ct.c_int];lib.voltage_cache_logp.restype=ct.c_double
+    lib.voltage_cache_margin.argtypes=[ct.c_void_p,ct.c_void_p,PTR];lib.voltage_cache_margin.restype=ct.c_double
     lib.voltage_cache_sample.argtypes=[ct.c_void_p,ct.c_void_p,PTR,PTR,ct.c_size_t,ct.c_size_t,ct.c_double,ct.c_uint64,ct.c_char_p]
     lib.voltage_cache_sample.restype=ct.c_int
     return lib
@@ -37,6 +38,9 @@ class Cached:
         return self.model.lib.voltage_cache_logp(self.handle,self.model.handle,q.ctypes.data_as(PTR),int(exact))
     def close(self):
         self.model.lib.voltage_cache_free(self.handle)
+    def margin(self,q):
+        q=np.ascontiguousarray(q,dtype=float)
+        return self.model.lib.voltage_cache_margin(self.handle,self.model.handle,q.ctypes.data_as(PTR))
 
 
 def covariance(cache,q):
@@ -55,12 +59,12 @@ def covariance(cache,q):
 
 
 def optimize(cache,q):
-    scales=np.r_[np.full(3,.001),np.full(3,.01),.1]
+    transform=np.linalg.cholesky(covariance(cache,q))
     def objective(z):
-        lp=cache.logp(q+scales*z)
+        lp=cache.logp(q+transform@z)
         return -lp if np.isfinite(lp) else 1e30
     fit=minimize(objective,np.zeros(7),method='Powell',options=dict(maxiter=100,xtol=1e-5,ftol=1e-9))
-    return q+scales*fit.x,fit
+    return q+transform@fit.x,fit
 
 
 def validate(cache,q,cov,folder):
@@ -135,8 +139,10 @@ def run(args,event):
     chains=np.stack([x[:length] for x in chains]);flat=chains.reshape(-1,7)
     probes=flat[np.linspace(0,len(flat)-1,64,dtype=int)]
     err=np.array([cache.logp(p)-cache.logp(p,True) for p in probes]);err-=cache.logp(q)-cache.logp(q,True)
-    save(folder/'posterior_cache_validation.h5',dict(params=probes,delta_error=err),dict(passed=bool(np.max(abs(err))<=.2),max_delta_logp_error=float(np.max(abs(err)))))
+    margin=min(cache.margin(p) for p in flat[np.linspace(0,len(flat)-1,min(2048,len(flat)),dtype=int)])
+    save(folder/'posterior_cache_validation.h5',dict(params=probes,delta_error=err),dict(passed=bool(np.max(abs(err))<=.2 and margin>.1),max_delta_logp_error=float(np.max(abs(err))),minimum_boundary_margin=margin))
     if np.max(abs(err))>.2:raise RuntimeError('Posterior left validated interpolation accuracy region; refine cache')
+    if margin<=.1:raise RuntimeError('Posterior approaches cache boundary; expand cache before reporting intervals')
     attrs=export(folder,model,q,meta,chains)
     attrs.update(uncertainty_elapsed_seconds=time.monotonic()-started,uncertainty_budget_seconds=args.budget,
                  total_elapsed_seconds=time.monotonic()-began,cache_validated=True)
