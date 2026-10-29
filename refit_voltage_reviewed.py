@@ -18,9 +18,11 @@ def masked_input(source, flags, target):
     with h5py.File(source) as h:
         data = {k: h[k][()] for k in h}
         attrs = dict(h.attrs)
-    with h5py.File(flags) as h:
-        excluded = set(h['excluded'].asstr()[:])
-        revision = int(h.attrs['version'])
+    excluded, revision = set(), 0
+    if Path(flags).exists():
+        with h5py.File(flags) as h:
+            excluded = set(h['excluded'].asstr()[:])
+            revision = int(h.attrs['version'])
     ids = [f'{s}:{t}' for s, t in zip(data['station'], data['time_ns'])]
     if len(set(ids)) != len(ids) or excluded - set(ids):
         raise ValueError('Duplicate or unmatched manual measurement IDs')
@@ -40,7 +42,7 @@ def masked_input(source, flags, target):
             h[k] = v
         h.attrs.update(attrs)
         h.attrs.update(manual_flag_revision=revision,
-                       manual_flag_sha256=hashlib.sha256(Path(flags).read_bytes()).hexdigest(),
+                       manual_flag_sha256=hashlib.sha256(Path(flags).read_bytes()).hexdigest() if Path(flags).exists() else 'no manual exclusions',
                        manually_excluded_count=len(excluded), original_measurement_count=len(ids),
                        original_input=str(source))
         h.attrs['manually_excluded_ids'] = sorted(excluded)
@@ -54,6 +56,9 @@ def main():
     p.add_argument('--max-nfev', type=int, default=150)
     p.add_argument('--warmup', type=int, default=4000)
     p.add_argument('--draws', type=int, default=8000)
+    p.add_argument('--all-events',action='store_true')
+    p.add_argument('--sample-all',action='store_true')
+    p.add_argument('--review-products',action='store_true')
     args = p.parse_args()
     comm = MPI.COMM_WORLD
     events = []
@@ -61,9 +66,11 @@ def main():
         with h5py.File(flag) as h:
             if len(h['excluded']):
                 events.append(flag.stem)
+    if args.all_events:
+        events=sorted(p.parent.name for p in Path(args.source).glob('tri_*/input.h5'))
     Path(args.output).mkdir(parents=True, exist_ok=True)
     if comm.rank == 0:
-        print(f'Refitting {len(events)} manually flagged events on {comm.size} workers', flush=True)
+        print(f'Refitting {len(events)} events on {comm.size} workers; sample_all={args.sample_all}', flush=True)
     lib = driver.load_library(args.library)
     for event in events[comm.rank::comm.size]:
         def prepare(path, unused_events, unused_reference):
@@ -73,6 +80,11 @@ def main():
         try:
             print('START '+event, flush=True)
             result = driver.run_one(args, event, [], {}, lib)
+            if args.review_products:
+                from voltage_path_uncertainty import add_intervals
+                from export_voltage_exclusions import export as excluded_export
+                add_intervals(Path(args.output)/event)
+                excluded_export(Path(args.output)/event,lib)
             print('DONE '+event+' '+result, flush=True)
         except Exception:
             error = traceback.format_exc()

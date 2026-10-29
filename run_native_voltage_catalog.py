@@ -238,7 +238,7 @@ def run_one(args, event, events, reference, lib):
         os.replace(out/'fit.h5.partial',out/'fit.h5')
         from export_voltage_plot import export
         export(out)
-        sampling_allowed=bool(args.draws>0 and beat_guard and result.success and np.all(data['noise_covariance_pass']))
+        sampling_allowed=bool(args.draws>0 and (getattr(args,'sample_all',False) or (beat_guard and result.success and np.all(data['noise_covariance_pass']))))
         if sampling_allowed:
             widths=np.r_[np.full(3,1e-4),np.full(3,1e-3),.01,.01].astype(float)
             q=np.ascontiguousarray(result.x)
@@ -253,6 +253,7 @@ def run_one(args, event, events, reference, lib):
                            beat_guard_pass=beat_guard,optimizer_success=result.success,
                            noise_covariance_pass=bool(np.all(data['noise_covariance_pass'])),
                            sampling_blocked_by_guard=bool(args.draws>0 and not sampling_allowed),
+                           diagnostics_only=bool(getattr(args,'sample_all',False)),
                            sampler='Rust random-walk Metropolis-Hastings; proposal frozen after warmup',
                            amplitude_prior='Flat complex Re/Im prior, amplitudes analytically marginalized in MCMC',
                            convergence_verified=False)

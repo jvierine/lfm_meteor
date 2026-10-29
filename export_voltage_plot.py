@@ -114,6 +114,12 @@ def export(folder):
     fields['speed_km_s']=(np.linalg.norm(data['center'][3:]+1000*q[3:6])-10**q[6]*np.exp(10**q[7]*t))/1000
     bands, diagnostics = posterior_bands(folder, data, t)
     fields.update(bands)
+    if 'initial_mass_kg_quantiles' in bands:
+        try:
+            r,m,_=initial_dynamic_mass(q[None,:],data)
+            diagnostics.update(best_initial_mass_kg=float(m[0]),best_initial_radius_m=float(r[0]))
+        except ValueError:
+            pass
     with h5py.File(folder/'plot.h5.partial','w') as h:
         for k,v in fields.items(): h[k]=v
         h.attrs['beat_guard_pass']=passed

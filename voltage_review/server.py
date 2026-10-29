@@ -55,6 +55,19 @@ class Store:
         data['uncertainty_status']=uncertainty_status
         data.update(fit_metadata)
         data['event']=event;data['annotation']=self.annotation(event)
+        data['omitted_measurements']=[]
+        ghost=self.path(event)/'excluded_measurements.h5'
+        if ghost.exists():
+            with h5py.File(ghost) as h:
+                for i,(s,t) in enumerate(zip(h['station'][:],h['time_ns'][:])):
+                    data['omitted_measurements'].append(dict(id=f'{s}:{t}',station=int(s),time_ns=str(t),**{k:float(h[k][i]) for k in ('time_s','path_m','modeled_path_m','residual_beat_hz')}))
+        elif self.path(event)!=self.root/event:
+            with h5py.File(self.root/event/'plot.h5') as h:
+                present=set(data['ids'])
+                for i,(s,t) in enumerate(zip(h['station'][:],h['time_ns'][:])):
+                    ident=f'{s}:{t}'
+                    if ident not in present:
+                        data['omitted_measurements'].append(dict(id=ident,station=int(s),time_ns=str(t),time_s=float(h['time_s'][i]),path_m=float(h['seed_apparent_path_m'][i])))
         return data
 
     def catalog(self):
