@@ -55,7 +55,13 @@ def export(folder, source_root, noise):
     if len(matches)!=1:raise ValueError('Cannot uniquely match Sanya UTC pulse IDs')
     index={int(t):i for i,t in enumerate(matches[0])}
     snr=np.array([snr[index[int(t)]] for t in d['time_ns']])
-    xyz=positions(q,d);los=xyz-d['tx'];distance=np.linalg.norm(los,axis=1)
+    if len(q)==7:
+        with h5py.File(folder/'physical_states.h5') as h:
+            mask=h['station'][:]==0
+            np.testing.assert_array_equal(h['time_ns'][:][mask],d['time_ns'])
+            xyz=h['position_ecef_m'][:][mask];d['time_s']=h['time_s'][:][mask]
+    else:xyz=positions(q,d)
+    los=xyz-d['tx'];distance=np.linalg.norm(los,axis=1)
     lat,lon,_=jcoord.ecef2geodetic(*d['tx'])
     enu=ecef_to_enu_vectors(los,lat,lon)
     site=gain.SITES[0];p=gain.azel_to_enu(site.pointing_az_deg,site.pointing_el_deg)

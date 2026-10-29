@@ -30,7 +30,10 @@ def save(path,fields,attrs):
 def prepare(args,event,folder):
     d=masked_input(args.source/event/'input.h5',args.flags/(event+'.h5'),folder/'input.h5')
     t0=float(d['initial_detection_time_s'])
-    with h5py.File(args.initial/event/'fit.h5') as h:q=h['params'][:]
+    guess=args.initial/event/'fit.h5'
+    if guess.exists():
+        with h5py.File(guess) as h:q=h['params'][:]
+    else:q=np.r_[np.zeros(6),2.,0.]
     x=d['center'][:3]+1000*q[:3];v=d['center'][3:]+1000*q[3:6]
     speed=np.linalg.norm(v);u=v/speed;a=10**q[6];b=10**q[7]
     x=x+u*(speed*t0-a*np.expm1(b*t0)/b);v=u*(speed-a*np.exp(b*t0))
@@ -140,13 +143,44 @@ def export(folder,model,q,fit,chains=None):
     return attrs
 
 
+def full_products(args,event,folder,model,q):
+    """Evaluate excluded pulses too, without including them in the likelihood."""
+    with h5py.File(args.source/event/'input.h5') as h:full={k:h[k][()] for k in h}
+    with h5py.File(folder/'input.h5') as h:shift=float(h.attrs['time_origin_shift_s'])
+    full['time_s']-=shift
+    for k in ('center','height_m','density_kg_m3'):full[k]=model.d[k]
+    temp=folder/'full_prediction';temp.mkdir(exist_ok=True)
+    save(temp/'input.h5',full,{})
+    other=Model(model.lib,temp,full);s=other.states(q)
+    v0=full['center'][3:]+1000*q[3:6];u=v0/np.linalg.norm(v0)
+    x=full['center'][:3]+1000*q[:3]+s[:,0,None]*u;v=s[:,1,None]*u
+    f=full['frames']
+    xyz=f[:,:3]+np.einsum('nij,nj->ni',f[:,6:15].reshape(-1,3,3),x)+np.einsum('nij,nj->ni',f[:,24:33].reshape(-1,3,3),v)
+    save(folder/'physical_states.h5',dict(time_s=full['time_s'],time_ns=full['time_ns'],station=full['station'],position_ecef_m=xyz,speed_km_s=s[:,1]/1000),dict(model='direct shrinking radius'))
+    retained=set(zip(model.d['station'],model.d['time_ns']))
+    missing=np.array([i for i,k in enumerate(zip(full['station'],full['time_ns'])) if k not in retained],dtype=int)
+    if len(missing):
+        prediction=other.prediction(q);paths=other.paths(q,s)
+        anchor=C*(359.45540369317763e-6+full['gate']/full['fs']);t=full['sample_time_s']-anchor[:,None]/C;rate=full['bandwidth']/full['duration']
+        reference=np.exp(2j*np.pi*(full['bandwidth']/2*t-rate/2*t*t));raw=full['real']+1j*full['imag']
+        measured=[];beats=[]
+        for i in missing:
+            measured.append(anchor[i]+C/rate*beat_peak(raw[i]*np.conj(reference[i]),full['fs']))
+            phase=np.divide(prediction[i],abs(prediction[i]),out=np.zeros_like(prediction[i]),where=abs(prediction[i])>.2*max(abs(prediction[i])))
+            beats.append(beat_peak(raw[i]*np.conj(phase),full['fs']))
+        fields={k:full[k][missing] for k in ('station','time_ns','time_s')}
+        fields.update(path_m=measured,modeled_path_m=paths[missing],residual_beat_hz=beats)
+        save(folder/'excluded_measurements.h5',fields,dict(used_in_fit=False))
+    model.lib.voltage_free(other.handle)
+
+
 def main():
     p=argparse.ArgumentParser()
     for key in ('source','initial','flags','output'):p.add_argument('--'+key,type=Path,required=True)
     p.add_argument('--library',required=True);p.add_argument('--event');p.add_argument('--warmup',type=int,default=16000);p.add_argument('--draws',type=int,default=32000)
     p.add_argument('--synthetic',action='store_true');args=p.parse_args();comm=MPI.COMM_WORLD
     lib=load_library(args.library);lib.voltage_states.argtypes=[ct.c_void_p,PTR,PTR];lib.voltage_states.restype=ct.c_int
-    events=[args.event] if args.event else sorted(f.parent.name for f in args.initial.glob('tri_*/fit.h5'))
+    events=[args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5'))
     for event in events[comm.rank::comm.size]:
         folder=args.output/event;folder.mkdir(parents=True,exist_ok=True)
         try:
@@ -157,11 +191,19 @@ def main():
                 with h5py.File(folder/'input.h5','a') as h:
                     h['real'][:]=pred.real;h['imag'][:]=pred.imag
                 d['real']=pred.real;d['imag']=pred.imag;model=Model(lib,folder,d)
-            fit=optimize(model,initial);q=np.ascontiguousarray(fit.x)
+            start=initial.copy()
+            if args.synthetic:start+=np.array([.002,-.003,.002,.005,-.004,.003,.15])
+            fit=optimize(model,start);q=np.ascontiguousarray(fit.x)
             meta=dict(fit_unix_time=time.time(),cost=fit.cost,optimizer_success=fit.success,model='direct shrinking-radius voltage',
                       Gamma=1.,Cd=2.,sigma_s2_m2=1e-8,material_density_kg_m3=3000.,prior='Uniform x0,v0,log10 r0; radius limits 1e-7 to 1e-2 m')
             save(folder/'fit.h5',dict(params=q,initial=initial),meta);export(folder,model,q,meta)
             print('FIT',event,'radius_m',10**q[6],'cost',fit.cost,flush=True)
+            if not args.synthetic:
+                full_products(args,event,folder,model,q)
+                from voltage_path_uncertainty import path_intervals
+                with h5py.File(folder/'plot.h5') as h:observed=h['seed_apparent_path_m'][:]
+                interval=path_intervals(d,model.prediction(q),observed)
+                save(folder/'path_measurement_uncertainty.h5',dict(time_ns=d['time_ns'],station=d['station'],path_measurement_lower95_m=interval[:,0],path_measurement_upper95_m=interval[:,1]),dict(confidence=.95,conditional=True))
             if args.synthetic:
                 recovered=abs(q[6]-initial[6])<.005 and np.linalg.norm(q[:3]-initial[:3])<.001 and np.linalg.norm(q[3:6]-initial[3:6])<.001
                 save(folder/'validation.h5',dict(truth=initial,recovered=q),dict(passed=recovered,kind='Noiseless waveform recovery; not statistical coverage validation'))

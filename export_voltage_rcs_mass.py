@@ -117,8 +117,15 @@ def export(folder, lookup, flags):
         d.update({k:h[k][:][keep] for k in ('frames','time_s','time_ns')})
     np.testing.assert_array_equal(d['time_ns'],beam['time_ns'])
     with h5py.File(folder/'fit.h5') as h:q=h['params'][:]
-    altitude=np.array([jcoord.ecef2geodetic(*p)[2]/1000 for p in positions(q,d)])
-    speed=(np.linalg.norm(d['center'][3:]+1000*q[3:6])-10**q[6]*np.exp(10**q[7]*d['time_s']))/1000
+    if len(q)==7:
+        with h5py.File(folder/'physical_states.h5') as h:
+            mask=h['station'][:]==0
+            np.testing.assert_array_equal(h['time_ns'][:][mask],beam['time_ns'])
+            altitude=np.array([jcoord.ecef2geodetic(*p)[2]/1000 for p in h['position_ecef_m'][:][mask]])
+            speed=h['speed_km_s'][:][mask]
+    else:
+        altitude=np.array([jcoord.ecef2geodetic(*p)[2]/1000 for p in positions(q,d)])
+        speed=(np.linalg.norm(d['center'][3:]+1000*q[3:6])-10**q[6]*np.exp(10**q[7]*d['time_s']))/1000
     excluded=set()
     if flag.exists():
         with h5py.File(flag) as h:excluded=set(h['excluded'].asstr()[:])
