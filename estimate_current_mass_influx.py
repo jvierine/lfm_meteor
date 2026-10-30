@@ -31,6 +31,15 @@ def collect():
                     if int(p.attrs.get('fit_flag_revision', -1)) != revision:
                         raise ValueError('flags awaiting refit')
                     if kind == 'dynamic':
+                        audit = ROOT/'results/suspicious_mass_bootstrap_20261029'/folder.name/'status.h5'
+                        if audit.exists():
+                            with h5py.File(audit) as check:
+                                reason = str(check.attrs.get('reason', ''))
+                                published = bool(check.attrs.get('published', False))
+                            if 'failed' in reason or 'budget exhausted' in reason:
+                                raise ValueError('bootstrap audit unresolved; old thermal interval is not cleared')
+                            if published and 'bootstrap' not in str(p.attrs.get('uncertainty_method', '')):
+                                raise ValueError('published bootstrap missing from local snapshot')
                         if not p.attrs.get('uncertainty_converged', False):
                             raise ValueError('unresolved uncertainty')
                         lo, _, hi = p['initial_mass_kg_quantiles'][:]
