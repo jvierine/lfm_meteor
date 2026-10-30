@@ -21,10 +21,15 @@ fn main() -> Result<()> {
         counts[s as usize][((r+limit)/width).floor() as usize] += 1.;
     }
     let ymax=counts.iter().flatten().copied().fold(0., f64::max)+1.;
+    let catalogue=residual.len()>100;
+    let baseline=if catalogue {0.7} else {0.};
     let mut f=Figure::new(IntendedUse::ArticleWide);
     f.width_mm=180.; f.height_mm=104.;
-    let mut axes=Axes::new([-limit,limit],[0.,ymax],"Apparent path residual (m)","Measurements per 2 m bin");
-    axes.yticks=(0..=ymax as usize).map(|x|x as f64).collect();
+    let mut axes=Axes::new([-limit,limit],[baseline,ymax*1.1],"Apparent path residual (m)","Measurements per 2 m bin");
+    if catalogue {
+        axes.set_yscale(AxisScale::Log10)?;
+        axes.yticks=(0..=5).map(|x|10_f64.powi(x)).filter(|x|*x<=ymax).collect();
+    } else {axes.yticks=(0..=ymax as usize).map(|x|x as f64).collect();}
     let mut p=Panel::new(Rect::new(22.,27.,150.,58.),axes);
     let mut entries=Vec::new();
     let out=hdf5::File::create(folder.join("delay_residual_histogram.h5"))?;
@@ -32,9 +37,9 @@ fn main() -> Result<()> {
     out.new_dataset_builder().with_data(&station).create("station")?;
     out.new_dataset_builder().with_data(&edges).create("bin_edges_m")?;
     for s in 0..3 {
-        let mut xy=vec![[edges[0],0.]];
-        for i in 0..nbins {xy.extend([[edges[i],counts[s][i]],[edges[i+1],counts[s][i]]]);}
-        xy.push([edges[nbins],0.]);
+        let mut xy=vec![[edges[0],baseline]];
+        for i in 0..nbins {let y=counts[s][i].max(baseline);xy.extend([[edges[i],y],[edges[i+1],y]]);}
+        xy.push([edges[nbins],baseline]);
         p.push(Layer::Line(Line::new(xy,colors[s])));
         let n=station.iter().filter(|&&x|x==s as i64).count();
         let rms=(residual.iter().zip(&station).filter(|(_,j)|**j==s as i64).map(|(r,_)|r*r).sum::<f64>()/n as f64).sqrt();
