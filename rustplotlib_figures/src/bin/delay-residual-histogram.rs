@@ -2,6 +2,12 @@ use anyhow::Result;
 use rustplotlib::*;
 use std::path::PathBuf;
 
+fn median(values: &[f64]) -> f64 {
+    let mut sorted=values.to_vec();sorted.sort_by(f64::total_cmp);
+    let n=sorted.len();
+    if n%2==0 {(sorted[n/2-1]+sorted[n/2])/2.} else {sorted[n/2]}
+}
+
 fn main() -> Result<()> {
     let folder = PathBuf::from(std::env::args().nth(1).expect("event folder"));
     let h = hdf5::File::open(folder.join("plot.h5"))?;
@@ -24,18 +30,23 @@ fn main() -> Result<()> {
     let catalogue=residual.len()>100;
     let baseline=if catalogue {0.7} else {0.};
     let mut f=Figure::new(IntendedUse::ArticleWide);
-    f.width_mm=180.; f.height_mm=104.;
+    f.width_mm=180.; f.height_mm=84.;
     let mut axes=Axes::new([-limit,limit],[baseline,ymax*1.1],"Apparent path residual (m)","Measurements per 2 m bin");
     if catalogue {
         axes.set_yscale(AxisScale::Log10)?;
         axes.yticks=(0..=5).map(|x|10_f64.powi(x)).filter(|x|*x<=ymax).collect();
     } else {axes.yticks=(0..=ymax as usize).map(|x|x as f64).collect();}
-    let mut p=Panel::new(Rect::new(22.,27.,150.,58.),axes);
+    let mut p=Panel::new(Rect::new(22.,6.,150.,58.),axes);
     let mut entries=Vec::new();
     let out=hdf5::File::create(folder.join("delay_residual_histogram.h5"))?;
     out.new_dataset_builder().with_data(&residual).create("model_minus_observed_m")?;
     out.new_dataset_builder().with_data(&station).create("station")?;
     out.new_dataset_builder().with_data(&edges).create("bin_edges_m")?;
+    let center=median(&residual);
+    let mad=median(&residual.iter().map(|r|(r-center).abs()).collect::<Vec<_>>());
+    out.new_attr::<f64>().create("median_residual_m")?.write_scalar(&center)?;
+    out.new_attr::<f64>().create("unscaled_median_absolute_deviation_m")?.write_scalar(&mad)?;
+    println!("All stations: median={center:.6} m, MAD={mad:.6} m");
     for s in 0..3 {
         let mut xy=vec![[edges[0],baseline]];
         for i in 0..nbins {let y=counts[s][i].max(baseline);xy.extend([[edges[i],y],[edges[i+1],y]]);}
@@ -47,8 +58,9 @@ fn main() -> Result<()> {
         out.new_dataset_builder().with_data(&counts[s]).create(names[s])?;
         println!("{} n={} RMS={:.4} m",names[s],n,rms);
     }
-    let mut legend=Legend::new(entries);legend.position=LegendPosition::AboveCenter;legend.columns=1;
+    let mut legend=Legend::new(entries);legend.position=LegendPosition::UpperRight;legend.columns=1;
     p.legend=Some(legend);f.panels.push(p);
+    f.labels.push(Label::new(format!("All stations: MAD $={mad:.2}$ m"),137.,32.));
     f.latex.cache=folder.parent().unwrap().join(".rustplotlib-cache");
     for ext in ["png","pdf"] {f.save(folder.join(format!("delay_residual_histogram.{ext}")))?;}
     Ok(())
