@@ -104,6 +104,39 @@ def physical_start_points(model,initial,current):
     return points
 
 
+def kinematic_center(d, folder):
+    """Recenter numerical bounds using apparent-path motion, not a WJ speed."""
+    k=d['bandwidth']/d['duration']
+    anchor=C*(359.45540369317763e-6+d['gate']/d['fs'])
+    t=d['sample_time_s']-anchor[:,None]/C
+    reference=np.exp(2j*np.pi*(d['bandwidth']/2*t-k/2*t*t))
+    measured=anchor+C*np.array([beat_peak(row,d['fs']) for row in (d['real']+1j*d['imag'])*np.conj(reference)])/k
+    center=d['center'].copy();f=d['frames']
+    def paths(q):
+        x0=center[:3]+1000*q[:3];v=center[3:]+1000*q[3:]
+        nominal=x0+d['time_s'][:,None]*v;x=nominal.copy()
+        def frame(x):
+            return (f[:,:3]+np.einsum('nij,nj->ni',f[:,6:15].reshape(-1,3,3),x)+np.einsum('nij,j->ni',f[:,24:33].reshape(-1,3,3),v),
+                    f[:,3:6]+np.einsum('nij,nj->ni',f[:,15:24].reshape(-1,3,3),x)+np.einsum('nij,j->ni',f[:,33:42].reshape(-1,3,3),v))
+        for _ in range(2):
+            p,_=frame(x);x=nominal-v*np.linalg.norm(p-d['tx'],axis=1)[:,None]/C
+        p,ve=frame(x);a=p-d['tx'];b=p-d['rx'];la=np.linalg.norm(a,axis=1);lb=np.linalg.norm(b,axis=1)
+        fd=-np.sum((a/la[:,None]+b/lb[:,None])*ve,axis=1)/d['wavelength']
+        return la+lb+C*fd/k
+    candidates=[]
+    for scale in (.2,.4,.7,1.):
+        q=np.r_[np.zeros(3),(scale-1)*center[3:]/1000]
+        fit=least_squares(lambda q:(paths(q)-measured)/30.,q,
+            bounds=(np.r_[np.full(3,-20.),np.full(3,-200.)],np.r_[np.full(3,20.),np.full(3,200.)]),
+            loss='soft_l1',x_scale='jac',max_nfev=600)
+        candidates.append((fit.cost,center+1000*fit.x,paths(fit.x)-measured))
+    _,best,_=min(candidates,key=lambda row:row[0])
+    save(folder/'kinematic_initialization.h5',dict(states_gcrs=np.array([r[1] for r in candidates]),
+         robust_cost=np.array([r[0] for r in candidates]),path_residual_m=np.array([r[2] for r in candidates])),
+         dict(initialization_only=True,model='constant velocity apparent-path seed; not the reported fit'))
+    return best
+
+
 def validate(cache,q,cov,folder):
     rng=np.random.default_rng(7021);points=[q]
     for _ in range(500):
@@ -173,7 +206,14 @@ def run(args,event):
     if seed.exists():
         with h5py.File(seed) as h:seeded=h['params'][:];existing_meta=dict(h.attrs)
         with h5py.File(seed.parent/'input.h5') as h:old_center=h['center'][:]
-    began=time.monotonic();d,initial=prepare(args,event,folder);lib=native(args.library);model=Model(lib,folder,d)
+    began=time.monotonic();d,initial=prepare(args,event,folder)
+    if args.recenter_kinematic:
+        d['center']=kinematic_center(d,folder)
+        with h5py.File(folder/'input.h5','a') as h:
+            h['center'][...]=d['center']
+            h.attrs['initial_guess_only']='constant velocity apparent-path initialization'
+        initial[:6]=0.
+    lib=native(args.library);model=Model(lib,folder,d)
     q=initial.copy()
     if seeded is not None:
         q=seeded
@@ -295,6 +335,7 @@ def main():
     p.add_argument('--uncertainty-only',action='store_true')
     p.add_argument('--posterior-seed',action='store_true',help='Refine from the best previous posterior state using the exact likelihood')
     p.add_argument('--multistart-physical',action='store_true')
+    p.add_argument('--recenter-kinematic',action='store_true',help='Place numerical bounds around a measured apparent-path motion estimate')
     args=p.parse_args();comm=MPI.COMM_WORLD
     events=args.events or ([args.event] if args.event else sorted(f.parent.name for f in args.source.glob('tri_*/input.h5')))
     for event in events[comm.rank::comm.size]:
