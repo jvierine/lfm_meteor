@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     let station = h.dataset("station")?.read_raw::<i64>()?;
     // Match the residual sign used by voltage-event.
     let residual: Vec<f64> = model.iter().zip(&observed).map(|(a,b)| a-b).collect();
-    let width = 2.;
+    let width = 0.5;
     let limit = (residual.iter().copied().map(f64::abs).fold(0., f64::max)/width).ceil()*width + width;
     let nbins = (2.*limit/width) as usize;
     let edges: Vec<f64> = (0..=nbins).map(|i| -limit+i as f64*width).collect();
@@ -31,10 +31,10 @@ fn main() -> Result<()> {
     let baseline=if catalogue {0.7} else {0.};
     let mut f=Figure::new(IntendedUse::ArticleWide);
     f.width_mm=180.; f.height_mm=84.;
-    let mut axes=Axes::new([-limit,limit],[baseline,ymax*1.1],"Apparent path residual (m)","Measurements per 2 m bin");
+    let top=ymax*3.;
+    let mut axes=Axes::new([-limit,limit],[baseline,top],"Apparent path residual (m)","Measurements per 0.5 m bin");
     if catalogue {
         axes.set_yscale(AxisScale::Log10)?;
-        axes.yticks=(0..=5).map(|x|10_f64.powi(x)).filter(|x|*x<=ymax).collect();
     } else {axes.yticks=(0..=ymax as usize).map(|x|x as f64).collect();}
     let mut p=Panel::new(Rect::new(22.,6.,150.,58.),axes);
     let mut entries=Vec::new();
@@ -59,6 +59,16 @@ fn main() -> Result<()> {
         println!("{} n={} RMS={:.4} m",names[s],n,rms);
     }
     let mut legend=Legend::new(entries);legend.position=LegendPosition::UpperRight;legend.columns=1;
+    // The capped marker spans median +/- the unscaled MAD in data coordinates.
+    let marker_y=ymax*1.65;
+    let cap=if catalogue {marker_y*0.14} else {ymax*0.08};
+    p.push(Layer::Line(Line::new(vec![[center-mad,marker_y],[center+mad,marker_y]],"#171717")));
+    for x in [center-mad,center+mad] {
+        p.push(Layer::Line(Line::new(vec![[x,marker_y-cap],[x,marker_y+cap]],"#171717")));
+    }
+    let marker_page_y=if catalogue {64.-58.*(marker_y/baseline).log10()/(top/baseline).log10()}
+        else {64.-58.*marker_y/top};
+    f.labels.push(Label::new(format!("$2\\,\\mathrm{{MAD}}={:.2}$ m",2.*mad),73.,marker_page_y));
     p.legend=Some(legend);f.panels.push(p);
     f.labels.push(Label::new(format!("All stations: MAD $={mad:.2}$ m"),137.,32.));
     f.latex.cache=folder.parent().unwrap().join(".rustplotlib-cache");
