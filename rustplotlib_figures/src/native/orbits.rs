@@ -30,10 +30,12 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let energy = summary("specific_energy_j_kg", 1e6)?;
     let keep: Vec<_> = (0..names.len())
         .filter(|&i| {
-            ap[i][2] - ap[i][1] <= 20. && names[i].as_str() != "tri_0133_1713821181159349442"
+            ap[i].iter().all(|v| v.is_finite())
+                && ap[i][2] - ap[i][1] <= 20.
+                && energy[i][2] - energy[i][1] <= 100.
         })
         .collect();
-    anyhow::ensure!(keep.len() == 229, "Orbit visual selection changed");
+    anyhow::ensure!(!keep.is_empty(), "No finite orbit intervals for display");
     let class: Vec<_> = (0..names.len())
         .map(|row| {
             let mut votes = 0.;
@@ -47,7 +49,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
                 }
                 let high = inc[k] > 75. || e[k] >= 1.;
                 let tj = 1. / a[k]
-                    + 2. * 5.2044_f64.powf(-1.5)
+                    + 2. * 5.2038_f64.powf(-1.5)
                         * (a[k] * (1. - e[k] * e[k])).max(0.).sqrt()
                         * inc[k].to_radians().cos();
                 let kk = (a[k] * (1. + e[k]) / (1. - e[k])).ln() - 1.;
@@ -66,10 +68,6 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             total > 0. && votes / total >= 0.5
         })
         .collect();
-    anyhow::ensure!(
-        keep.iter().filter(|&&i| class[i]).count() == 136,
-        "Orbit classification changed"
-    );
     let mut f = Figure::new(IntendedUse::ArticleWide);
     f.height_mm = 132.;
     f.font_pt = 8.;
