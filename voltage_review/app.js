@@ -68,6 +68,16 @@ function uncertaintyMath(symbol,lo,best,hi,unit,scientific){
 function fitSummary(){
  $('fitstamp').textContent=data.fit_unix_time?`${data.trajectory_model||'Legacy Whipple–Jacchia fit'} · Fit: ${new Date(data.fit_unix_time*1000).toISOString()} · flag revision ${data.fit_flag_revision||0} · ${data.fit_excluded_count||0} excluded${data.annotation.version>(data.fit_flag_revision||0)?' · newer review revision exists':''}`:'Fit timestamp unavailable';
  const root=$('masssummary');root.replaceChildren();
+ const selection=data.mass_selection;
+ for(const [key,label] of [['dynamic','Dynamic mass'],['rcs','RCS mass']]){
+  const s=selection?.[key];const line=document.createElement('div');line.className='mass-status';
+  line.style.cssText='width:100%;color:#222;border-left:3px solid #666;padding:5px 10px';
+  const heading=document.createElement('strong');heading.textContent=`${label}: ${s?.included===true?'INCLUDED':s?.included===false?'NOT INCLUDED':'STATUS UNAVAILABLE'} in mass-influx calculation. `;
+  line.append(heading,document.createTextNode(s?.reason||'Selection unavailable'));
+  if(s?.stale)line.append(document.createTextNode(' WARNING: fit or flags have changed; calculation needs updating.'));
+  root.append(line);
+ }
+ if(selection?.created_utc){const stamp=document.createElement('span');stamp.className='mass-status';stamp.textContent=`Mass-calculation snapshot: ${selection.created_utc}. Inclusion does not imply validated total physical uncertainty.`;root.append(stamp);}
  for(const [symbol,key,bestKey,scale,unit,scientific] of [['m','initial_mass_kg_quantiles','best_initial_mass_kg',1,'kg',true],['d','initial_radius_m_quantiles','best_initial_radius_m',2e6,'µm',false]]){
   const q=data[key];if(!q&&!Number.isFinite(data[bestKey]))continue;
   const span=document.createElement('span');const [lo,mid,hi]=q?q.map(v=>v*scale):[null,data[bestKey]*scale,null];
@@ -140,7 +150,7 @@ setInterval(async()=>{
  try{
   const next=await api('/api/event/'+id);
   if(busy||selected.size||data.event!==id||$('note').value!==data.annotation.note)return;
-  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m||JSON.stringify(next.omitted_measurements)!==JSON.stringify(data.omitted_measurements)||JSON.stringify(next.beam)!==JSON.stringify(data.beam)||JSON.stringify(next.rcs_mass)!==JSON.stringify(data.rcs_mass);
+  const changed=next.fingerprint!==data.fingerprint||next.uncertainty_status!==data.uncertainty_status||!!next.path_measurement_lower95_m!==!!data.path_measurement_lower95_m||JSON.stringify(next.omitted_measurements)!==JSON.stringify(data.omitted_measurements)||JSON.stringify(next.beam)!==JSON.stringify(data.beam)||JSON.stringify(next.rcs_mass)!==JSON.stringify(data.rcs_mass)||JSON.stringify(next.mass_selection)!==JSON.stringify(data.mass_selection);
   if(changed)await load(id);
  }catch(e){status(e.message,true);}
 },30000);

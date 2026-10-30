@@ -40,6 +40,27 @@ class Store:
             return dict(version=int(h.attrs['version']),excluded=h['excluded'].asstr()[:].tolist(),
                         bad=bool(h.attrs['bad']),note=str(h.attrs['note']))
 
+    def mass_selection(self,event):
+        path=(self.latest or self.root).parent/'mass_selection.h5'
+        result={'created_utc':None}
+        if not path.exists():
+            return dict(result, **{k:dict(included=None,reason='No mass-calculation selection available') for k in ('dynamic','rcs')})
+        with h5py.File(path) as h:
+            result['created_utc']=str(h.attrs.get('created_utc',''))
+            omissions=list(zip(h['omitted_kind'].asstr()[:],h['omitted_event'].asstr()[:],h['omission_reason'].asstr()[:]))
+            for kind in ('dynamic','rcs'):
+                names=list(h[kind+'/event_id'].asstr()[:])
+                included=event in names
+                reason='Used in the saved mass-influx calculation' if included else next((r for k,e,r in omissions if k==kind and e==event),'Not selected in this calculation')
+                reason=reason.replace('bootstrap audit unresolved; old thermal interval is not cleared','Uncertainty rerun unresolved; old thermal-noise interval is not accepted').replace('published bootstrap missing from local snapshot','Updated uncertainty result missing from calculation inputs')
+                result[kind]=dict(included=included,reason=reason)
+                if included:
+                    i=names.index(event)
+                    source=self.path(event)/('dynamic_mass_posterior.h5' if kind=='dynamic' else 'rcs_mass.h5')
+                    current=hashlib.sha256(source.read_bytes()).hexdigest() if source.exists() else ''
+                    result[kind]['stale']=current!=h[kind+'/source_sha256'].asstr()[i]
+        return result
+
     def data(self,event):
         with h5py.File(self.path(event)/'plot.h5') as h:
             data={k:h[k][:].tolist() for k in h}
@@ -67,6 +88,9 @@ class Store:
             fit_metadata['mass_status']='Dynamic mass pending joint trajectory uncertainty' if not failed else 'Dynamic mass pending sampling repair'
         data.update(fit_metadata)
         data['event']=event;data['annotation']=self.annotation(event)
+        data['mass_selection']=self.mass_selection(event)
+        if data['annotation']['version']!=data.get('fit_flag_revision',0):
+            for kind in ('dynamic','rcs'):data['mass_selection'][kind]['stale']=True
         data['omitted_measurements']=[]
         ghost=self.path(event)/'excluded_measurements.h5'
         if ghost.exists():

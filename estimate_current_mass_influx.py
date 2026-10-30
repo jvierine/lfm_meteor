@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import hashlib
 import subprocess
+import shutil
 import h5py
 import numpy as np
 
@@ -164,6 +165,10 @@ def main():
                         obj.copy(key,target)
             else:
                 source.copy(name,summary)
+    selection = ROOT/'results/mass_selection.h5'
+    temporary = selection.with_suffix('.partial')
+    shutil.copy2(OUT.with_name(OUT.stem+'_summary.h5'), temporary)
+    temporary.replace(selection)
     print(OUT)
 
 
