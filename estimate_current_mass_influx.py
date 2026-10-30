@@ -36,9 +36,17 @@ def collect():
                             with h5py.File(audit) as check:
                                 reason = str(check.attrs.get('reason', ''))
                                 published = bool(check.attrs.get('published', False))
+                                audit_finished = float(check.attrs.get('finished_unix', np.inf))
                             if 'failed' in reason or 'budget exhausted' in reason:
                                 raise ValueError('bootstrap audit unresolved; old thermal interval is not cleared')
-                            if published and 'bootstrap' not in str(p.attrs.get('uncertainty_method', '')):
+                            method = str(p.attrs.get('uncertainty_method', ''))
+                            newer_subset_refit = (
+                                'random-deletion' in method
+                                and float(p.attrs.get('fit_unix_time', 0)) > audit_finished
+                                and bool(p.attrs.get('uncertainty_converged', False))
+                                and not bool(p.attrs.get('uncertainty_prior_boundary', True))
+                            )
+                            if published and 'bootstrap' not in method and not newer_subset_refit:
                                 raise ValueError('published bootstrap missing from local snapshot')
                         if not p.attrs.get('uncertainty_converged', False):
                             raise ValueError('unresolved uncertainty')
@@ -131,7 +139,7 @@ def main():
             source_program=Path(__file__).read_text(), flux_sha256=digest(flux), beam_sha256=digest(beam),
             collecting_area_km2=area, n_weighted_catalogue=len(names), imputed_masses=False,
             normalization='Archived geocentric speeds, folded radiant exposures, area; Falt=1258/234; heuristic (72/v)^3',
-            uncertainty='Independent event mass draws and Poisson(1) counts, 20000 replicates; fixed selection and weights; no calibration or physical-model systematics',
+            uncertainty='Independent event saved mass draws and Poisson(1) counts, 20000 replicates; includes random-deletion robustness draws, not a calibrated confidence interval; fixed selection and weights; no calibration or physical-model systematics',
             caveat='RCS is in-beam mass loss; pilot FDTD lookup and user low-speed override; dynamic mass is at first detection. Neither estimates unobserved pre-detection loss.')
         for kind in rows:
             for matched in (False,True):
