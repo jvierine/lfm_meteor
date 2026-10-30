@@ -50,8 +50,8 @@ def covariance(cache,q):
     # Profile-residual Fisher metric avoids subtracting large log likelihoods.
     # Raw voltages are evaluated only here, never inside the MCMC loop.
     step=np.r_[np.full(3,1e-5),np.full(3,1e-4),1e-4]
-    upper=np.r_[np.full(3,20.),np.full(3,40.),-2.]
-    lower=np.r_[np.full(3,-20.),np.full(3,-40.),-7.]
+    upper=np.r_[np.full(6,np.inf),-2.]
+    lower=np.r_[np.full(6,-np.inf),-7.]
     step=np.where(q+2*step>upper,-step,step)
     baseline=cache.model.residual(q)
     for attempt in range(5):
@@ -91,8 +91,8 @@ def physical_start_points(model,initial,current):
     t=d['sample_time_s']-anchor[:,None]/C
     reference=np.exp(2j*np.pi*(d['bandwidth']/2*t-k/2*t*t))
     measured=anchor+C*np.array([beat_peak(row,d['fs']) for row in (d['real']+1j*d['imag'])*np.conj(reference)])/k
-    lower=np.r_[np.full(3,-20.),np.full(3,-40.),-7.]
-    upper=np.r_[np.full(3,20.),np.full(3,40.),-2.]
+    lower=np.r_[np.full(6,-np.inf),-7.]
+    upper=np.r_[np.full(6,np.inf),-2.]
     def residual(q):
         try:return (model.paths(q,model.states(q))-measured)/100.
         except (ValueError,RuntimeError):return np.full(len(measured),1e8)
@@ -105,7 +105,7 @@ def physical_start_points(model,initial,current):
 
 
 def kinematic_center(d, folder):
-    """Recenter numerical bounds using apparent-path motion, not a WJ speed."""
+    """Initialize from station-balanced subsets; score every seed on all paths."""
     k=d['bandwidth']/d['duration']
     anchor=C*(359.45540369317763e-6+d['gate']/d['fs'])
     t=d['sample_time_s']-anchor[:,None]/C
@@ -124,15 +124,25 @@ def kinematic_center(d, folder):
         fd=-np.sum((a/la[:,None]+b/lb[:,None])*ve,axis=1)/d['wavelength']
         return la+lb+C*fd/k
     candidates=[]
-    for scale in (.2,.4,.7,1.):
+    rng=np.random.default_rng(145035)
+    masks=[np.ones(len(measured),dtype=bool)]
+    for _ in range(8):
+        mask=np.zeros(len(measured),dtype=bool)
+        for station in np.unique(d['station']):
+            idx=np.flatnonzero(d['station']==station)
+            mask[rng.choice(idx,size=min(len(idx),max(3,int(np.ceil(.7*len(idx))))),replace=False)]=True
+        masks.append(mask)
+    for index,mask in enumerate(masks):
+        scale=(.2,.4,.7,1.)[index%4]
         q=np.r_[np.zeros(3),(scale-1)*center[3:]/1000]
-        fit=least_squares(lambda q:(paths(q)-measured)/30.,q,
-            bounds=(np.r_[np.full(3,-20.),np.full(3,-200.)],np.r_[np.full(3,20.),np.full(3,200.)]),
+        fit=least_squares(lambda q:((paths(q)-measured)/30.)[mask],q,
             loss='soft_l1',x_scale='jac',max_nfev=600)
-        candidates.append((fit.cost,center+1000*fit.x,paths(fit.x)-measured))
+        residual=paths(fit.x)-measured
+        score=np.sum(np.sqrt(1+(residual/30.)**2)-1)
+        candidates.append((score,center+1000*fit.x,residual))
     _,best,_=min(candidates,key=lambda row:row[0])
     save(folder/'kinematic_initialization.h5',dict(states_gcrs=np.array([r[1] for r in candidates]),
-         robust_cost=np.array([r[0] for r in candidates]),path_residual_m=np.array([r[2] for r in candidates])),
+         initialization_masks=np.array(masks),robust_cost=np.array([r[0] for r in candidates]),path_residual_m=np.array([r[2] for r in candidates])),
          dict(initialization_only=True,model='constant velocity apparent-path seed; not the reported fit'))
     return best
 

@@ -71,11 +71,11 @@ impl Voltage {
     }
     fn dimension(&self)->usize {if self.atmosphere.is_some(){7}else{8}}
     fn observables(&self,q:&[f64])->Option<Vec<[f64;2]>> {
-        if q.len()!=self.dimension() || q.iter().any(|x|!x.is_finite()) || q[..3].iter().any(|x|x.abs()>20.) || q[3..6].iter().any(|x|x.abs()>40.) {return None;}
+        if q.len()!=self.dimension() || q.iter().any(|x|!x.is_finite()) {return None;}
         if self.atmosphere.is_some() && !(-7. ..=-2.).contains(&q[6]) {return None;}
         let x0=Vector3::from_fn(|j,_|self.center[j]+1000.*q[j]);
         let v0=Vector3::from_fn(|j,_|self.center[3+j]+1000.*q[3+j]);
-        let speed=v0.norm();if !(1000. ..150000.).contains(&speed){return None;}
+        let speed=v0.norm();if !speed.is_finite() || speed<=0. {return None;}
         let u=v0/speed;let tx=Vector3::from_column_slice(&self.tx);
         let states=self.states(q)?;let mut result=Vec::with_capacity(states.len());
         for (i,state) in states.iter().enumerate() {
@@ -116,13 +116,12 @@ impl Voltage {
     }
     fn evaluate(&self,q:&[f64],out:&mut[f64],log_norm:&mut f64,prediction:bool)->bool {
         *log_norm=0.;
-        if q.len()!=self.dimension() || q.iter().any(|x|!x.is_finite()) || q[..3].iter().any(|x|x.abs()>20.) ||
-            q[3..6].iter().any(|x|x.abs()>40.) {return false;}
+        if q.len()!=self.dimension() || q.iter().any(|x|!x.is_finite()) {return false;}
         if self.atmosphere.is_some() {if !(-7. ..=-2.).contains(&q[6]){return false;}}
         else if !(-5. ..=5.).contains(&q[6]) || !(-4. ..=3.).contains(&q[7]){return false;}
         let x0=Vector3::from_fn(|j,_|self.center[j]+1000.*q[j]);
         let v0=Vector3::from_fn(|j,_|self.center[3+j]+1000.*q[3+j]);
-        let speed=v0.norm(); if !(1000. ..150000.).contains(&speed) {return false;}
+        let speed=v0.norm(); if !speed.is_finite() || speed<=0. {return false;}
         let u=v0/speed;
         let Some(states)=self.states(q) else{return false;};
         let tx=Vector3::from_column_slice(&self.tx);

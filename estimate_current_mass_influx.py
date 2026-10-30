@@ -23,11 +23,15 @@ def collect():
     for folder in sorted(CAT.glob('tri_*')):
         flag = FLAGS / (folder.name + '.h5')
         revision = 0
+        rejected = False
         if flag.exists():
             with h5py.File(flag) as h:
                 revision = int(h.attrs['version'])
+                rejected = bool(h.attrs.get('bad',False))
         for kind in rows:
             try:
+                if rejected:
+                    raise ValueError('excluded from scientific catalogue by review')
                 with h5py.File(folder / 'plot.h5') as p:
                     if int(p.attrs.get('fit_flag_revision', -1)) != revision:
                         raise ValueError('flags awaiting refit')

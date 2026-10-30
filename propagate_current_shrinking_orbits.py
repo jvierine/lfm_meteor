@@ -43,6 +43,7 @@ def prepare(folder, flags, output, nsamples):
     current_revision = 0
     if flag.exists():
         with h5py.File(flag) as h:
+            assert not bool(h.attrs.get('bad',False)), 'Excluded from scientific catalogue by review'
             current_revision = int(h.attrs['version'])
     assert current_revision == revision, 'Manual flags await refit'
     if 'random-deletion' in method:
