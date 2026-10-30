@@ -97,6 +97,9 @@ def physical_start_points(model,initial,current):
         try:return (model.paths(q,model.states(q))-measured)/100.
         except (ValueError,RuntimeError):return np.full(len(measured),1e8)
     points=[current.copy(),initial.copy()]
+    for state in d.get('kinematic_states',[]):
+        q=initial.copy();q[:6]=(state-d['center'])/1000.;q[6]=-4.
+        points.append(q)
     for logr in (-5.,-4.,-3.):
         q=initial.copy();q[6]=logr
         fit=least_squares(residual,q,bounds=(lower,upper),loss='soft_l1',x_scale='jac',max_nfev=150)
@@ -141,6 +144,7 @@ def kinematic_center(d, folder):
         score=np.sum(np.sqrt(1+(residual/30.)**2)-1)
         candidates.append((score,center+1000*fit.x,residual))
     _,best,_=min(candidates,key=lambda row:row[0])
+    d['kinematic_states']=np.array([r[1] for r in candidates])
     save(folder/'kinematic_initialization.h5',dict(states_gcrs=np.array([r[1] for r in candidates]),
          initialization_masks=np.array(masks),robust_cost=np.array([r[0] for r in candidates]),path_residual_m=np.array([r[2] for r in candidates])),
          dict(initialization_only=True,model='constant velocity apparent-path seed; not the reported fit'))
