@@ -130,7 +130,18 @@ def main():
         failures = sorted([r for _, group in gathered for r in group])
         assert rows, 'No current state ensembles available'
         events = [r[0] for r in rows]
-        summary = summarize_classification(events)
+        # The asteroidal/cometary criteria describe bound orbits; do not force
+        # hyperbolic solutions into the cometary class.
+        classified = []
+        for ev in events:
+            bound = np.asarray(ev['e']) < 1.
+            if np.any(bound):
+                classified.append({k: (v[bound] if isinstance(v, np.ndarray) else v)
+                                   for k, v in ev.items()})
+        summary = summarize_classification(classified)
+        for row in summary:
+            row['cometary_sample_fraction'] = row['cometary_event_mean_fraction']
+            row['asteroidal_sample_fraction'] = row['asteroidal_event_mean_fraction']
         a.output_h5 = a.output / 'orbits.h5'
         a.output_tex = a.output / 'classification.tex'
         write_outputs(events, summary, a)
@@ -139,7 +150,9 @@ def main():
                 source_git_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=Path(__file__).parent,text=True).strip(),
                 created_unix=time.time(), input_events=len(folders), included_events=len(events),
                 uncertainty='Propagated current saved state ensembles; methods recorded per event; physical systematics excluded',
-                ephemeris='astropy builtin', forces='Gravity only; no radiation pressure or atmospheric drag before detection')
+                ephemeris='astropy builtin', forces='Gravity only; no radiation pressure or atmospheric drag before detection',
+                classification_selection='Bound samples only; equal weight per event',
+                classification_events=len(classified))
             dtype = h5py.string_dtype()
             h.create_dataset('uncertainty_method',data=[r[1] for r in rows],dtype=dtype)
             h.create_dataset('excluded_event_id',data=[r[0] for r in failures],dtype=dtype)

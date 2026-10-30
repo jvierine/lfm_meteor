@@ -30,9 +30,10 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let energy = summary("specific_energy_j_kg", 1e6)?;
     let keep: Vec<_> = (0..names.len())
         .filter(|&i| {
-            ap[i].iter().all(|v| v.is_finite())
-                && ap[i][2] - ap[i][1] <= 20.
-                && energy[i][2] - energy[i][1] <= 100.
+            ee[i][0] >= 1.
+                || (ap[i].iter().all(|v| v.is_finite())
+                    && ap[i][2] - ap[i][1] <= 20.
+                    && energy[i][2] - energy[i][1] <= 100.)
         })
         .collect();
     anyhow::ensure!(!keep.is_empty(), "No finite orbit intervals for display");
@@ -41,7 +42,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             let mut votes = 0.;
             let mut total = 0.;
             for k in row * n..(row + 1) * n {
-                if ![a[k], e[k], inc[k], period[k]]
+                if ![a[k], e[k], inc[k]]
                     .iter()
                     .all(|v| v.is_finite())
                 {
@@ -78,7 +79,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             &ee,
             r"Semimajor axis $a$ (AU)",
             r"Eccentricity $e$",
-            true,
+            false,
         ),
         (
             &qq,
@@ -140,11 +141,11 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             axes,
         );
         p.major_grid("#e2e2e2", 0.4);
-        for (cometary, color) in [(true, COLORS[1]), (false, COLORS[2])] {
+        for (category, color) in [(1, COLORS[1]), (0, COLORS[2]), (2, "#222222")] {
             let ids: Vec<_> = good
                 .iter()
                 .copied()
-                .filter(|&i| class[i] == cometary)
+                .filter(|&i| (if ee[i][0] >= 1. { 2 } else if class[i] { 1 } else { 0 }) == category)
                 .collect();
             let x: Vec<_> = ids.iter().map(|&i| xx[i][0]).collect();
             let y: Vec<_> = ids.iter().map(|&i| yy[i][0]).collect();
@@ -165,13 +166,21 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
                 0.,
                 0.22,
             )?;
-            dots(&mut p, &x, &y, color, 3., 0.82, false)?;
+            if category == 2 {
+                p.markers(&mut f, &points(&x, &y), &MarkerStyle {
+                    shape: MarkerShape::Triangle, size_pt: 5., color: [0.13, 0.13, 0.13],
+                })?;
+            } else {
+                dots(&mut p, &x, &y, color, 3., 0.82, false)?;
+            }
         }
         if index == 0 {
-            let l = Legend::new(vec![
+            let mut l = Legend::new(vec![
                 LegendEntry::circle("Cometary", COLORS[1]),
                 LegendEntry::circle("Asteroidal", COLORS[2]),
+                LegendEntry::marker("Hyperbolic", MarkerShape::Triangle, "#222222"),
             ]);
+            l.allow_reused_marker_shapes = true;
             p.legend = Some(l);
         }
         panel_label(&mut f, &p, &format!("({})", (b'a' + index as u8) as char));
