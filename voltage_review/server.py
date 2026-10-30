@@ -139,6 +139,7 @@ class Store:
                     item=dict(event=folder.name,n=len(h['time_s']),beat_pass=bool(h.attrs['beat_guard_pass']))
                 a=self.annotation(folder.name)
                 item.update(flagged=len(a['excluded']),bad=a['bad'],version=a['version'])
+                item['mass_selection']=self.mass_selection(folder.name)
                 result.append(item)
             except OSError:continue
         return result
