@@ -12,8 +12,6 @@ import time
 import h5py
 import numpy as np
 from mpi4py import MPI
-from fit_cached_shrinking_voltage import native, Cached, covariance, validate
-from fit_shrinking_voltage import Model, prepare, save, export, full_products, PTR
 
 
 def deletion_weights(station, fraction, seed):
@@ -28,6 +26,8 @@ def deletion_weights(station, fraction, seed):
 
 
 def main():
+    from fit_cached_shrinking_voltage import native, Cached, covariance, validate
+    from fit_shrinking_voltage import Model, prepare, save, export, full_products, PTR
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('source','initial','flags','seed','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--library',required=True);p.add_argument('--event',required=True)
