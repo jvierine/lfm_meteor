@@ -70,7 +70,6 @@ fn main() -> Result<()> {
         else {64.-58.*marker_y/top};
     f.labels.push(Label::new(format!("$2\\,\\mathrm{{MAD}}={:.2}$ m",2.*mad),73.,marker_page_y));
     p.legend=Some(legend);f.panels.push(p);
-    f.labels.push(Label::new(format!("All stations: MAD $={mad:.2}$ m"),137.,32.));
     f.latex.cache=folder.parent().unwrap().join(".rustplotlib-cache");
     for ext in ["png","pdf"] {f.save(folder.join(format!("delay_residual_histogram.{ext}")))?;}
     Ok(())
