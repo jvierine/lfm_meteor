@@ -189,3 +189,26 @@ selection hash matches the refreshed orbit product. The final code archive
 must include the parent yield script and the fresh orbit scripts after the
 coordinating parent's commit. No reviewer capability URL/token belongs in
 these files or in Git; only the confirmed reserved DOI is recorded.
+
+## Final Release
+
+Final data components add mass-derived-final, mass-evidence-final and
+kinematics-final: 154 dynamic / 195 RCS / 133 paired, final figure HDF5,
+draws, PR/precision/influx data, fresh area/exposure/altitude inputs and all
+1,766 remote evidence files. Existing uploaded data archives remain unchanged.
+
+freeze_submission_code.py records producer base 957a67c and paper cfa2f89,
+including actual working source bytes, local imports, and explicitly inventoried
+untracked helpers. code-release/code-final.tar.gz supersedes older code archives.
+Sibling source/lfm_meteor, source/rustplotlib and source/fdtd preserve dependency
+layout. Rustplotlib base 96e8aaafce8607f8aa506cd59089255a904fc499 (MIT) and FDTD
+base cc38bffc788cb1fff2d27e34fce3061e82b90635 are included with hashed working
+modifications, including Rust, Metal/Swift and Python lookup drivers.
+This supersedes the initial note that Rustplotlib was not vendored.
+
+External Python/Cargo packages, HDF5/MPI/TeX and Apple Metal tools are not
+vendored; legacy paths may require relocation. Observed Python distribution
+versions are in source/environment.h5. This is not a self-contained offline
+runtime. No lfm_meteor/FDTD project-wide license was found; do not apply the
+Rustplotlib MIT license to other code. Data use the requested CC BY 4.0 draft
+default. Reviewer capabilities, SSH files and environment secrets are excluded.

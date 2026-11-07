@@ -11,10 +11,10 @@ import h5py
 from package_submission import sha, write_rows
 
 
-def audit(root, output):
+def audit(root, output, code_component="code-release", readme="README.txt"):
     inventory = []
     orbit_component = "orbits-refreshed" if (root / "orbits-refreshed").exists() else "orbits-current"
-    for component in ("cuts-core", "catalog-core", orbit_component, "uncertainty-current", "l1-complete-archive", "yield-current"):
+    for component in ("cuts-core", "catalog-core", orbit_component, "uncertainty-current", "l1-complete-archive", "yield-current", "mass-derived-final", "mass-evidence-final", "kinematics-final", code_component):
         folder = root / component
         if not folder.exists():
             continue
@@ -26,11 +26,11 @@ def audit(root, output):
                 if digest != h.attrs[name]:
                     raise ValueError(f"Transfer mismatch: {path}")
                 inventory.append(dict(path=f"{component}/{name}", bytes=path.stat().st_size,
-                                      sha256=digest, status="verified"))
+                                      sha256=digest, status="superseded_baseline_not_for_upload" if name == "code.tar.gz" else "verified"))
         path = folder / "checksums.h5"
         inventory.append(dict(path=f"{component}/checksums.h5", bytes=path.stat().st_size,
                               sha256=sha(path), status="checksum_record"))
-    for name in ("README.txt", "orbit-audit-request.h5", "orbit-remote-provenance.h5", "current-selected-uncertainty-audit.h5"):
+    for name in (readme, "orbit-audit-request.h5", "orbit-remote-provenance.h5", "current-selected-uncertainty-audit.h5"):
         path = root / name
         if not path.exists():
             continue
@@ -87,10 +87,11 @@ def audit(root, output):
     for key in ("beam_fit_hash", "rcs_fit_hash", "rcs_beam_hash"):
         summary[key] = dict(Counter(r[key] for r in rows.values()))
     with h5py.File(output, "x") as h:
-        h.attrs.update(status="DATA_VERIFIED_CODE_FREEZE_PENDING", summary_json=json.dumps(summary),
+        h.attrs.update(status="FROZEN_LOCAL_RELEASE", summary_json=json.dumps(summary),
                        reserved_doi="10.5281/zenodo.24037714", publication="unpublished",
                        scope="Cut associations and recorded fit/beam provenance only; no inference validation",
-                       code_choice="Final code archive pending parent producer commit; earlier baseline code archives are not the final code release")
+                       code_choice=f"{code_component}/code-final.tar.gz; earlier code archives are superseded",
+                       upload_status="Not verified here; parent reports remaining uploads pending Mac unlock")
         write_rows(h, "files", inventory)
         write_rows(h, "event_coverage", list(rows.values()))
     print(json.dumps(summary))
@@ -100,5 +101,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--code-component", default="code-release")
+    parser.add_argument("--readme", default="README.txt")
     args = parser.parse_args()
-    audit(args.root, args.output)
+    audit(args.root, args.output, args.code_component, args.readme)

@@ -103,6 +103,45 @@ def select(args):
 
     if args.component == "code":
         return {}, ["Code license: no project-wide declaration found; owner decision pending"]
+    if args.component in ("mass-derived", "mass-evidence", "kinematics"):
+        mass = root / "results/submission_mass_remote_20261107"
+        kin = root / "results/current_kinematics_20261107"
+        with h5py.File(root / "results/tristatic_shrinking_orbits_current_20261107/orbits.h5") as h:
+            accepted = set(h["event_id"].asstr()[:])
+        with h5py.File(mass / "selection.h5") as h:
+            dynamic, rcs = set(h["dynamic/event_id"].asstr()[:]), set(h["rcs/event_id"].asstr()[:])
+            assert (len(dynamic), len(rcs), len(dynamic & rcs)) == (154, 195, 133)
+            assert set(h["catalogue_event_id"].asstr()[:]) == accepted
+        if args.component == "mass-evidence":
+            add(mass / "remote_hash_manifest.h5", "mass-evidence/remote_hash_manifest.h5")
+            with h5py.File(mass / "remote_hash_manifest.h5") as h:
+                assert h.attrs["all_match"] and h["matches"][:].all()
+                for rel, digest in zip(h["relative_path"].asstr()[:], h["local_sha256"].asstr()[:]):
+                    p = mass / "snapshot" / rel
+                    if sha(p) != digest:
+                        raise ValueError(f"Mass evidence changed: {p}")
+                    add(p, "mass-evidence/snapshot/" + rel)
+        elif args.component == "mass-derived":
+            for name in ("selection.h5", "remote_hash_manifest.h5", "joint_fft_mass_distribution.h5",
+                         "rcs_mass_comparison.h5", "mass_size_pr_precision.h5", "current_mass_influx.h5",
+                         "joint_fft_mass_distribution.pdf", "PARENT_NASH_HANDOFF.txt"):
+                add(mass / name, "mass-derived/" + name)
+        else:
+            for name in ("altitude_correction.h5", "beam_area.h5", "height.h5", "kinematics.h5",
+                         "monostatic_measurements.h5", "radiants.h5", "rcs_pulses.h5",
+                         "sanya_rcs_from_snr_article.h5", "system_noise.h5",
+                         "meteor_height_histogram.pdf", "sanya_rcs_from_snr_article.pdf",
+                         "sun_centered_ecliptic_radiants.pdf", "tristatic_review_event_tri_0012.pdf"):
+                add(kin / name, "kinematics/" + name)
+            with h5py.File(kin / "kinematics.h5") as h:
+                assert set(h["event_id"].asstr()[:]) == accepted
+            with h5py.File(kin / "sanya_rcs_from_snr_article.h5") as h:
+                assert set(h["mass_comparison/event_id"].asstr()[:]) == dynamic & rcs
+                assert len(h["pulses/time_ns"]) == 1515
+                assert h.attrs["mass_comparison_sha256"] == sha(mass / "rcs_mass_comparison.h5")
+                assert h.attrs["pulses_sha256"] == sha(kin / "rcs_pulses.h5")
+        return files, ["Final selection: 154 dynamic, 195 RCS, 133 paired; uncertainty interpretations remain conditional/robustness",
+                       "Influx uses heuristic altitude/velocity corrections, not calibrated global mass selection"]
     if args.component == "yield":
         path = root / "results/submission_yield_20261107.h5"
         with h5py.File(path) as h:
@@ -366,7 +405,7 @@ def build(args):
         raise RuntimeError("Selection changed; discard this incomplete snapshot and retry")
     rows.sort(key=lambda r: r["path"])
     with h5py.File(out / "manifest.h5", "w") as h:
-        h.attrs.update(schema="sanya-submission-component-v1", status="UNFROZEN_INITIAL_CORE",
+        h.attrs.update(schema="sanya-submission-component-v1", status="IMMUTABLE_DATA_COMPONENT" if getattr(args,"data_only",False) else "UNFROZEN_INITIAL_CORE",
                        component=args.component, host=platform.node(), source_commit=commit,
                        source_root=str(args.root.resolve()), python=platform.python_version(),
                        packaging_program_sha256=sha(Path(__file__)),
@@ -383,7 +422,7 @@ def build(args):
     partitions = {}
     for row in rows:
         top = row["path"].split("/")[0]
-        key = {"yield":"yield", "L1_velocity":"l1-velocity", "uncertainty":"uncertainty", "orbits":"orbits", "L0":"raw-cuts", "L1":"detections" if args.component == "cuts" else "fits",
+        key = {"mass-derived":"mass-derived", "mass-evidence":"mass-evidence", "kinematics":"kinematics", "yield":"yield", "L1_velocity":"l1-velocity", "uncertainty":"uncertainty", "orbits":"orbits", "L0":"raw-cuts", "L1":"detections" if args.component == "cuts" else "fits",
                "support":"fits", "exclusions":"fits", "lookup":"lookup", "source":"code"}[top]
         partitions.setdefault(key + ".tar.gz", []).append(row["path"])
     for archive, names in sorted(partitions.items()):
@@ -408,7 +447,7 @@ def build(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--component", choices=("cuts", "catalog", "orbits", "code", "uncertainty", "l1", "yield"))
+    p.add_argument("--component", choices=("cuts", "catalog", "orbits", "code", "uncertainty", "l1", "yield", "mass-derived", "mass-evidence", "kinematics"))
     p.add_argument("--root", type=Path)
     p.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent)
     p.add_argument("--catalog", default="results/tristatic_cached_shrinking_20261029")
