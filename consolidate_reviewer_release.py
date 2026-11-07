@@ -21,15 +21,75 @@ def file_hash(path, algorithm='sha256'):
     return h.hexdigest()
 
 
+def finish(output, records, omissions):
+    expected = {(r[0], r[1]): r[2] for r in records}
+    for archive in sorted(output.glob('*.tar.gz')):
+        with tarfile.open(archive) as h:
+            for m in h:
+                if m.isfile():
+                    assert digest(h.extractfile(m).read()) == expected.pop((str(archive), m.name)), m.name
+        print('VERIFIED', archive.name, archive.stat().st_size, flush=True)
+    assert not expected
+    raw_count = sum(len(PurePosixPath(r[1]).parts) == 3
+                    and PurePosixPath(r[1]).parts[:2] in
+                    (('L0', 'sanya'), ('L0', 'danzhou'), ('L0', 'wenchang'))
+                    and r[1].endswith('.h5') for r in records)
+    uncertainty = sum(r[1].startswith('uncertainty/') for r in records)
+    assert raw_count == 5215, raw_count
+    assert uncertainty == 649, uncertainty
+    (output/'README.txt').write_bytes((Path(__file__).parent/'reproduction/README.txt').read_bytes())
+    with h5py.File(output/'checksums.h5', 'w') as h:
+        paths = [p for p in sorted(output.iterdir()) if p.name != 'checksums.h5']
+        for key, values in [('filename', [p.name for p in paths]),
+                            ('sha256', [file_hash(p) for p in paths]),
+                            ('md5', [file_hash(p, 'md5') for p in paths])]:
+            h[key] = np.asarray(values, dtype=h5py.string_dtype())
+        h['bytes'] = [p.stat().st_size for p in paths]
+        h.attrs.update(record_id='24037714', raw_cut_count=raw_count,
+                       uncertainty_source_count=uncertainty, scientific_member_hashes_verified=True,
+                       intended_state='Unpublished draft; public release only after paper acceptance')
+    print('COMPLETE', len(records), 'members;', len(omissions), 'omissions; five downloads', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--release', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--replication', type=Path, required=True)
+    parser.add_argument('--finalize-existing', action='store_true')
     args = parser.parse_args()
     args.release = args.release.resolve()
     args.output = args.output.resolve()
     args.replication = args.replication.resolve()
+    if args.finalize_existing:
+        code = args.output/'sanya-code.tar.gz'
+        with tarfile.open(code) as archive:
+            contents = {m.name: archive.extractfile(m).read() for m in archive if m.isfile()}
+        inv = 'source/reproduction/inventory.h5'
+        with h5py.File(io.BytesIO(contents[inv])) as h:
+            rows = zip(h['archive'].asstr()[:], h['path'].asstr()[:], h['sha256'].asstr()[:],
+                       h['bytes'][:], h['origin'].asstr()[:])
+            records = [tuple(r) for r in rows if r[1] != 'source/lfm_meteor/consolidate_reviewer_release.py']
+            omissions = list(zip(h['omissions/old_archive'].asstr()[:], h['omissions/old_path'].asstr()[:], h['omissions/reason'].asstr()[:]))
+        contents.pop('source/lfm_meteor/consolidate_reviewer_release.py', None)
+        buffer = io.BytesIO()
+        with h5py.File(buffer, 'w') as h:
+            for i, key in enumerate(('archive', 'path', 'sha256', 'bytes', 'origin')):
+                values = [r[i] for r in records]
+                h[key] = values if key == 'bytes' else np.asarray(values, dtype=h5py.string_dtype())
+            for i, key in enumerate(('old_archive', 'old_path', 'reason')):
+                h['omissions/'+key] = np.asarray([r[i] for r in omissions], dtype=h5py.string_dtype())
+            h.attrs['policy'] = 'Scientific bytes retained; byte-identical evidence copies omitted'
+        contents[inv] = buffer.getvalue()
+        with tarfile.open(code, 'w:gz', compresslevel=1) as archive:
+            for name, data in contents.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o644
+                archive.addfile(info, io.BytesIO(data))
+        records.append((str(code), inv, digest(contents[inv]), len(contents[inv]), 'consolidated member manifest'))
+        finish(args.output, records, omissions)
+        return
     args.output.mkdir(parents=True, exist_ok=False)
     records, omissions, known, destinations = [], [], {}, set()
 
@@ -99,8 +159,6 @@ def main():
         copy_archive(out, 'code-committed/code-final.tar.gz')
         p = Path(__file__).parent/'reproduction/replicate_event.py'
         add(out, 'source/reproduction/replicate_event.py', p.read_bytes(), str(p))
-        p = Path(__file__)
-        add(out, 'source/lfm_meteor/consolidate_reviewer_release.py', p.read_bytes(), str(p))
         inventory = args.output/'inventory.h5'
         with h5py.File(inventory, 'w') as h:
             s = h5py.string_dtype('utf-8')
@@ -113,33 +171,7 @@ def main():
         add(out, 'source/reproduction/inventory.h5', inventory.read_bytes(), 'consolidated member manifest')
         inventory.unlink()
 
-    expected = {(r[0], r[1]): r[2] for r in records}
-    for archive in sorted(args.output.glob('*.tar.gz')):
-        with tarfile.open(archive) as h:
-            for m in h:
-                if m.isfile():
-                    assert digest(h.extractfile(m).read()) == expected.pop((str(archive), m.name)), m.name
-        print('VERIFIED', archive.name, archive.stat().st_size, flush=True)
-    assert not expected
-    raw_count = sum(r[1].startswith('L0/') and r[1].endswith('.h5') for r in records)
-    uncertainty = sum(r[1].startswith('uncertainty/') for r in records)
-    assert raw_count == 5215, raw_count
-    assert uncertainty == 649, uncertainty
-    readme = Path(__file__).parent/'reproduction/README.txt'
-    target = args.output/'README.txt'
-    target.write_bytes(readme.read_bytes())
-    with h5py.File(args.output/'checksums.h5', 'w') as h:
-        paths = sorted(args.output.iterdir())
-        paths = [p for p in paths if p.name != 'checksums.h5']
-        for key, values in [('filename', [p.name for p in paths]),
-                            ('sha256', [file_hash(p) for p in paths]),
-                            ('md5', [file_hash(p, 'md5') for p in paths])]:
-            h[key] = np.asarray(values, dtype=h5py.string_dtype())
-        h['bytes'] = [p.stat().st_size for p in paths]
-        h.attrs.update(record_id='24037714', raw_cut_count=raw_count,
-                       uncertainty_source_count=uncertainty, scientific_member_hashes_verified=True,
-                       intended_state='Unpublished draft; public release only after paper acceptance')
-    print('COMPLETE', len(records), 'members;', len(omissions), 'omissions; five downloads', flush=True)
+    finish(args.output, records, omissions)
 
 
 if __name__ == '__main__':
