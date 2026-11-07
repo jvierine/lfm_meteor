@@ -29,7 +29,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let offset = 109.6222 / 15.;
     let solar: Vec<_> = xticks.iter().map(|v| (v + offset) % 24.).collect();
     a.secondary_x = Some(SecondaryAxis {
-        label: "Local solar time at Sanya (sunrise = 06:00)".into(),
+        label: "Local solar time at Sanya".into(),
         ticks: xticks.iter().zip(&solar).map(|(&x, &s)| (x, s)).collect(),
         tick_labels: Some(solar.iter().map(|&v| clock(v)).collect()),
     });
