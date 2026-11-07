@@ -217,6 +217,10 @@ def main():
     parser.add_argument("kind", choices=["height", "event", "rcs", "detection"])
     parser.add_argument("--event", default="tri_0162_1713823274259349823")
     args = parser.parse_args()
+    if args.kind == 'height':
+        from prepare_current_height_data import main as current_height
+        current_height()
+        return
     OUT.mkdir(exist_ok=True)
     {
         "height": height,

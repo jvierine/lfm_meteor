@@ -3,12 +3,9 @@ import glob
 
 import h5py
 import jcoord
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.collections import LineCollection
-from matplotlib.colors import LogNorm
 
-from grid_search_delays_beam_axis import DAN_CENTER_US, MAX_LAT_DEG, WEN_CENTER_US, build_trajectories, solve_trajectory_points
+from prepare_current_kinematics import OUTPUT, AREA, check_export
 import plot_memo09_antenna_gain_patterns as gain_model
 import plot_sanya_beam_position_histogram as beam_hist
 import sanya_opts as sc
@@ -18,11 +15,9 @@ OUTPUT_PNG = os.path.join("results", "meteor_height_histogram.png")
 OUTPUT_PDF = os.path.join("results", "meteor_height_histogram.pdf")
 PAPER_OUTPUT_PNG = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_height_histogram.png"
 PAPER_OUTPUT_PDF = "/Users/jvi019/src/sanya_tristatic_paper/figures/meteor_height_histogram.pdf"
-INPUT_H5 = os.path.join("results", "all_tristatic_ceplecha_snr_weighted_v20260616d.h5")
-INPUT_CATALOG_DIR = os.path.join("results", "tristatic_shrinking_radius_profile_fixedmask_capped_logr61_20260708")
-FALLBACK_CATALOG_DIR = os.path.join("results", "tristatic_whipple_jacchia_monotonic_bootstrap_orbit100_20260702")
-BEAM_TRACE_CATALOG_DIR = FALLBACK_CATALOG_DIR
-SANYA_CONTAINMENT_AREA_H5 = os.path.join("results", "sanya_gain_containment_area_v20260703b.h5")
+INPUT_CATALOG_DIR = OUTPUT
+BEAM_TRACE_CATALOG_DIR = OUTPUT
+SANYA_CONTAINMENT_AREA_H5 = AREA
 BIN_SIZE_KM = 1.0
 COMMON_VOLUME_ALT_KM = 94.988
 MONOSTATIC_SANYA_H5 = os.path.join("results", "sanya_monostatic_ranges_v20260613b.h5")
@@ -152,92 +147,25 @@ def receiver_gain_profiles(height_grid_km):
     }
 
 
-def event_id_from_path(path):
-    return os.path.splitext(os.path.basename(path))[0].replace("joint_delay_doppler_fft_", "")
-
-
-def joint_fit_paths(catalog_dir, fallback_catalog_dir=FALLBACK_CATALOG_DIR):
-    paths = sorted(glob.glob(os.path.join(catalog_dir, "joint_delay_doppler_fft_tri_*.h5")))
-    by_event = {event_id_from_path(path): path for path in paths}
-    if fallback_catalog_dir:
-        for path in sorted(glob.glob(os.path.join(fallback_catalog_dir, "joint_delay_doppler_fft_tri_*.h5"))):
-            by_event.setdefault(event_id_from_path(path), path)
-    return [by_event[event_id] for event_id in sorted(by_event)]
-
-
 def collect_joint_heights(catalog_dir):
-    chunks = []
-    for path in joint_fit_paths(catalog_dir):
-        with h5py.File(path, "r") as h:
-            if "joint_fit" not in h or "alt_km" not in h["joint_fit"]:
-                continue
-            alt_km = np.asarray(h["joint_fit"]["alt_km"][:], dtype=np.float64)
-            chunks.append(alt_km[np.isfinite(alt_km)])
-    if not chunks:
-        return None
-    altitudes_km = np.concatenate(chunks)
-    return altitudes_km[np.isfinite(altitudes_km)], 0
+    with h5py.File(check_export(catalog_dir)) as h:
+        chunks = [h['events/'+event+'/height_km'][:] for event in h['event_id'].asstr()[:]]
+    return np.concatenate(chunks), 0
 
 
 def collect_heights():
-    joint = collect_joint_heights(INPUT_CATALOG_DIR)
-    if joint is not None:
-        return joint
-
-    if os.path.exists(INPUT_H5):
-        chunks = []
-        with h5py.File(INPUT_H5, "r") as h:
-            for event_id in h["event_id"][:]:
-                name = event_id.decode("utf-8") if isinstance(event_id, bytes) else str(event_id)
-                chunks.append(np.asarray(h["points"][name]["alt_km"][:], dtype=np.float64))
-        if not chunks:
-            raise RuntimeError(f"No fitted trajectory samples found in {INPUT_H5}")
-        altitudes_km = np.concatenate(chunks)
-        altitudes_km = altitudes_km[np.isfinite(altitudes_km)]
-        return altitudes_km, 0
-
-    altitudes_km = []
-    n_rejected = 0
-    for trajectory in build_trajectories():
-        points = solve_trajectory_points(trajectory, DAN_CENTER_US, WEN_CENTER_US)
-        llh = np.asarray([jcoord.ecef2geodetic(point[0], point[1], point[2]) for point in points], dtype=np.float64)
-        alt_km = llh[:, 2] / 1e3
-        keep = np.isfinite(llh[:, 0]) & np.isfinite(llh[:, 1]) & np.isfinite(alt_km) & (llh[:, 0] <= MAX_LAT_DEG)
-        n_rejected += int((~keep).sum())
-        altitudes_km.extend(alt_km[keep].tolist())
-    return np.asarray(altitudes_km, dtype=np.float64), n_rejected
+    return collect_joint_heights(INPUT_CATALOG_DIR)
 
 
 def collect_joint_positions(catalog_dir):
-    chunks = []
-    paths = joint_fit_paths(catalog_dir)
-    for path in paths:
-        with h5py.File(path, "r") as h:
-            if "joint_fit" not in h or "x_itrs_m" not in h["joint_fit"]:
-                continue
-            x_itrs_m = np.asarray(h["joint_fit"]["x_itrs_m"][:], dtype=np.float64)
-            finite = np.all(np.isfinite(x_itrs_m), axis=1)
-            if np.any(finite):
-                chunks.append(x_itrs_m[finite])
-    if not chunks:
-        raise RuntimeError(f"No finite joint-fit x_itrs_m positions found in {catalog_dir}")
-    return np.vstack(chunks), len(paths)
+    traces, count = collect_joint_position_traces(catalog_dir)
+    return np.vstack(traces), count
 
 
 def collect_joint_position_traces(catalog_dir):
-    traces = []
-    paths = joint_fit_paths(catalog_dir, fallback_catalog_dir=None)
-    for path in paths:
-        with h5py.File(path, "r") as h:
-            if "joint_fit" not in h or "x_itrs_m" not in h["joint_fit"]:
-                continue
-            x_itrs_m = np.asarray(h["joint_fit"]["x_itrs_m"][:], dtype=np.float64)
-            finite = np.all(np.isfinite(x_itrs_m), axis=1)
-            if np.count_nonzero(finite) >= 2:
-                traces.append(x_itrs_m[finite])
-    if not traces:
-        raise RuntimeError(f"No finite joint-fit x_itrs_m traces found in {catalog_dir}")
-    return traces, len(paths)
+    with h5py.File(check_export(catalog_dir)) as h:
+        traces = [h['events/'+event+'/position_ecef_m'][:] for event in h['event_id'].asstr()[:]]
+    return traces, len(traces)
 
 
 def beam_panel_data(catalog_dir):
@@ -296,8 +224,6 @@ def beam_panel_data(catalog_dir):
 
 
 def load_sanya_containment_contour(path=SANYA_CONTAINMENT_AREA_H5):
-    if not os.path.exists(path):
-        return None
     with h5py.File(path, "r") as h:
         return {
             "cutoff_relative_gain_db": float(h.attrs["cutoff_relative_gain_db"]),
@@ -344,6 +270,9 @@ def collect_sanya_monostatic_heights():
 
 
 def main():
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import LogNorm
     plt.rcParams.update(
         {
             "font.size": 9.5,

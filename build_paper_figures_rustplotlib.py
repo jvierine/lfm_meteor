@@ -35,7 +35,7 @@ SOURCES = {
     ),
     "tristatic_orbit_elements_minus1000d": (
         "orbits",
-        ROOT / "results/tristatic_orbits_minus1000d_jopek_williams_20260703.h5",
+        ROOT / "results/tristatic_shrinking_orbits_current_20261107/orbits.h5",
     ),
     "sanya_rcs_from_snr_article": ("rcs", ROOT / "results/native_paper_data/rcs.h5"),
     "sun_centered_ecliptic_radiants": (
@@ -53,12 +53,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--only", choices=SOURCES, nargs="+", default=list(SOURCES))
     parser.add_argument("--install-only", action="store_true")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT)
     args = parser.parse_args()
+    output = args.output_dir
     print(
         "Native Rust builders: nine statistical figures (2--10); geometry has a separate native builder.",
         flush=True,
     )
-    OUTPUT.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
     if not args.install_only:
         env = dict(os.environ, HDF5_DIR="/opt/anaconda3")
         env.pop("DYLD_LIBRARY_PATH", None)
@@ -80,23 +82,23 @@ def main():
         for name in args.only:
             kind, source = SOURCES[name]
             subprocess.run(
-                [str(binary), kind, str(source), str(OUTPUT / name)],
+                [str(binary), kind, str(source), str(output / name)],
                 env=env,
                 check=True,
             )
         return
     import h5py
 
-    with h5py.File(OUTPUT / "validation.h5") as record:
+    with h5py.File(output / "validation.h5") as record:
         for name in args.only:
             for extension in ("pdf", "png", "svg"):
-                source = OUTPUT / f"{name}.{extension}"
+                source = output / f"{name}.{extension}"
                 digest = hashlib.sha256(source.read_bytes()).hexdigest()
                 if digest != record[name].attrs[f"{extension}_sha256"]:
                     raise RuntimeError(f"Revalidate changed native figure: {source}")
                 shutil.copyfile(source, PAPER / "figures/rustplotlib" / source.name)
-            if (OUTPUT / f"{name}.include.tex").exists():
-                source = OUTPUT / f"{name}.include.tex"
+            if (output / f"{name}.include.tex").exists():
+                source = output / f"{name}.include.tex"
                 if hashlib.sha256(source.read_bytes()).hexdigest() != record[name].attrs["include_tex_sha256"]:
                     raise RuntimeError("Revalidate changed article inclusion")
                 shutil.copyfile(source, PAPER / "figures/rustplotlib" / source.name)

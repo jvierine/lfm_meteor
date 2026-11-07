@@ -11,7 +11,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         width_mm: 240.,
         font_pt: 9.5,
     });
-    f.height_mm = 91.;
+    f.height_mm = 100.;
     let mut a = Axes::new(
         [0., mc.iter().copied().fold(0_f64, f64::max) * 1.08],
         [80., 120.],
@@ -20,7 +20,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     );
     a.xticks = vec![0., 2000., 4000.];
     a.yticks = vec![80., 90., 100., 110., 120.];
-    let mut p = Panel::new(Rect::new(23., 15., 54., 59.), a);
+    let mut p = Panel::new(Rect::new(23., 24., 54., 59.), a);
     p.major_grid("#e4e4e4", 0.4);
     let mut step = vec![[0., 80.]];
     for i in 0..tc.len() {
@@ -38,7 +38,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         LegendEntry::line("Monostatic", COLORS[0]),
         LegendEntry::line("Tri-static", "#7b3294"),
     ]);
-    l.position = LegendPosition::AboveCenter;
+    l.position = LegendPosition::OutsideAboveCenter;
     l.padding_mm = 0.;
     l.avoid_data = false;
     p.legend = Some(l);
@@ -48,7 +48,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     a.show_y_axis = false;
     a.xticks = vec![0., 20., 40.];
     a.yticks = vec![80., 90., 100., 110., 120.];
-    let mut p = Panel::new(Rect::new(80., 15., 51., 59.), a);
+    let mut p = Panel::new(Rect::new(80., 24., 51., 59.), a);
     p.major_grid("#e4e4e4", 0.4);
     let height = array(h, "gain_height_km")?;
     for (site, color) in [("Danzhou", COLORS[1]), ("Wenchang", COLORS[2])] {
@@ -65,7 +65,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         LegendEntry::line("Wenchang", COLORS[2]),
     ]);
     l.columns = 1;
-    l.position = LegendPosition::AboveCenter;
+    l.position = LegendPosition::OutsideAboveCenter;
     l.avoid_data = false;
     l.padding_mm = 0.;
     p.legend = Some(l);
@@ -92,7 +92,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     );
     a.xticks = vec![-2., 0., 2.];
     a.yticks = vec![-2., 0., 2.];
-    let mut p = Panel::new(Rect::new(156., 15., 59., 59.), a);
+    let mut p = Panel::new(Rect::new(156., 24., 59., 59.), a);
     p.push(Layer::Pcolormesh(Field::new(xe, ye, counts, cid)?));
     let grid = array(h, "gain_grid_deg")?;
     let gain = array(h, "gain_db")?;
@@ -123,7 +123,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     panel_label(&mut f, &p, "(c)");
     f.panels.push(p);
     f.colorbars.push(Colorbar::new(
-        Rect::new(220., 15., 2., 59.),
+        Rect::new(220., 24., 2., 59.),
         cid,
         "Count",
         vec![1., 10.],

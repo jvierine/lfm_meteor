@@ -1,18 +1,17 @@
 import argparse
-import glob
 import os
 
 import astropy.units as u
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
 from astropy.coordinates import AltAz, CartesianDifferential, CartesianRepresentation, EarthLocation, GCRS, GeocentricTrueEcliptic, ITRS, SkyCoord, get_sun
 from astropy.time import Time
 
 import sanya_opts as sc
+from prepare_current_kinematics import OUTPUT, check_export, sha
 
 
-INPUT_CATALOG_DIR = os.path.join("results", "tristatic")
+INPUT_CATALOG_DIR = str(OUTPUT)
 OUTPUT_H5 = os.path.join("results", "sun_centered_ecliptic_radiants.h5")
 OUTPUT_PNG = os.path.join("results", "sun_centered_ecliptic_radiants.png")
 DIAGNOSTIC_OUTPUT_PNG = os.path.join("results", "sun_centered_ecliptic_radiants_diagnostic.png")
@@ -89,45 +88,15 @@ def add_source_markers(ax, labelled=False):
 
 
 def load_fits(catalog_dir):
-    paths = sorted(glob.glob(os.path.join(catalog_dir, "joint_delay_doppler_fft_tri_*.h5")))
-    if not paths:
-        raise FileNotFoundError(f"No joint-fit HDF5 files found in {catalog_dir}")
-    rows = []
-    for path in paths:
-        with h5py.File(path, "r") as h:
-            joint = h["joint_fit"]
-            event_id = h.attrs.get("event_id", os.path.splitext(os.path.basename(path))[0].replace("joint_delay_doppler_fft_", ""))
-            event_id = event_id.decode("utf-8") if isinstance(event_id, bytes) else str(event_id)
-            params = np.asarray(joint["params"], dtype=np.float64)
-            if "v_gcrs_mps" in joint:
-                velocity_mps = np.asarray(joint["v_gcrs_mps"], dtype=np.float64)[0]
-            elif params.shape[0] >= 6:
-                velocity_mps = params[3:6]
-            else:
-                continue
-            if "speed_km_s" in joint:
-                speed_km_s = float(np.asarray(joint["speed_km_s"], dtype=np.float64)[0])
-            else:
-                speed_km_s = float(np.linalg.norm(velocity_mps) / 1e3)
-            rows.append(
-                {
-                    "event_id": event_id,
-                    "t0_ns": int(joint["time_ns"][0]),
-                    "velocity_mps": velocity_mps,
-                    "speed_km_s": speed_km_s,
-                    "rms_total_path_residual_m": float(joint.attrs["rms_total_path_residual_m"]),
-                    "n_points": int(joint.attrs["n_points"]),
-                }
-            )
-    if not rows:
-        raise RuntimeError(f"No usable joint-fit states found in {catalog_dir}")
-    event_id = np.asarray([r["event_id"] for r in rows], dtype=object)
-    t0_ns = np.asarray([r["t0_ns"] for r in rows], dtype=np.int64)
-    velocity_mps = np.asarray([r["velocity_mps"] for r in rows], dtype=np.float64)
-    speed_km_s = np.asarray([r["speed_km_s"] for r in rows], dtype=np.float64)
-    rms_total_path_residual_m = np.asarray([r["rms_total_path_residual_m"] for r in rows], dtype=np.float64)
-    n_points = np.asarray([r["n_points"] for r in rows], dtype=np.int32)
-    return event_id, t0_ns, None, velocity_mps, speed_km_s, rms_total_path_residual_m, n_points, "GCRS"
+    with h5py.File(check_export(catalog_dir)) as h:
+        ids = h['event_id'].asstr()[:]
+        groups = [h['events/'+event] for event in ids]
+        states = np.asarray([g['state_gcrs'][:] for g in groups])
+        times = np.asarray([g['epoch_ns'][()] for g in groups], dtype=np.int64)
+        rms = np.asarray([g.attrs['rms_total_path_residual_m'] for g in groups])
+        count = np.asarray([len(g['time_ns']) for g in groups], dtype=np.int32)
+    return (ids.astype(object), times, states[:,:3], states[:,3:],
+            np.linalg.norm(states[:,3:],axis=1)/1000, rms, count, "GCRS")
 
 
 def velocities_to_gcrs(t0_ns, position_m, velocity_mps, state_frame):
@@ -182,7 +151,8 @@ def write_h5(path, catalog_dir, event_id, t0_ns, speed_km_s, rms_total_path_resi
     string_dtype = h5py.string_dtype(encoding="utf-8")
     with h5py.File(path, "w") as h:
         h.attrs["script"] = os.path.basename(__file__)
-        h.attrs["input_catalog_dir"] = catalog_dir
+        h.attrs["input_catalog_dir"] = str(catalog_dir)
+        h.attrs["source_sha256"] = sha(catalog_dir)
         h.attrs["coordinate_frame"] = "GeocentricTrueEcliptic"
         h.attrs["input_state_frame"] = state_frame
         h.attrs["fixed_ecliptic_equinox_utc"] = fixed_equinox_iso
@@ -293,6 +263,7 @@ def add_visibility_overlay(ax, plot_lon_mesh, beta_mesh, visibility_hours, effec
 
 
 def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s, visibility, output_png=OUTPUT_PNG, paper_output_png=PAPER_OUTPUT_PNG, paper_output_pdf=PAPER_OUTPUT_PDF):
+    import matplotlib.pyplot as plt
     plt.rcParams.update(
         {
             "font.size": 12,
@@ -338,6 +309,7 @@ def plot_radiants(lambda_minus_sun_deg, beta_deg, speed_km_s, visibility, output
 
 
 def plot_radiant_diagnostic(lambda_minus_sun_deg, beta_deg, speed_km_s, output_png=DIAGNOSTIC_OUTPUT_PNG):
+    import matplotlib.pyplot as plt
     plt.rcParams.update(
         {
             "font.size": 12,
@@ -390,7 +362,9 @@ def main():
     parser.add_argument("--paper-interval-tex", default=PAPER_INTERVAL_TEX)
     args = parser.parse_args()
 
-    event_id, t0_ns, position_m, velocity_mps, speed_km_s, rms_total_path_residual_m, n_points, state_frame = load_fits(args.catalog_dir)
+    event_id, t0_ns, position_m, velocity_mps, speed_km_s, rms_total_path_residual_m, n_points, state_frame = load_fits(
+        args.catalog_dir,
+    )
     lambda_deg, beta_deg, sun_lambda_deg, sun_centered_lambda_deg, fixed_equinox_iso = calculate_radiants(t0_ns, position_m, velocity_mps, state_frame)
     t0, t1, sample_times = observation_times(t0_ns)
     visibility = radiant_visibility_grid(sample_times, fixed_equinox_iso)
