@@ -69,6 +69,8 @@ impl<F:Fn(f64)->f64> System<f64,Vector2<f64>> for Shrinking<'_,F> {
 
 /// Fixed direction, Gamma=1; density(s) must use the trial position's geodetic height.
 /// Return distance, speed, radius, mass. Radius follows the exact mass-speed invariant.
+/// sigma=Lambda/(2*Gamma*Q): dm/dt=-Gamma*sigma*rho*pi*r^2*v^3.
+/// Gamma=1 is equivalent to C_D=2 when drag is written as C_D*rho*A*v^2/2.
 pub fn shrinking_trajectory<F:Fn(f64)->f64>(times:&[f64],speed0:f64,radius0:f64,
         material:f64,sigma:f64,density:F)->Result<Vec<[f64;4]>> {
     if times.is_empty() || times.iter().any(|t| !t.is_finite() || *t<0.) ||
@@ -133,5 +135,17 @@ pub fn shrinking_trajectory<F:Fn(f64)->f64>(times:&[f64],speed0:f64,radius0:f64,
             assert!(((y[3]/result[0][3]).ln()-sigma/2.*(y[1]*y[1]-v*v)).abs()<1e-12);
         }
         assert!(result.windows(2).all(|w|w[1][1]<w[0][1] && w[1][2]<w[0][2]));
+    }
+    #[test] fn free_molecular_drag_and_ablation_rates() {
+        let rho=1e-7; let material=3000.; let sigma=1e-8;
+        let v=40000.; let r=50e-6; let dt=1e-6;
+        let result=shrinking_trajectory(&[0.,dt],v,r,material,sigma,|_|rho).unwrap();
+        let area=std::f64::consts::PI*r*r;
+        let expected_drag=-rho*area*v*v/result[0][3];
+        let expected_ablation=-sigma*rho*area*v*v*v;
+        let dv=(result[1][1]-result[0][1])/dt;
+        let dm=(result[1][3]-result[0][3])/dt;
+        assert!((dv/expected_drag-1.).abs()<1e-4);
+        assert!((dm/expected_ablation-1.).abs()<1e-4);
     }
 }
