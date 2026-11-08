@@ -18,6 +18,8 @@ def main():
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--event", required=True)
     p.add_argument("--replicates", type=int, default=32)
+    p.add_argument("--sigma-path", type=float, nargs=3, default=[5.,3.,3.])
+    p.add_argument("--sigma-doppler", type=float, nargs=3, default=[300.,150.,150.])
     a = p.parse_args()
     source = a.source / a.event
     a.output.mkdir(parents=True, exist_ok=True)
@@ -45,8 +47,8 @@ def main():
     unit = waveform(observables[:, 0], observables[:, 1])
     prediction = model.prediction(truth)
     amplitudes = np.sum(np.conj(unit)*prediction, axis=1)/np.sum(abs(unit)**2, axis=1)
-    sigma_path = np.array([5., 3., 3.])[data["station"].astype(int)]
-    sigma_doppler = np.array([300., 150., 150.])[data["station"].astype(int)]
+    sigma_path = np.array(a.sigma_path)[data["station"].astype(int)]
+    sigma_doppler = np.array(a.sigma_doppler)[data["station"].astype(int)]
     for index in range(a.replicates):
         target = a.output / f"sim_{index:03d}"
         target.mkdir(exist_ok=True)

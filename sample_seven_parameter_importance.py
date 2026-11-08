@@ -31,6 +31,8 @@ def main():
         parser.add_argument("--"+name, type=Path, required=True)
     parser.add_argument("--events", nargs="+", required=True)
     parser.add_argument("--particles", type=int, default=131072)
+    parser.add_argument("--seed-base", type=int, default=202611080000)
+    parser.add_argument("--optimize-seconds", type=float, default=2.)
     a = parser.parse_args()
     world = MPI.COMM_WORLD
     event_index = world.rank % len(a.events)
@@ -57,15 +59,34 @@ def main():
     lib = native(a.library)
     model = Model(lib, source, data)
     cache = Cached(model, seed, 0, 1., output/f"cache_{comm.rank}.h5")
-    metric = np.ascontiguousarray(comm.bcast(covariance(cache, seed) if comm.rank == 0 else None))
+    if comm.rank == 0:
+        metric = np.ascontiguousarray(covariance(cache, seed))
+        if a.optimize_seconds > 0:
+            lib.voltage_cache_weighted_fit.argtypes = [ct.c_void_p,ct.c_void_p,PTR,PTR,PTR,PTR,ct.c_double]
+            lib.voltage_cache_weighted_fit.restype = ct.c_int
+            transform = np.ascontiguousarray(np.linalg.cholesky(metric))
+            weights_fit = np.ones(len(data["time_s"]))
+            optimized = np.empty(7)
+            lib.voltage_cache_weighted_fit(cache.handle, model.handle,
+                seed.ctypes.data_as(PTR),transform.ctypes.data_as(PTR),weights_fit.ctypes.data_as(PTR),
+                optimized.ctypes.data_as(PTR),a.optimize_seconds)
+            if cache.logp(optimized) > cache.logp(seed):
+                seed = optimized
+                metric = np.ascontiguousarray(covariance(cache, seed))
+    else:
+        metric = None
+    seed = np.ascontiguousarray(comm.bcast(seed))
+    metric = np.ascontiguousarray(comm.bcast(metric))
     lib.voltage_importance_sample.argtypes = [ct.c_void_p, ct.c_void_p, PTR, PTR,
         ct.c_size_t, ct.c_uint64, ct.c_char_p]
     lib.voltage_importance_sample.restype = ct.c_int
     draws = (a.particles+comm.size-1)//comm.size
     path = output/f"particles_{comm.rank:03d}.h5"
+    random_seed = (a.seed_base ^ int.from_bytes(hashlib.sha256(event.encode()).digest()[:8], "little")
+                   ^ (comm.rank*0x9E3779B97F4A7C15)) % (2**64)
     ok = lib.voltage_importance_sample(cache.handle, model.handle,
         seed.ctypes.data_as(PTR), metric.ctypes.data_as(PTR), draws,
-        202611080000+event_index*10000+comm.rank, os.fsencode(str(path)+".partial"))
+        random_seed, os.fsencode(str(path)+".partial"))
     if not ok:
         raise RuntimeError("Native independent sampling failed")
     os.replace(str(path)+".partial", path)
@@ -106,6 +127,7 @@ def main():
         centered = draws_valid-mean
         posterior_covariance = centered.T@(centered*w_valid[:, None])
         attrs = dict(parameter_count=7, sampled_scatter_parameters=0,
+            seed_base=a.seed_base,
             method="Independent defensive importance sampling of the voltage posterior",
             prior="Uniform position/velocity and log10 radius, log10 radius in [-7,-2]",
             receiver_noise_unchanged=True, inter_pulse_correlation_assumed=False,
@@ -121,6 +143,7 @@ def main():
             production_products_unchanged=True,
             uncertainty_scope="Conditional on fixed drag, density, ablation and receiver calibration; not total physical uncertainty")
         save(output/"posterior.h5", dict(samples=x, log_weights=logw, weights=weights,
+            proposal_center=seed,proposal_covariance=metric,
             posterior_mean=mean, posterior_covariance=posterior_covariance,
             log_radius_quantiles=radius, log_radius_quantile_mc_se=mc_error,
             radius_m_quantiles=10**radius,
