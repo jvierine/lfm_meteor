@@ -26,20 +26,12 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         let offset=|i:usize|observed[groups[sites[i] as usize][0]];
         for i in 0..t.len() {match j {0=>ys.extend([(ml[i]-offset(i))/1000.,(mh[i]-offset(i))/1000.]),2=>ys.extend([model[i]-mh[i],model[i]-ml[i]]),3=>ys.extend([beat[i]-1.96*bs[i],beat[i]+1.96*bs[i]]),_=>()}}
         let mut yl=if j==1{let mut a=array(h,"speed_lower95_km_s")?;a.extend(array(h,"speed_upper95_km_s")?);limits(&a,0.1)}else{limits(&ys,0.12)};
-        if j==1{yl[1]+=if compact {3.5} else {0.9}*(yl[1]-yl[0]);}
+        if j==1 {yl[1]+=0.35*(yl[1]-yl[0]);}
         let mut p=Panel::new(rect,Axes::new(tx,yl,"Time (s)",["Apparent path offset (km)","Speed (km s$^{-1}$)","Path residual (m)","Residual beat (Hz)"][j]));
         if j==1 {
             let st=array(h,"speed_time_s")?;
             p.uncertainty_band(&st,&array(h,"speed_lower95_km_s")?,&array(h,"speed_upper95_km_s")?,"#777777",0.5)?;
             curve(&mut p,&st,&array(h,"speed_km_s")?,"#222222",1.3);
-            let q=array(h,"initial_mass_kg_quantiles")?;let rq=array(h,"initial_radius_m_quantiles")?;
-            let r=h.group("rcs_mass")?;
-            let strings=vec![
-                format!("$m_0={:.2}\\;({:.2},{:.2})\\times10^{{-10}}$ kg",attribute(h,"best_initial_mass_kg")?*1e10,q[0]*1e10,q[2]*1e10),
-                format!("$r_0={:.1}\\;({:.1},{:.1})\\,\\mu$m",attribute(h,"best_initial_radius_m")?*1e6,rq[0]*1e6,rq[2]*1e6),
-                format!("$m_{{\\mathrm{{RCS}}}}={:.2}\\;({:.2},{:.2})\\times10^{{-10}}$ kg",attribute(&r,"mass_kg")?*1e10,attribute(&r,"lo95_scatter_kg")?*1e10,attribute(&r,"hi95_scatter_kg")?*1e10),
-            ];
-            for (i,text) in strings.into_iter().enumerate(){let mut l=Label::new(text,rect.x+rect.width/2.,rect.y+if compact {4.} else {8.}+i as f64*5.);l.background=Some("white".into());l.padding_mm=0.5;f.labels.push(l);}
         }else{
             if j>=2{curve(&mut p,&tx,&[0.,0.],"#aaaaaa",0.6);}
             for (s,ids) in groups.iter().enumerate(){
