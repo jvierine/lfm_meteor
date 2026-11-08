@@ -50,6 +50,26 @@ fn centered_scale_logp(log_scale:f64,count:f64,squares:f64)->f64 {
     -count*log_scale-0.5*squares*(-2.*log_scale).exp()+nuisance_logprior(&[log_scale])
 }
 
+fn curvature_covariance<F:Fn(&DVector<f64>)->Option<f64>>(evaluate:F,factor:&DMatrix<f64>)->Option<DMatrix<f64>> {
+    let n=factor.ncols();let origin=DVector::zeros(n);let f=evaluate(&origin)?;let step=0.08;
+    let mut information=DMatrix::zeros(n,n);
+    for j in 0..n {
+        let mut a=origin.clone();a[j]=step;
+        information[(j,j)]=-(evaluate(&a)?-2.*f+evaluate(&(-&a))?)/(step*step);
+        for k in 0..j {
+            let mut b=origin.clone();b[k]=step;
+            let value=-(evaluate(&(&a+&b))?-evaluate(&(&a-&b))?
+                -evaluate(&(-&a+&b))?+evaluate(&(-&a-&b))?)/(4.*step*step);
+            information[(j,k)]=value;information[(k,j)]=value;
+        }
+    }
+    // Stabilization affects only the MH proposal; exact acceptance is unchanged.
+    let eig=information.symmetric_eigen();let floor=(eig.eigenvalues.max()*1e-4).max(0.02);
+    let covariance=&eig.eigenvectors*DMatrix::from_diagonal(&eig.eigenvalues.map(|x|1./x.max(floor)))*eig.eigenvectors.transpose();
+    let covariance=factor*covariance*factor.transpose();
+    Some((&covariance+covariance.transpose())/2.)
+}
+
 fn gaussian_draw(mean:V, covariance:M, rng:&mut StdRng)->V {
     let l=covariance.cholesky().unwrap().l();
     mean+l*V::new(rng.sample(StandardNormal),rng.sample(StandardNormal))
@@ -171,6 +191,15 @@ impl Scatter {
         let covariance=&scale*normalized.cholesky()?.inverse()*scale.transpose();
         Some((&covariance+covariance.transpose())/2.)
     }
+    fn observed_metric(&self,v:&Voltage,transport:&RadiusTransport,state:&DVector<f64>,factor:&DMatrix<f64>)->Option<DMatrix<f64>> {
+        let evaluate=|z:&DVector<f64>|->Option<f64> {
+            let x=state+factor*z;let q=transport.physical(&x.rows(0,7).into_owned());
+            let logs=&x.as_slice()[7..13];
+            let value=self.conditionals(v,q.as_slice(),logs)?.iter().map(|c|c.gaussian).sum::<f64>()+nuisance_logprior(logs);
+            if value.is_finite(){Some(value)}else{None}
+        };
+        curvature_covariance(evaluate,factor)
+    }
 }
 
 #[no_mangle]
@@ -205,6 +234,7 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
         let mut corrections:Vec<f64>=(0..values.len()).map(|i|model.correction(i,&conditionals[i],epsilon[i])).collect();
         let mut scales=[0_f64;13];let mut component_trials=[0u64;13];let mut component_accepted=[0u64;13];
         let mut centered_scales=[0_f64;6];let mut centered_trials=[0u64;6];let mut centered_accepted=[0u64;6];
+        let mut physical_scales=[0_f64;7];let mut physical_trials=[0u64;7];let mut physical_accepted=[0u64;7];
         let mut accepted=[0u64;5];
         let mut samples=Vec::new();let mut nuisance=Vec::new();let mut probability=Vec::new();
         let mut latent_sum=vec![V::zeros();values.len()];let mut latent_count=0usize;
@@ -242,7 +272,12 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
                         }
                         if let Some(inverse)=transform.try_inverse() {
                             let covariance=&inverse*cov*inverse.transpose();
-                            if let Some(factor)=covariance.cholesky() {chol=factor.l();scales=[0.;13];}
+                            if let Some(factor)=covariance.cholesky() {
+                                let seed=factor.l();
+                                let updated=model.observed_metric(v,&transport,&state,&seed)
+                                    .and_then(|c|c.cholesky()).map(|c|c.l()).unwrap_or(seed);
+                                chol=updated;scales=[0.;13];physical_scales=[0.;7];
+                            }
                         }
                     }
                 }
@@ -272,6 +307,31 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
                 centered_scales[which]=(centered_scales[which]+((step/6+10) as f64).powf(-0.6)
                     *((if centered_ok {1.}else{0.})-0.44)).clamp(-8.,4.);
             }else{centered_trials[which]+=1;}
+            // Conditional on actual pulse coordinates, the voltage likelihood
+            // is constant in trajectory parameters: these exact MH moves are cheap.
+            let actual_u:Vec<V>=actual.iter().map(|e|shear()*e).collect();
+            let mut conditional_lp=model.residual_logp(&actual_u,&means,&logs,None);
+            let mut moved_physical=false;
+            for inner in 0..7 {
+                let j=(step+inner)%7;
+                let proposed=state.rows(0,7).into_owned()+chol.column(j).rows(0,7)
+                    *(physical_scales[j].exp()*rng.sample::<f64,_>(StandardNormal));
+                let q=transport.physical(&proposed);
+                let candidate_means=model.means(v,q.as_slice());
+                let candidate=candidate_means.as_ref().map(|m|model.residual_logp(&actual_u,m,&logs,None))
+                    .unwrap_or(f64::NEG_INFINITY);
+                let ok=candidate.is_finite() && rng.gen::<f64>().ln()<candidate-conditional_lp;
+                if ok {state.rows_mut(0,7).copy_from(&proposed);physical=q;means=candidate_means.unwrap();
+                    conditional_lp=candidate;moved_physical=true;if step>=warmup{physical_accepted[j]+=1;}}
+                if step<warmup {
+                    physical_scales[j]=(physical_scales[j]+((step+10) as f64).powf(-0.6)
+                        *((if ok {1.}else{0.})-0.44)).clamp(-8.,4.);
+                }else{physical_trials[j]+=1;}
+            }
+            if moved_physical {
+                conditionals=model.conditionals_at(&means,&logs).ok_or_else(||anyhow::anyhow!("Invalid centered trajectory transform"))?;
+                for i in 0..epsilon.len() {epsilon[i]=conditionals[i].factor.try_inverse().unwrap()*(actual[i]-conditionals[i].mean);}
+            }
             for i in 0..values.len() {
                 if rng.gen::<f64>()<0.05 {
                     // A prior draw can reach other pulse-likelihood peaks. Its
@@ -312,6 +372,8 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
         h.new_dataset_builder().with_data(&component_accepted).create("component_accepted")?;
         h.new_dataset_builder().with_data(&centered_trials).create("centered_scale_trials")?;
         h.new_dataset_builder().with_data(&centered_accepted).create("centered_scale_accepted")?;
+        h.new_dataset_builder().with_data(&physical_trials).create("centered_physical_trials")?;
+        h.new_dataset_builder().with_data(&physical_accepted).create("centered_physical_accepted")?;
         h.new_dataset_builder().with_data(&scales.map(f64::exp)).create("frozen_component_scales")?;
         let metric:Vec<f64>=(0..13).flat_map(|i|(0..13).map(move |j|(i,j))).map(|(i,j)|proposal_cov[(i,j)]).collect();
         h.new_dataset::<f64>().shape((13,13)).create("jacobian_proposal_covariance")?.write_raw(&metric)?;
@@ -333,6 +395,31 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn joint_curvature_recovers_parameter_scale_correlation() {
+        let covariance=DMatrix::from_row_slice(3,3,&[2.,0.7,-0.4,0.7,1.,0.3,-0.4,0.3,1.5]);
+        let precision=covariance.clone().try_inverse().unwrap();
+        let factor=DMatrix::from_diagonal(&DVector::from_vec(vec![0.4,2.,0.8]));
+        let estimated=curvature_covariance(|z|{let x=&factor*z;Some(-0.5*x.dot(&(&precision*&x)))},&factor).unwrap();
+        assert!((estimated-covariance).norm()<1e-10);
+    }
+    #[test]
+    fn prior_proposals_reach_separated_likelihood_peaks() {
+        let ll=|u:V| {
+            let a=0.3_f64.ln()-0.5*((u[0]+3.)/0.15).powi(2);
+            let b=0.7_f64.ln()-0.5*((u[0]-3.)/0.15).powi(2);
+            let m=a.max(b);m+((a-m).exp()+(b-m).exp()).ln()-0.5*u[1]*u[1]
+        };
+        let mut rng=StdRng::seed_from_u64(643);let mut x=V::new(-3.,0.);
+        let mut previous=ll(x);let mut positive=0.;let n=600000;
+        for k in 0..n+10000 {
+            let (next,value,_)=latent_step(x,previous,V::zeros(),M::identity()/9.,
+                V::new(-3.,0.),M::from_diagonal(&V::new(1./0.15_f64.powi(2),1.)),ll,&mut rng);
+            x=next;previous=value;
+            if k>=10000 && x[0]>0. {positive+=1.;}
+        }
+        assert!((positive/n as f64-0.7).abs()<0.065,"positive-mode fraction {}",positive/n as f64);
+    }
     #[test]
     fn conditional_covariance_survives_anisotropic_scales() {
         let measurement=M::new(0.3,0.08,0.08,0.2);
@@ -360,9 +447,11 @@ mod tests {
     }
     #[test]
     fn centered_and_conditional_scale_targets_agree() {
-        let actual=V::new(0.4,-0.8);let mean=V::new(-0.2,0.1);
+        let actual=V::new(0.4,-0.8);
         let maximum=V::new(0.1,-0.4);let measurement=M::new(0.3,0.08,0.08,0.2);
-        let residual=actual-mean;let mut difference:Option<f64>=None;
+        let mut difference:Option<f64>=None;
+        for mean in [V::new(-0.2,0.1),V::new(0.7,-0.9),V::new(-1.2,1.3)] {
+        let residual=actual-mean;
         for logs in [[-3.,-2.],[0.2,-0.5],[2.,1.]] {
             let c=conditional_gaussian(mean,maximum,measurement,logs).unwrap();
             let epsilon=c.factor.try_inverse().unwrap()*(actual-c.mean);
@@ -372,6 +461,7 @@ mod tests {
                 -c.factor.determinant().ln();
             if let Some(d)=difference {assert!((transformed-centered-d).abs()<1e-8);}
             else {difference=Some(transformed-centered);}
+        }
         }
     }
     #[test]
