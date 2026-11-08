@@ -27,7 +27,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         for i in 0..t.len() {match j {0=>ys.extend([(ml[i]-offset(i))/1000.,(mh[i]-offset(i))/1000.]),2=>ys.extend([model[i]-mh[i],model[i]-ml[i]]),3=>ys.extend([beat[i]-1.96*bs[i],beat[i]+1.96*bs[i]]),_=>()}}
         let mut yl=if j==1{let mut a=array(h,"speed_lower95_km_s")?;a.extend(array(h,"speed_upper95_km_s")?);limits(&a,0.1)}else{limits(&ys,0.12)};
         if j==1 {yl[1]+=0.35*(yl[1]-yl[0]);}
-        let mut p=Panel::new(rect,Axes::new(tx,yl,"Time (s)",["Apparent path offset (km)","Speed (km s$^{-1}$)","Path residual (m)","Residual beat (Hz)"][j]));
+        let mut p=Panel::new(rect,Axes::new(tx,yl,if compact && j>=2 {""} else {"Time (s)"},["Apparent path offset (km)","Speed (km s$^{-1}$)","Path residual (m)","Residual beat (Hz)"][j]));
         if j==1 {
             let st=array(h,"speed_time_s")?;
             p.uncertainty_band(&st,&array(h,"speed_lower95_km_s")?,&array(h,"speed_upper95_km_s")?,"#777777",0.5)?;
@@ -63,7 +63,18 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let mut p=Panel::new(Rect::new(23.,bottom,65.,panel_height),a);
     curve(&mut p,&bt,&gain,COLORS[0],1.2);curve(&mut p,&tx,&[-20.,-20.],"#999999",0.6);
     let mapped:Vec<_>=ry.iter().copied().map(to_gain).collect();curve(&mut p,&rt,&mapped,COLORS[1],0.8);dots(&mut p,&rt,&mapped,COLORS[1],2.5,1.,false)?;
-    legend(&mut p,vec![LegendEntry::line("Two-way gain",COLORS[0]),LegendEntry::circle("RCS",COLORS[1])]);panel_label(&mut f,&p,"e)");f.panels.push(p);
+    if compact {
+        let mut key=Panel::new(Rect::new(23.,81.,65.,6.),Axes::new([0.,65.],[0.,6.],"",""));
+        key.axes_visible=false;
+        curve(&mut key,&[2.,9.],&[3.,3.],COLORS[0],1.2);
+        dots(&mut key,&[47.5],&[3.],COLORS[1],2.5,1.,false)?;
+        f.labels.push(Label::new("Two-way gain",50.,84.));
+        f.labels.push(Label::new("RCS",84.,84.));
+        f.panels.push(key);
+    } else {
+        legend(&mut p,vec![LegendEntry::line("Two-way gain",COLORS[0]),LegendEntry::circle("RCS",COLORS[1])]);
+    }
+    panel_label(&mut f,&p,"e)");f.panels.push(p);
     let extent=attribute(&b,"extent_m")?;
     let mut p=Panel::new(Rect::new(126.,bottom,54.,panel_height),Axes::new([-extent,extent],[-extent,extent],"East--west offset (m)","North--south offset (m)"));
     let contours=b.group("contours")?;
