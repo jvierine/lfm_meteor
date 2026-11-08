@@ -13,6 +13,24 @@ type M = Matrix2<f64>;
 struct Datum {pulse:reduced::Pulse, origin:V, maximum:V, precision:M, offset:f64, station:usize}
 struct Scatter {data:Vec<Datum>, path_scale:f64, beat_scale:f64}
 
+struct Conditional {mean:V, factor:M, gaussian:f64}
+
+fn conditional_gaussian(mean:V, maximum:V, measurement_cov:M, logs:[f64;2])->Option<Conditional> {
+    let prior=M::from_diagonal(&V::new((2.*logs[0]).exp(),(2.*logs[1]).exp()));
+    let sum=prior+measurement_cov;
+    let inverse=sum.try_inverse()?;
+    let covariance=if prior.trace()>measurement_cov.trace() {
+        measurement_cov-measurement_cov*inverse*measurement_cov
+    }else{prior-prior*inverse*prior};
+    let covariance=(covariance+covariance.transpose())/2.;
+    let factor=covariance.cholesky()?.l();
+    let delta=maximum-mean;
+    Some(Conditional{mean:mean+prior*inverse*delta,factor,
+        gaussian:-0.5*delta.dot(&(inverse*delta))-0.5*(sum.determinant()/measurement_cov.determinant()).ln()})
+}
+
+fn shear()->M {M::new(1.,0.,1.,1.)}
+
 fn quadratic(x:V, mean:V, precision:M)->f64 {
     let d=x-mean; -0.5*d.dot(&(precision*d))
 }
@@ -106,6 +124,18 @@ impl Scatter {
             quadratic(values[i],means[i],precision)-logs[2*s]-logs[2*s+1]
         }).sum()
     }
+    fn conditionals(&self,v:&Voltage,q:&[f64],logs:&[f64])->Option<Vec<Conditional>> {
+        let means=self.means(v,q)?;let transform=shear();let inverse=M::new(1.,0.,-1.,1.);
+        self.data.iter().enumerate().map(|(i,d)| {
+            let precision=transform.transpose()*d.precision*transform;
+            conditional_gaussian(inverse*means[i],inverse*d.maximum,precision.try_inverse()?,
+                [logs[2*d.station],logs[2*d.station+1]])
+        }).collect()
+    }
+    fn correction(&self,i:usize,c:&Conditional,epsilon:V)->f64 {
+        let u=shear()*(c.mean+c.factor*epsilon);let d=&self.data[i];
+        self.ll(i,u)-quadratic(u,d.maximum,d.precision)
+    }
 }
 
 #[no_mangle]
@@ -114,12 +144,11 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
     let result=(||->anyhow::Result<()> {
         let v=&*v;let q=std::slice::from_raw_parts(q,7);let stations=std::slice::from_raw_parts(stations,v.time.len());
         let prepared=Instant::now();let model=Scatter::build(v,q,stations)?;
-        let mut rng=StdRng::seed_from_u64(seed);let mut x=DVector::from_column_slice(q);
+        let mut rng=StdRng::seed_from_u64(seed);let x=DVector::from_column_slice(q);
         let base=DMatrix::from_row_slice(7,7,std::slice::from_raw_parts(covariance,49));
         let transport=RadiusTransport::new(&x,&base);
-        let mut physical=transport.physical(&x);let mut means=model.means(v,physical.as_slice()).unwrap();
-        let mut values:Vec<V>=model.data.iter().map(|d|d.maximum).collect();
-        let mut pulse_ll:Vec<f64>=(0..values.len()).map(|i|model.ll(i,values[i])).collect();
+        let mut physical=transport.physical(&x);let means=model.means(v,physical.as_slice()).unwrap();
+        let values:Vec<V>=model.data.iter().map(|d|d.maximum).collect();
         let mut logs=[-3.;6];
         for s in 0..3 {for j in 0..2 {
             let sum:Vec<f64>=model.data.iter().enumerate().filter(|(_,d)|d.station==s).map(|(i,_)| {
@@ -127,51 +156,62 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
             }).collect();
             logs[2*s+j]=(sum.iter().map(|r|r*r).sum::<f64>()/sum.len() as f64).sqrt().clamp(0.001,2.).ln();
         }}
-        let mut chol=(&base*100.).cholesky().ok_or_else(||anyhow::anyhow!("Invalid proposal covariance"))?.l()*(2.38/7_f64.sqrt());
-        let mut running_mean=DVector::zeros(7);let mut scatter=DMatrix::zeros(7,7);
-        let mut scale=0_f64;let mut hyper_scale=[0_f64;3];let mut accepted=[0u64;5];
+        let mut state=DVector::zeros(13);
+        state.rows_mut(0,7).copy_from(&x);
+        for i in 0..6 {state[7+i]=logs[i];}
+        let mut proposal_base=DMatrix::zeros(13,13);
+        proposal_base.view_mut((0,0),(7,7)).copy_from(&(&base*100.));
+        for i in 7..13 {proposal_base[(i,i)]=0.16;}
+        let mut chol=proposal_base.clone().cholesky().ok_or_else(||anyhow::anyhow!("Invalid proposal covariance"))?.l()*(2.38/13_f64.sqrt());
+        let mut conditionals=model.conditionals(v,physical.as_slice(),&logs).ok_or_else(||anyhow::anyhow!("Invalid conditional covariance"))?;
+        let mut epsilon=vec![V::zeros();values.len()];
+        let mut corrections:Vec<f64>=(0..values.len()).map(|i|model.correction(i,&conditionals[i],epsilon[i])).collect();
+        let mut running_mean=DVector::zeros(13);let mut scatter=DMatrix::zeros(13,13);
+        let mut scale=0_f64;let mut accepted=[0u64;5];
         let mut samples=Vec::new();let mut nuisance=Vec::new();let mut probability=Vec::new();
         let mut latent_sum=vec![V::zeros();values.len()];let mut latent_count=0usize;
         let elapsed_prepare=prepared.elapsed().as_secs_f64();let started=Instant::now();
         for step in 0..warmup+draws {
             if started.elapsed().as_secs_f64()>=seconds {break;}
-            let z=DVector::from_fn(7,|_,_|rng.sample(StandardNormal));
-            let proposed=&x+(&chol*z)*scale.exp();let proposed_physical=transport.physical(&proposed);
-            let current_prior=model.residual_logp(&values,&means,&logs,None);
-            let proposed_means=model.means(v,proposed_physical.as_slice());
-            let proposed_prior=proposed_means.as_ref().map_or(f64::NEG_INFINITY,|m|model.residual_logp(&values,m,&logs,None));
-            let accept=proposed_prior.is_finite() && rng.gen::<f64>().ln()<proposed_prior-current_prior;
-            if accept {x=proposed;physical=proposed_physical;means=proposed_means.unwrap();if step>=warmup {accepted[0]+=1;}}
+            let z=DVector::from_fn(13,|_,_|rng.sample(StandardNormal));
+            let proposed=&state+(&chol*z)*scale.exp();
+            let proposed_physical=transport.physical(&proposed.rows(0,7).into_owned());
+            let proposed_logs=&proposed.as_slice()[7..13];
+            let proposed_conditionals=model.conditionals(v,proposed_physical.as_slice(),proposed_logs);
+            let mut proposed_corrections=Vec::new();
+            let current=conditionals.iter().map(|c|c.gaussian).sum::<f64>()+corrections.iter().sum::<f64>()+nuisance_logprior(&logs);
+            let candidate=if let Some(c)=&proposed_conditionals {
+                proposed_corrections=(0..values.len()).map(|i|model.correction(i,&c[i],epsilon[i])).collect();
+                c.iter().map(|x|x.gaussian).sum::<f64>()+proposed_corrections.iter().sum::<f64>()+nuisance_logprior(proposed_logs)
+            }else{f64::NEG_INFINITY};
+            let accept=candidate.is_finite() && rng.gen::<f64>().ln()<candidate-current;
+            if accept {state=proposed;physical=proposed_physical;conditionals=proposed_conditionals.unwrap();
+                corrections=proposed_corrections;logs.copy_from_slice(&state.as_slice()[7..13]);
+                if step>=warmup {accepted[0]+=1;}}
             if step<warmup {
                 scale=tune_scale(scale,step,accept);
-                let count=(step+1) as f64;let delta=&x-&running_mean;running_mean+=&delta/count;
-                scatter+=&delta*(&x-&running_mean).transpose();
+                let count=(step+1) as f64;let delta=&state-&running_mean;running_mean+=&delta/count;
+                scatter+=&delta*(&state-&running_mean).transpose();
                 if step>=499 && step%100==99 {
-                    let cov=(&scatter/(count-1.)+&base*0.01)*(2.38_f64.powi(2)/7.);
+                    let cov=(&scatter/(count-1.)+&proposal_base*0.01)*(2.38_f64.powi(2)/13.);
                     if let Some(c)=cov.cholesky(){chol=c.l();}
                 }
             }
             for i in 0..values.len() {
-                let d=&model.data[i];let s=d.station;
-                let (next,next_ll,ok)=latent_step(values[i],pulse_ll[i],means[i],
-                    prior_precision([logs[2*s],logs[2*s+1]]),d.maximum,d.precision,
-                    |u|model.ll(i,u),&mut rng);
-                values[i]=next;pulse_ll[i]=next_ll;if ok && step>=warmup {accepted[4]+=1;}
-            }
-            for s in 0..3 {
-                let mut candidate=logs;
-                for j in 0..2 {candidate[2*s+j]+=0.2*hyper_scale[s].exp()*rng.sample::<f64,_>(StandardNormal);}
-                let old=model.residual_logp(&values,&means,&logs,Some(s))+nuisance_logprior(&logs[2*s..2*s+2]);
-                let new=model.residual_logp(&values,&means,&candidate,Some(s))+nuisance_logprior(&candidate[2*s..2*s+2]);
-                let ok=new.is_finite() && rng.gen::<f64>().ln()<new-old;
-                if ok {logs=candidate;if step>=warmup {accepted[1+s]+=1;}}
-                if step<warmup {hyper_scale[s]=tune_scale(hyper_scale[s],step,ok);}
+                let independent=rng.gen::<f64>()<0.75;
+                let proposal=if independent {V::new(rng.sample(StandardNormal),rng.sample(StandardNormal))}
+                    else {epsilon[i]+0.5*V::new(rng.sample(StandardNormal),rng.sample(StandardNormal))};
+                let correction=model.correction(i,&conditionals[i],proposal);
+                let gaussian=if independent {0.}else{-0.5*(proposal.norm_squared()-epsilon[i].norm_squared())};
+                let ok=correction.is_finite() && rng.gen::<f64>().ln()<correction-corrections[i]+gaussian;
+                if ok {epsilon[i]=proposal;corrections[i]=correction;if step>=warmup {accepted[4]+=1;}}
             }
             if step>=warmup {
                 samples.extend_from_slice(physical.as_slice());
                 for s in 0..3 {nuisance.push(logs[2*s].exp()*model.path_scale);nuisance.push(logs[2*s+1].exp()*model.beat_scale);}
-                probability.push(pulse_ll.iter().sum::<f64>()+model.residual_logp(&values,&means,&logs,None)+nuisance_logprior(&logs));
-                if step%20==0 {for (sum,value) in latent_sum.iter_mut().zip(&values){*sum+=value;}latent_count+=1;}
+                probability.push(conditionals.iter().map(|c|c.gaussian).sum::<f64>()+corrections.iter().sum::<f64>()
+                    +nuisance_logprior(&logs)-0.5*epsilon.iter().map(|e|e.norm_squared()).sum::<f64>());
+                if step%20==0 {for (i,sum) in latent_sum.iter_mut().enumerate(){*sum+=shear()*(conditionals[i].mean+conditionals[i].factor*epsilon[i]);}latent_count+=1;}
             }
         }
         let h=hdf5::File::create(CStr::from_ptr(path).to_str()?)?;
@@ -195,6 +235,26 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn conditional_coordinates_preserve_joint_density() {
+        let mean=V::new(0.3,-0.2);let maximum=V::new(-0.1,0.7);
+        let measurement=M::new(0.2,0.06,0.06,0.4);
+        let precision=measurement.try_inverse().unwrap();
+        let mut reference:Option<f64>=None;
+        for logs in [[-6.,-5.],[-1.,0.3],[2.,3.]] {
+            let c=conditional_gaussian(mean,maximum,measurement,logs).unwrap();
+            let prior=M::from_diagonal(&V::new((-2.*logs[0]).exp(),(-2.*logs[1]).exp()));
+            for epsilon in [V::zeros(),V::new(0.8,-1.2),V::new(-2.,0.4)] {
+                let u=c.mean+c.factor*epsilon;
+                let direct=quadratic(u,maximum,precision)+quadratic(u,mean,prior)
+                    -logs[0]-logs[1]+c.factor.determinant().ln();
+                let transformed=c.gaussian-0.5*epsilon.norm_squared();
+                let difference=direct-transformed;
+                if let Some(r)=reference {assert!((difference-r).abs()<1e-7);}
+                else {reference=Some(difference);}
+            }
+        }
+    }
     #[test]
     fn chirp_coupling_and_normalization() {
         let logs=[0.7_f64.ln(),0.2_f64.ln()];let p=prior_precision(logs);
