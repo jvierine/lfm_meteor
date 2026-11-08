@@ -51,23 +51,31 @@ impl LinearProxy {
         }
         if value.is_finite(){value}else{f64::NEG_INFINITY}
     }
-    fn centered_proposal(&self,actual:&[V],logs:&[f64],base:&DMatrix<f64>,rng:&mut StdRng)->Option<(DVector<f64>,DVector<f64>,DMatrix<f64>)> {
-        let mut information=DMatrix::zeros(7,7);let mut right=DVector::zeros(7);
+    fn centered_mean(&self,actual:&[V],logs:&[f64],reference:&DVector<f64>,means:&[V],covariance:&DMatrix<f64>)->DVector<f64> {
+        let mut right=DVector::zeros(7);
+        for i in 0..actual.len() {let s=self.stations[i];let residual=actual[i]-means[i];
+            for k in 0..2 {let weight=(-2.*logs[2*s+k]).exp();
+                for j in 0..7 {right[j]+=self.jacobians[i][(k,j)]*weight*residual[k];}}
+        }
+        reference+covariance*right
+    }
+    fn centered_proposal(&self,actual:&[V],logs:&[f64],reference:&DVector<f64>,means:&[V],base:&DMatrix<f64>,rng:&mut StdRng)->Option<(DVector<f64>,DVector<f64>,DMatrix<f64>,DMatrix<f64>)> {
+        let mut information=DMatrix::zeros(7,7);
         for i in 0..actual.len() {
-            let s=self.stations[i];let residual=actual[i]-self.means[i];
+            let s=self.stations[i];
             for k in 0..2 {
                 let weight=(-2.*logs[2*s+k]).exp();
-                for j in 0..7 {right[j]+=self.jacobians[i][(k,j)]*weight*residual[k];
+                for j in 0..7 {
                     for l in 0..7 {information[(j,l)]+=self.jacobians[i][(k,j)]*weight*self.jacobians[i][(k,l)];}}
             }
         }
         let factor=base.clone().cholesky()?.l();
         let normalized=factor.transpose()*information*&factor+DMatrix::identity(7,7)*1e-10;
         let covariance=&factor*normalized.cholesky()?.inverse()*factor.transpose();
-        let mean=&self.reference+&covariance*right;
+        let mean=self.centered_mean(actual,logs,reference,means,&covariance);
         let precision=covariance.clone().try_inverse()?;
-        let candidate=&mean+covariance.cholesky()?.l()*DVector::from_fn(7,|_,_|rng.sample(StandardNormal));
-        Some((candidate,mean,precision))
+        let candidate=&mean+covariance.clone().cholesky()?.l()*DVector::from_fn(7,|_,_|rng.sample(StandardNormal));
+        Some((candidate,mean,precision,covariance))
     }
 }
 
@@ -384,14 +392,18 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
             }else{centered_trials[which]+=1;}
             // Draw all seven trajectory coordinates together from a linearized
             // conditional; the exact nonlinear MH correction removes its error.
-            if let Some((candidate,mean,precision))=proxy.centered_proposal(&actual,&logs,&base,&mut rng) {
+            let current=state.rows(0,7).into_owned();
+            let current_means:Vec<V>=means.iter().map(|m|inv_shear*m).collect();
+            if let Some((candidate,mean,precision,covariance))=proxy.centered_proposal(&actual,&logs,&current,&current_means,&base,&mut rng) {
                 let q=transport.physical(&candidate);let proposed_means=model.means(v,q.as_slice());
                 let residual_lp=|m:&[V]|->f64 {actual.iter().enumerate().map(|(i,u)| {
                     let s=model.data[i].station;let r=*u-inv_shear*m[i];
                     -0.5*(r[0].powi(2)*(-2.*logs[2*s]).exp()+r[1].powi(2)*(-2.*logs[2*s+1]).exp())
                 }).sum()};
                 if let Some(m)=proposed_means {
-                    let old=state.rows(0,7).into_owned()-&mean;let new=&candidate-&mean;
+                    let reverse_means:Vec<V>=m.iter().map(|m|inv_shear*m).collect();
+                    let reverse=proxy.centered_mean(&actual,&logs,&candidate,&reverse_means,&covariance);
+                    let old=&current-&reverse;let new=&candidate-&mean;
                     let ratio=residual_lp(&m)-residual_lp(&means)
                         -0.5*old.dot(&(&precision*&old))+0.5*new.dot(&(&precision*&new));
                     if ratio.is_finite() && rng.gen::<f64>().ln()<ratio {
@@ -466,6 +478,26 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
 mod tests {
     use super::*;
     #[test]
+    fn recentered_newton_mh_matches_nonlinear_quadrature() {
+        let forward=|x:f64|x+0.15*x.powi(3);
+        let logp=|x:f64|if x.abs()>3. {f64::NEG_INFINITY}else{-0.5*((forward(x)-0.5)/0.2).powi(2)};
+        let jacobian=1.1;let variance=0.2_f64.powi(2)/(jacobian*jacobian);
+        let proposal_mean=|x:f64|x+(0.5-forward(x))/jacobian;
+        let mut norm=0.;let mut expected=0.;let mut second=0.;
+        for k in 0..40000 {let x=-3.+6.*k as f64/40000.;let w=logp(x).exp();norm+=w;expected+=w*x;second+=w*x*x;}
+        expected/=norm;second/=norm;
+        let mut rng=StdRng::seed_from_u64(259);let mut x=0.;let mut sum=0.;let mut squares=0.;
+        for k in 0..60000 {
+            let mean=proposal_mean(x);let y=mean+variance.sqrt()*rng.sample::<f64,_>(StandardNormal);
+            let reverse=proposal_mean(y);
+            let ratio=logp(y)-logp(x)-0.5*(x-reverse).powi(2)/variance+0.5*(y-mean).powi(2)/variance;
+            if rng.gen::<f64>().ln()<ratio{x=y;}
+            if k>=10000 {sum+=x;squares+=x*x;}
+        }
+        assert!((sum/50000.-expected).abs()<0.005);
+        assert!((squares/50000.-second).abs()<0.005);
+    }
+    #[test]
     fn prior_normal_coordinates_preserve_voltage_target() {
         let measurement=M::new(0.3,0.08,0.08,0.2);let maximum=V::new(0.1,-0.4);
         let precision=measurement.try_inverse().unwrap();let z=V::new(0.7,-0.5);
@@ -492,7 +524,7 @@ mod tests {
         let proxy=LinearProxy{reference:DVector::zeros(7),means:vec![V::zeros();7],jacobians,
             maxima:actual.clone(),measurement:vec![M::identity();7],stations:vec![0;7]};
         let mut rng=StdRng::seed_from_u64(745);
-        let (_,mean,precision)=proxy.centered_proposal(&actual,&[0.;6],&DMatrix::identity(7,7),&mut rng).unwrap();
+        let (_,mean,precision,_)=proxy.centered_proposal(&actual,&[0.;6],&proxy.reference,&proxy.means,&DMatrix::identity(7,7),&mut rng).unwrap();
         assert!((&mean-truth).norm()<1e-8);
         assert!((precision-DMatrix::identity(7,7)*2.).norm()<1e-8);
     }
