@@ -52,7 +52,7 @@ def main():
     with h5py.File(target,'w') as h:
         h.attrs.update(source_program=__file__,source_sha256=sha(OUTPUT),manifest_sha256=sha(MANIFEST),
                        system_noise_sha256=sha(noise_path),model='direct shrinking radius',
-                       selection='retained Sanya pulses of all 232 accepted events; one-way gain >= -3 dB; no mass cut',
+                       selection='Retained Sanya pulses of the current accepted trajectory manifest; one-way gain >= -3 dB; no mass cut',
                        calibration='measured noise temperature, 1/pulse-duration bandwidth, gain and range recomputed from physical states')
         h['accepted_event_id'] = np.asarray(ids,dtype=h5py.string_dtype())
         p = h.create_group('pulses')
