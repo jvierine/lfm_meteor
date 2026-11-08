@@ -178,7 +178,7 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
         a.xticks = (xlim[0].ceil() as i32..=xlim[1].floor() as i32).map(|v| v as f64).collect();
         if j == 0 {
             a.secondary_x = Some(SecondaryAxis::new(r"Equivalent radius ($\mu\mathrm{m}$)",
-                vec![20., 100., 500.],
+                vec![10., 20., 50., 100., 200., 500.],
                 |r| (3000. * 4. * std::f64::consts::PI / 3. * (r * 1e-6).powi(3)).log10())?);
         }
         let mut p = Panel::new(Rect::new(16., top, 56., panel_height), a);
