@@ -113,13 +113,26 @@ def main():
     p.add_argument('root', type=Path)
     p.add_argument('--library', type=Path, required=True)
     p.add_argument('--events', nargs='+')
+    p.add_argument('--beam-source-root',type=Path)
+    p.add_argument('--noise',type=Path)
+    p.add_argument('--lookup',type=Path)
     a = p.parse_args()
     comm = MPI.COMM_WORLD
+    noise = None
+    if a.beam_source_root:
+        from noise_model import MeasuredSystemNoise
+        noise = MeasuredSystemNoise(str(a.noise))
     events = a.events or sorted(x.parent.name for x in (a.root/'inputs').glob('tri_*/input.h5'))
     errors = []
     for event in events[comm.rank::comm.size]:
         try:
             export_one(a.root, event, a.library)
+            if noise is not None:
+                from export_voltage_beam import export as export_beam
+                from export_voltage_rcs_mass import export as export_mass
+                folder = a.root/'catalog'/event
+                export_beam(folder,a.beam_source_root,noise)
+                export_mass(folder,a.lookup,a.root/'flags_snapshot')
         except Exception as exc:
             import traceback
             traceback.print_exc()
