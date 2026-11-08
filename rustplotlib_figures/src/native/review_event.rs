@@ -10,8 +10,9 @@ fn legend(p: &mut Panel, entries: Vec<LegendEntry>) {
     l.avoid_data=false;l.allow_reused_marker_shapes=true;l.background_opacity=0.85;l.padding_mm=1.;p.legend=Some(l);
 }
 pub fn figure(h: &hdf5::File) -> Result<Figure> {
+    let compact = h.attr("compact_article_layout").ok().and_then(|a|a.read_scalar::<bool>().ok()).unwrap_or(false);
     let mut f=Figure::new(IntendedUse::Custom{width_mm:220.,font_pt:10.});
-    f.height_mm=248.;
+    f.height_mm=if compact {135.} else {248.};
     let t=array(h,"time_s")?;let sites=array(h,"station")?;
     let observed=array(h,"seed_apparent_path_m")?;let model=array(h,"modeled_path_m")?;
     let lower=array(h,"path_lower95_m")?;let upper=array(h,"path_upper95_m")?;
@@ -19,13 +20,13 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let beat=array(h,"residual_beat_hz")?;let bs=array(h,"conditional_beat_std_hz")?;
     let tx=limits(&t,0.05);
     for j in 0..4 {
-        let rect=Rect::new(if j%2==0{23.}else{126.},12.+(j/2) as f64*77.,73.,54.);
+        let rect=Rect::new(if j%2==0{23.}else{126.},if compact {10.+(j/2) as f64*40.} else {12.+(j/2) as f64*77.},73.,if compact {25.} else {54.});
         let mut ys=Vec::new();
         let groups:Vec<Vec<usize>>=(0..3).map(|s|(0..t.len()).filter(|&i|sites[i]==s as f64).collect()).collect();
         let offset=|i:usize|observed[groups[sites[i] as usize][0]];
         for i in 0..t.len() {match j {0=>ys.extend([(ml[i]-offset(i))/1000.,(mh[i]-offset(i))/1000.]),2=>ys.extend([model[i]-mh[i],model[i]-ml[i]]),3=>ys.extend([beat[i]-1.96*bs[i],beat[i]+1.96*bs[i]]),_=>()}}
         let mut yl=if j==1{let mut a=array(h,"speed_lower95_km_s")?;a.extend(array(h,"speed_upper95_km_s")?);limits(&a,0.1)}else{limits(&ys,0.12)};
-        if j==1{yl[1]+=0.9*(yl[1]-yl[0]);}
+        if j==1{yl[1]+=if compact {3.5} else {0.9}*(yl[1]-yl[0]);}
         let mut p=Panel::new(rect,Axes::new(tx,yl,"Time (s)",["Apparent path offset (km)","Speed (km s$^{-1}$)","Path residual (m)","Residual beat (Hz)"][j]));
         if j==1 {
             let st=array(h,"speed_time_s")?;
@@ -38,7 +39,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
                 format!("$r_0={:.1}\\;({:.1},{:.1})\\,\\mu$m",attribute(h,"best_initial_radius_m")?*1e6,rq[0]*1e6,rq[2]*1e6),
                 format!("$m_{{\\mathrm{{RCS}}}}={:.2}\\;({:.2},{:.2})\\times10^{{-10}}$ kg",attribute(&r,"mass_kg")?*1e10,attribute(&r,"lo95_scatter_kg")?*1e10,attribute(&r,"hi95_scatter_kg")?*1e10),
             ];
-            for (i,text) in strings.into_iter().enumerate(){let mut l=Label::new(text,rect.x+rect.width/2.,rect.y+8.+i as f64*5.);l.background=Some("white".into());l.padding_mm=0.5;f.labels.push(l);}
+            for (i,text) in strings.into_iter().enumerate(){let mut l=Label::new(text,rect.x+rect.width/2.,rect.y+if compact {4.} else {8.}+i as f64*5.);l.background=Some("white".into());l.padding_mm=0.5;f.labels.push(l);}
         }else{
             if j>=2{curve(&mut p,&tx,&[0.,0.],"#aaaaaa",0.6);}
             for (s,ids) in groups.iter().enumerate(){
@@ -63,20 +64,22 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let mut gy=limits(&gain,0.08);gy[0]-=0.25*(gy[1]-gy[0]);let rl=limits(&ry,0.1);
     let to_gain=|r:f64|gy[0]+(r-rl[0])/(rl[1]-rl[0])*(gy[1]-gy[0]);
     let mut a=Axes::new(limits(&bt,0.05),gy,"Time (s)","Two-way gain (dB)");
-    let ticks=(rl[0].ceil() as i32..=rl[1].floor() as i32).step_by(2).map(|v|v as f64).collect();
+    let ticks=(rl[0].ceil() as i32..=rl[1].floor() as i32).filter(|v|if compact {v.rem_euclid(5)==0} else {(v-rl[0].ceil() as i32).rem_euclid(2)==0}).map(|v|v as f64).collect();
     a.secondary_y=Some(SecondaryAxis::new("RCS (dBsm)",ticks,to_gain)?);
-    let mut p=Panel::new(Rect::new(23.,166.,65.,54.),a);
+    let bottom = if compact {90.} else {166.};
+    let panel_height = if compact {25.} else {54.};
+    let mut p=Panel::new(Rect::new(23.,bottom,65.,panel_height),a);
     curve(&mut p,&bt,&gain,COLORS[0],1.2);curve(&mut p,&tx,&[-20.,-20.],"#999999",0.6);
     let mapped:Vec<_>=ry.iter().copied().map(to_gain).collect();curve(&mut p,&rt,&mapped,COLORS[1],0.8);dots(&mut p,&rt,&mapped,COLORS[1],2.5,1.,false)?;
     legend(&mut p,vec![LegendEntry::line("Two-way gain",COLORS[0]),LegendEntry::circle("RCS",COLORS[1])]);panel_label(&mut f,&p,"e)");f.panels.push(p);
     let extent=attribute(&b,"extent_m")?;
-    let mut p=Panel::new(Rect::new(126.,166.,54.,54.),Axes::new([-extent,extent],[-extent,extent],"East--west offset (m)","North--south offset (m)"));
+    let mut p=Panel::new(Rect::new(126.,bottom,54.,panel_height),Axes::new([-extent,extent],[-extent,extent],"East--west offset (m)","North--south offset (m)"));
     let contours=b.group("contours")?;
     for name in contours.member_names()?{let g=contours.group(&name)?;for path in g.member_names()?{let a=array(&g,&path)?;let mut l=Line::new(a.chunks_exact(2).map(|v|[v[0],v[1]]).collect(),"#999999");l.width_pt=0.6;p.push(Layer::Line(l));}}
     let east=array(&b,"east_m")?;let north=array(&b,"north_m")?;let snr=array(&b,"snr_db")?;
     let scale=Scale::new(limits(&snr,0.01),Normalization::Linear,ColorMap::plasma())?;let cid=f.scale(scale.clone());
     curve(&mut p,&east,&north,"#999999",0.6);p.scatter_colored(&points(&east,&north),&snr,&scale,3.,1.,"none")?;
     let ticks=(scale.limits[0].ceil() as i32..=scale.limits[1].floor() as i32).filter(|v|v%10==0).map(|v|v as f64).collect();
-    f.colorbars.push(Colorbar::new(Rect::new(184.,166.,2.,54.),cid,"SNR (dB)",ticks));panel_label(&mut f,&p,"f)");f.panels.push(p);
+    f.colorbars.push(Colorbar::new(Rect::new(184.,bottom,2.,panel_height),cid,"SNR (dB)",ticks));panel_label(&mut f,&p,"f)");f.panels.push(p);
     Ok(f)
 }
