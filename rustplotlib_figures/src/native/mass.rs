@@ -162,8 +162,7 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
     let mut xlim = limits(&interval_values, 0.03);
     xlim[0] = xlim[0].min(edges[0]);
     xlim[1] = xlim[1].max(*edges.last().unwrap());
-    let mut f = Figure::new(IntendedUse::ArticleWide);
-    f.height_mm = 148.;
+    let mut f = ArticleLayout::new(90., 10.)?.figure(1., 148.)?;
     let unit_mm = 64. / 65.;
     let panel_height = 55. * unit_mm;
     let center = 23. + panel_height;
@@ -179,10 +178,10 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
         a.xticks = (xlim[0].ceil() as i32..=xlim[1].floor() as i32).map(|v| v as f64).collect();
         if j == 0 {
             a.secondary_x = Some(SecondaryAxis::new(r"Equivalent radius ($\mu\mathrm{m}$)",
-                vec![20., 30., 50., 100., 200., 500., 1000.],
+                vec![20., 100., 500.],
                 |r| (3000. * 4. * std::f64::consts::PI / 3. * (r * 1e-6).powi(3)).log10())?);
         }
-        let mut p = Panel::new(Rect::new(24., top, 129., panel_height), a);
+        let mut p = Panel::new(Rect::new(16., top, 56., panel_height), a);
         for decade in xlim[0].ceil() as i32..=xlim[1].floor() as i32 {
             let mut grid = Line::new(vec![[decade as f64, ylim[0]], [decade as f64, ylim[1]]], "#000000");
             grid.width_pt = 0.4;
@@ -206,23 +205,17 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
         p.errorbars(&points(&xs[j], &ys), Some(&bounds), None, color, 0.65, 2.4, 0.5)?;
         dots(&mut p, &xs[j], &ys, color, 3.2, 0.9, true)?;
         let name = if j == 0 { "Dynamic mass" } else { "RCS mass loss" };
-        let mut legend = Legend::new(vec![
-            LegendEntry { label: format!("{name} ($n={}$, 95\\%)", xs[j].len()), symbol: LegendSymbol::AsymmetricInterval { color: color.into(), size_pt: 3.2 } },
-        ]);
-        legend.position = LegendPosition::CenterRight; legend.avoid_data = false;
-        legend.padding_mm = 0.7;
-        legend.background_opacity = 0.;
-        p.legend = Some(legend);
+        f.labels.push(Label::new(name, 44., top + panel_height * if j == 0 {24. / 55.} else {31. / 55.}));
         f.panels.push(p);
         let mut sa = Axes::new(xlim, if j == 0 { [0., 72.] } else { [-72., 0.] }, "", "");
         sa.show_x_axis = false; sa.show_y_axis = false;
         sa.secondary_y = Some(SecondaryAxis::new(r"Initial speed ($\mathrm{km\,s^{-1}}$)", vec![0.,20.,40.,60.,72.], move |v| sign*v)?);
-        f.panels.push(Panel::new(Rect::new(24., if j == 0 {top+2.*unit_mm} else {top+33.*unit_mm}, 129., 20.*unit_mm), sa));
+        f.panels.push(Panel::new(Rect::new(16., if j == 0 {top+2.*unit_mm} else {top+33.*unit_mm}, 56., 20.*unit_mm), sa));
     }
     let mut ca = Axes::new(xlim, [-count_max, count_max], "", format!("Count / ({width:.2} dex)"));
     ca.show_x_axis = false;
     ca.yticks = (-4..=4).map(|i| count_max * i as f64 / 4.).collect();
     ca.yticklabels = Some((-4_i32..=4).map(|i| format!("{:.0}", count_max * i.abs() as f64 / 4.)).collect());
-    f.panels.push(Panel::new(Rect::new(24., center-30.*unit_mm, 129., 60.*unit_mm), ca));
-    article_figure(f, 0.8)
+    f.panels.push(Panel::new(Rect::new(16., center-30.*unit_mm, 56., 60.*unit_mm), ca));
+    Ok(f)
 }

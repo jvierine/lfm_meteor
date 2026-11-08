@@ -29,14 +29,13 @@ fn main() -> Result<()> {
     let ymax=counts.iter().flatten().copied().fold(0., f64::max)+1.;
     let catalogue=residual.len()>100;
     let baseline=if catalogue {0.7} else {0.};
-    let mut f=Figure::new(IntendedUse::ArticleWide);
-    f.width_mm=180.; f.height_mm=84.;
+    let mut f=ArticleLayout::new(90.,10.)?.figure(1.,66.)?;
     let top=ymax*3.;
-    let mut axes=Axes::new([-limit,limit],[baseline,top],"Apparent path residual (m)","Measurements per 0.5 m bin");
+    let mut axes=Axes::new([-50.,50.],[baseline,top],"Apparent path residual (m)","Measurements / 0.5 m");
     if catalogue {
         axes.set_yscale(AxisScale::Log10)?;
     } else {axes.yticks=(0..=ymax as usize).map(|x|x as f64).collect();}
-    let mut p=Panel::new(Rect::new(22.,6.,150.,58.),axes);
+    let mut p=Panel::new(Rect::new(18.,3.,68.,48.),axes);
     let mut entries=Vec::new();
     let out=hdf5::File::create(folder.join("delay_residual_histogram.h5"))?;
     out.new_dataset_builder().with_data(&residual).create("model_minus_observed_m")?;
@@ -54,11 +53,13 @@ fn main() -> Result<()> {
         p.push(Layer::Line(Line::new(xy,colors[s])));
         let n=station.iter().filter(|&&x|x==s as i64).count();
         let rms=(residual.iter().zip(&station).filter(|(_,j)|**j==s as i64).map(|(r,_)|r*r).sum::<f64>()/n as f64).sqrt();
-        entries.push(LegendEntry::line(format!("{}: $n={}$, RMS ${:.1}$ m",names[s],n,rms),colors[s]));
+        entries.push(LegendEntry::line(names[s],colors[s]));
         out.new_dataset_builder().with_data(&counts[s]).create(names[s])?;
         println!("{} n={} RMS={:.4} m",names[s],n,rms);
     }
     let mut legend=Legend::new(entries);legend.position=LegendPosition::UpperRight;legend.columns=1;
+    legend.avoid_data=false;
+    legend.padding_mm=0.5;
     // The capped marker spans median +/- the unscaled MAD in data coordinates.
     let marker_y=ymax*1.65;
     let cap=if catalogue {marker_y*0.14} else {ymax*0.08};
@@ -66,11 +67,9 @@ fn main() -> Result<()> {
     for x in [center-mad,center+mad] {
         p.push(Layer::Line(Line::new(vec![[x,marker_y-cap],[x,marker_y+cap]],"#171717")));
     }
-    let marker_page_y=if catalogue {64.-58.*(marker_y/baseline).log10()/(top/baseline).log10()}
-        else {64.-58.*marker_y/top};
-    f.labels.push(Label::new(format!("$2\\,\\mathrm{{MAD}}={:.2}$ m",2.*mad),73.,marker_page_y));
     p.legend=Some(legend);f.panels.push(p);
     f.latex.cache=folder.parent().unwrap().join(".rustplotlib-cache");
-    for ext in ["png","pdf"] {f.save(folder.join(format!("delay_residual_histogram.{ext}")))?;}
+    f.save_for_article(folder.join("delay_residual_histogram.pdf"),
+        "figures/rustplotlib/catalogue_delay_residual_histogram.pdf")?;
     Ok(())
 }
