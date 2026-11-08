@@ -211,6 +211,13 @@ impl Voltage {
         1
     }else{0}
 }
+#[no_mangle] pub unsafe extern "C" fn voltage_observables(v:*const Voltage,q:*const f64,out:*mut f64)->i32 {
+    let v=&*v;
+    let Some(values)=v.observables(std::slice::from_raw_parts(q,v.dimension())) else{return 0;};
+    let out=std::slice::from_raw_parts_mut(out,2*values.len());
+    for (row,value) in out.chunks_exact_mut(2).zip(values) {row.copy_from_slice(&value);}
+    1
+}
 #[no_mangle] pub unsafe extern "C" fn voltage_residual(v:*const Voltage,q:*const f64,out:*mut f64)->i32 {
     let v=&*v;
     v.residual(std::slice::from_raw_parts(q,v.dimension()),std::slice::from_raw_parts_mut(out,2*v.real.len()),&mut 0.) as i32
