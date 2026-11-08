@@ -117,6 +117,8 @@ def main():
             with h5py.File(output/f'particles_{rank:03d}.h5') as h:
                 arrays.append(h['samples'][:]); logs.append(h['log_weights'][:])
         x, logw = np.concatenate(arrays), np.concatenate(logs)
+        if not np.isfinite(logw).any():
+            raise RuntimeError('No finite posterior weights; no interval available')
         w = np.exp(logw-logsumexp(logw))
         radius = quantiles(x[:, 6], w)
         fine = make(2*a.nodes)
@@ -125,21 +127,27 @@ def main():
             np.ascontiguousarray(x[i]).ctypes.data_as(PTR))-logp(x[i]) for i in indices])
         lib.voltage_discrepancy_free(fine)
         mass = 4*np.pi/3*3000*10**(3*radius)
+        ess = 1/np.sum(w*w)
+        quadrature_range = np.ptp(differences)
+        numerical_checks = (ess >= 10000 and w.max() < .005
+                            and quadrature_range < .01)
         save(output/'posterior.h5', dict(samples=x, log_weights=logw, weights=w,
             log_radius_quantiles=radius, mass_kg_quantiles=mass,
             quadrature_log_difference=differences, params=q, proposal_covariance=proposal),
             dict(pilot_only=True, model_discrepancy_validated=False,
                 parameter_count=7, sampled_scatter_parameters=0,
+                numerical_checks_passed=bool(numerical_checks),
+                interval_usable=False,
                 marginalized_scatter_scales=6, thermal_covariance_unchanged=True,
                 inter_pulse_correlation_assumed=False,
                 likelihood='Joint Gaussian pulse compression plus independent additive path/Doppler discrepancy; station scales marginalized',
                 scatter_prior='Independent half Student t(3); path scale c/B, Doppler scale 1/T; numerical integration over 8e-7 to 100 resolution units',
-                importance_ess=1/np.sum(w*w), maximum_weight=w.max(),
-                quadrature_relative_log_range=np.ptp(differences),
+                importance_ess=ess, maximum_weight=w.max(),
+                quadrature_relative_log_range=quadrature_range,
                 elapsed_seconds=time.monotonic()-began,
                 source_git_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()))
-        print('PILOT POSTERIOR', event, 'mass95', mass, 'ESS', 1/np.sum(w*w),
-              'quadrature_log_range',np.ptp(differences),flush=True)
+        print('PILOT DIAGNOSTICS', event, 'numerical_checks_passed',numerical_checks,
+              'interval_usable',False,'ESS',ess,'quadrature_log_range',quadrature_range,flush=True)
     lib.voltage_discrepancy_free(handle)
     lib.voltage_free(model.handle)
 
