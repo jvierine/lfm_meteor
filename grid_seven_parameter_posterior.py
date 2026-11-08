@@ -62,7 +62,7 @@ def main():
     worker = output/f"worker_{comm.rank}"
     worker.mkdir(exist_ok=True)
     lib = native(a.library)
-    model = Model(lib, worker, data)
+    model = Model(lib, source, data)
     cache = Cached(model, seed, 0, 1., worker/"cache.h5")
     metric = comm.bcast(covariance(cache, seed) if comm.rank == 0 else None)
     metric = np.ascontiguousarray(metric)
