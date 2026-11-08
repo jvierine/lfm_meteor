@@ -40,18 +40,16 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let peak = attr(h, "peak_frequency_hz")? / 1000.;
     let start = attr(h, "fit_echo_window_shift_us")?;
     let duration = attr(h, "pulse_length_us")?;
-    let mut f = Figure::new(IntendedUse::ArticleWide);
-    f.height_mm = 145.;
-    f.tight_export = false;
+    let mut f = ArticleLayout::new(90., 10.)?.figure(1., 145.)?;
     let mut upper_axes = Axes::new(
         [-50., 250.],
         [-2., 2.],
-        r"Time relative to zero-Doppler gate pulse start ($\mu\mathrm{s}$)",
+        r"Time from gate start ($\mu\mathrm{s}$)",
         "Normalized voltage",
     );
-    upper_axes.xticks = vec![-50., 0., 50., 100., 150., 200., 250.];
+    upper_axes.xticks = vec![0., 100., 200.];
     upper_axes.yticks = vec![-2., -1., 0., 1., 2.];
-    let mut upper = Panel::new(Rect::new(24., 21., 149., 46.), upper_axes);
+    let mut upper = Panel::new(Rect::new(17., 25., 69., 43.), upper_axes);
     upper.major_grid("#dddddd", 0.45);
     for x in [0., duration] {
         line(
@@ -93,30 +91,19 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     // A compact external key keeps the echo itself unobstructed.
     let key = [
         ("Zero-Doppler gate", "#888888", Some("1.2 0.8")),
-        ("Fit-corrected real", "#58778c", Some("0.35 0.8")),
+        ("Corrected real", "#58778c", Some("0.35 0.8")),
         ("Real", "#58778c", None),
-        ("Joint-fit echo start/stop", "#853ca4", Some("2 1")),
-        ("Fit-corrected imaginary", "#b17c56", Some("0.35 0.8")),
+        ("Fitted envelope", "#853ca4", Some("2 1")),
+        ("Corrected imag.", "#b17c56", Some("0.35 0.8")),
         ("Imaginary", "#b17c56", None),
     ];
-    let mut key_panel = Panel::new(
-        Rect::new(24., 5., 149., 10.),
-        Axes::new([24., 173.], [0., 10.], "", ""),
-    );
+    let mut key_panel = Panel::new(Rect::new(0., 0., 90., 20.), Axes::new([0.,90.], [0.,20.], "", ""));
     key_panel.axes_visible = false;
     for (i, (text, color, dash)) in key.iter().enumerate() {
-        let x = 25. + (i % 3) as f64 * 52.;
-        let y = 8. + (i / 3) as f64 * 5.;
-        line(
-            &mut key_panel,
-            vec![[x, 15. - y], [x + 5., 15. - y]],
-            color,
-            1.0,
-            *dash,
-            1.,
-        );
-        let label = Label::new(*text, x + 28., y);
-        f.labels.push(label);
+        let x = 3. + (i % 2) as f64 * 44.;
+        let y = 4. + (i / 2) as f64 * 6.;
+        line(&mut key_panel, vec![[x,20.-y],[x+5.,20.-y]], color, 1., *dash, 1.);
+        f.labels.push(Label::new(*text, x+23., y));
     }
     f.panels.push(key_panel);
     f.panels.push(upper);
@@ -126,9 +113,9 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         r"Beat frequency, $f_b$ (kHz)",
         "Relative power (dB)",
     );
-    lower_axes.xticks = (-4..=3).map(|i| i as f64 * 20.).collect();
+    lower_axes.xticks = vec![-80., -40., 0., 40.];
     lower_axes.yticks = vec![-50., -40., -30., -20., -10., 0.];
-    let mut lower = Panel::new(Rect::new(24., 86., 149., 46.), lower_axes);
+    let mut lower = Panel::new(Rect::new(17., 88., 69., 43.), lower_axes);
     lower.major_grid("#dddddd", 0.45);
     let points = frequency
         .iter()
@@ -144,12 +131,12 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         None,
         1.,
     );
-    let p = lower.data_to_figure([peak + 28., -5.]);
+    let p = lower.data_to_figure([peak + 45., -7.]);
     f.labels.push(Label::new(
         format!("$f_b={peak:.2}\\,\\mathrm{{kHz}}$"),
         p[0],
         p[1],
     ));
     f.panels.push(lower);
-    super::common::article_figure(f, 1.)
+    Ok(f)
 }

@@ -44,7 +44,7 @@ SOURCES = {
     ),
     "appendix_dechirped_beat_example": (
         "beat",
-        ROOT / "results/appendix_dechirped_beat_example_v20260702b.h5",
+        ROOT / "results/single_column_20261108/beat.h5",
     ),
 }
 
