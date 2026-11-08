@@ -6,7 +6,7 @@ use rand::{Rng,SeedableRng,rngs::StdRng};
 use rand_distr::StandardNormal;
 use std::time::Instant;
 
-struct Proposal {
+pub(super) struct Proposal {
     center:DVector<f64>,factor:DMatrix<f64>,inverse:DMatrix<f64>,conditional:DMatrix<f64>,
     conditional_inverse:DMatrix<f64>,beta:DVector<f64>,logdet:f64,conditional_logdet:f64,
 }
@@ -18,7 +18,7 @@ fn student_constant(dimension:usize)->f64 {
     gamma_ratio-0.5*dimension as f64*(8.*std::f64::consts::PI).ln()
 }
 
-fn newton_mode<F:Fn(&DVector<f64>)->f64>(logp:F,initial:DVector<f64>,factor:&DMatrix<f64>,seconds:f64)->DVector<f64> {
+pub(super) fn newton_mode<F:Fn(&DVector<f64>)->f64>(logp:F,initial:DVector<f64>,factor:&DMatrix<f64>,seconds:f64)->DVector<f64> {
     let began=Instant::now();let mut x=initial;let n=x.len();
     for _ in 0..50 {
         if began.elapsed().as_secs_f64()>seconds {break;}
@@ -77,7 +77,7 @@ pub unsafe extern "C" fn voltage_importance_optimize(cache:*const Cache,voltage:
 }
 
 impl Proposal {
-    fn new(center:DVector<f64>,covariance:DMatrix<f64>)->Option<Self> {
+    pub(super) fn new(center:DVector<f64>,covariance:DMatrix<f64>)->Option<Self> {
         let factor=covariance.clone().cholesky()?.l();let inverse=factor.clone().try_inverse()?;
         let permutation=[6,0,1,2,3,4,5];
         let reordered=DMatrix::from_fn(7,7,|i,j|covariance[(permutation[i],permutation[j])]);
@@ -88,7 +88,7 @@ impl Proposal {
         let conditional_logdet=(0..6).map(|j|conditional[(j,j)].ln()).sum();
         Some(Self{center,factor,inverse,conditional,conditional_inverse,beta,logdet,conditional_logdet})
     }
-    fn draw(&self,rng:&mut StdRng)->DVector<f64> {
+    pub(super) fn draw(&self,rng:&mut StdRng)->DVector<f64> {
         let component=rng.gen::<f64>();
         let normal=DVector::from_fn(7,|_,_|rng.sample::<f64,_>(StandardNormal));
         if component<0.85 {return &self.center+&self.factor*normal;}
@@ -100,7 +100,7 @@ impl Proposal {
         let first=mean+(&self.conditional*normal.rows(0,6))*scale;
         x.rows_mut(0,6).copy_from(&first);x[6]=radius;x
     }
-    fn logp(&self,x:&DVector<f64>)->f64 {
+    pub(super) fn logp(&self,x:&DVector<f64>)->f64 {
         let z=&self.inverse*(x-&self.center);let squared=z.norm_squared();
         let gaussian=0.85_f64.ln()-3.5*std::f64::consts::TAU.ln()-self.logdet-0.5*squared;
         let student=0.10_f64.ln()+student_constant(7)-self.logdet-7.*2_f64.ln()-7.5*(1.+squared/32.).ln();

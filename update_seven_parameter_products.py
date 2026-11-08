@@ -86,13 +86,18 @@ def masses(root):
     for event in ids:
         folder = root/'catalog'/event
         with h5py.File(folder/'plot.h5') as p:
-            if p.attrs.get('dynamic_mass_included',False):
+            # Numerical posterior convergence alone cannot establish physical
+            # mass precision when pulse/trajectory mismatch dominates noise.
+            adequate = bool(p.attrs.get('model_discrepancy_validated', False))
+            if p.attrs.get('dynamic_mass_included',False) and adequate:
                 with h5py.File(folder/'dynamic_mass_posterior.h5') as d:
                     dynamic[event] = (float(p.attrs['best_initial_mass_kg']),
                         d['mass_kg'][:],p['initial_mass_kg_quantiles'][:],
                         float(p['speed_km_s'][0]),sha(folder/'dynamic_mass_posterior.h5'))
             else:
-                omissions.append(('dynamic',event,str(p.attrs['dynamic_mass_exclusion_reason'])))
+                reason = (str(p.attrs.get('dynamic_mass_exclusion_reason', 'excluded'))
+                          if adequate else 'Model-discrepancy uncertainty not validated')
+                omissions.append(('dynamic',event,reason))
         try:
             with h5py.File(folder/'rcs_mass.h5') as r:
                 flag = root/'flags_snapshot'/(event+'.h5')
@@ -109,6 +114,8 @@ def masses(root):
         except (OSError,KeyError,ValueError,AssertionError) as exc:
             omissions.append(('rcs',event,str(exc)))
     dyn_ids = [e for e in ids if e in dynamic]
+    if not dyn_ids:
+        raise RuntimeError('No dynamic masses have validated model-discrepancy uncertainty; existing products preserved')
     paired = [e for e in dyn_ids if e in rcs]
     string = h5py.string_dtype()
     output = root/'products'
