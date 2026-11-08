@@ -85,7 +85,7 @@ impl Voltage {
     }
 }
 impl Cache {
-    fn build(v:&Voltage,q:&[f64],_n:usize,_expand:f64)->anyhow::Result<Self> {
+    pub(super) fn build(v:&Voltage,q:&[f64],_n:usize,_expand:f64)->anyhow::Result<Self> {
         let obs=v.observables(q).ok_or_else(||anyhow::anyhow!("Invalid seed"))?;
         let mut pulses=Vec::new();let mut offsets=Vec::new();
         for (i,o) in obs.iter().enumerate() {
@@ -156,6 +156,43 @@ impl Cache {
     match result {Ok(c)=>Box::into_raw(Box::new(c)),Err(e)=>{eprintln!("{e:#}");std::ptr::null_mut()}}
 }
 #[no_mangle] pub unsafe extern "C" fn voltage_cache_free(c:*mut Cache){if !c.is_null(){drop(Box::from_raw(c));}}
+
+/// Diagnostic pulse likelihoods; their sum is exactly the catalogue likelihood.
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_terms(c:*const Cache,v:*const Voltage,
+    q:*const f64,out:*mut f64)->i32 {
+    let c=&*c;let v=&*v;
+    let Some(values)=c.evaluate(v,std::slice::from_raw_parts(q,v.dimension())) else{return 0;};
+    std::slice::from_raw_parts_mut(out,values.len()).copy_from_slice(&values);
+    1
+}
+
+/// Fit each pulse's path/envelope and beat jointly, without any trajectory ODE.
+/// This is an adequacy diagnostic, not additional independent trajectory data.
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_pulse_audit(c:*const Cache,v:*const Voltage,
+    q:*const f64,out:*mut f64)->i32 {
+    let c=&*c;let v=&*v;
+    let Some(obs)=v.observables(std::slice::from_raw_parts(q,v.dimension())) else{return 0;};
+    let out=std::slice::from_raw_parts_mut(out,8*obs.len());
+    let rate=v.bandwidth/v.duration/C;
+    for (i,o) in obs.iter().enumerate() {
+        let origin=[o[0],o[1]+rate*o[0]];
+        let at=|z:&DVector<f64>|c.pulses[i].logp(origin[0]+z[0],origin[1]+100.*z[1]);
+        let (z,ok)=simplex_minimize(|z| -at(z),2,0.25);
+        let peak=at(&z);let mut h=DMatrix::zeros(2,2);let step=[0.02,0.02];
+        for j in 0..2 {
+            let mut a=DVector::zeros(2);a[j]=step[j];
+            h[(j,j)]=-(at(&(&z+&a))-2.*peak+at(&(&z-&a)))/step[j].powi(2);
+        }
+        let a=DVector::from_vec(vec![step[0],0.]);let b=DVector::from_vec(vec![0.,step[1]]);
+        h[(0,1)]=-(at(&(&z+&a+&b))-at(&(&z+&a-&b))-at(&(&z-&a+&b))+at(&(&z-&a-&b)))/(4.*step[0]*step[1]);
+        h[(1,0)]=h[(0,1)];
+        let covariance=h.try_inverse().unwrap_or(DMatrix::from_element(2,2,f64::NAN));
+        out[8*i..8*i+8].copy_from_slice(&[origin[0]+z[0],origin[1]+100.*z[1],
+            peak-at(&DVector::zeros(2)),covariance[(0,0)],100.*covariance[(0,1)],
+            10000.*covariance[(1,1)],if ok {1.}else{0.},z.norm()]);
+    }
+    1
+}
 // Block bootstrap weights act on complete pulse likelihoods, never on separate
 // delay and beat diagnostics. Physical trajectory integration remains unchanged.
 #[no_mangle] pub unsafe extern "C" fn voltage_cache_weighted_fit(c:*const Cache,v:*const Voltage,q:*const f64,
