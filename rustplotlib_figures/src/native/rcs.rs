@@ -16,8 +16,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     f.height_mm = 82.;
     let color = Scale::new([15., 71.], Normalization::Linear, ColorMap::turbo())?;
     let cid = f.scale(color.clone());
-    let low = quantile(&rcs, 0.01);
-    let high = quantile(&rcs, 0.99);
+    let low = rcs.iter().copied().fold(f64::INFINITY, f64::min);
+    let high = rcs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let edges: Vec<_> = (0..34)
         .map(|i| low + (high - low) * i as f64 / 33.)
         .collect();
