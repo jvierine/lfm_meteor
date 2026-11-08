@@ -45,17 +45,33 @@ def main():
     for name in ('source', 'flags', 'output', 'library'):
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--cores', type=int, default=128)
+    p.add_argument('--retry-unresolved', action='store_true')
+    p.add_argument('--particles', type=int, default=131072)
     a = p.parse_args()
     a.output.mkdir(parents=True, exist_ok=True)
     frozen, snapshot = a.output / 'inputs', a.output / 'flags_snapshot'
     snapshot.mkdir(exist_ok=True)
     events = sorted(x.parent.name for x in a.source.glob('tri_*/input.h5'))
-    for event in events:
+    all_events = events.copy()
+    for event in ([] if a.retry_unresolved else events):
         flag = a.flags / (event + '.h5')
         if flag.exists():
             shutil.copy2(flag, snapshot / flag.name)
         prepare(a.source / event, snapshot / flag.name, frozen / event)
-    save(a.output / 'launch.h5', {'events': np.asarray(events, dtype='S')},
+    if a.retry_unresolved:
+        events = []
+        for event in all_events:
+            posterior = a.output / 'posterior' / event / 'posterior.h5'
+            with h5py.File(posterior) as h:
+                if not h.attrs['convergence_verified']:
+                    events.append(event)
+        for event in events:
+            source = a.output / 'posterior' / event
+            backup = a.output / 'first_attempt' / event
+            backup.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source / 'posterior.h5', backup / 'posterior.h5')
+    launch_name = 'retry_launch.h5' if a.retry_unresolved else 'launch.h5'
+    save(a.output / launch_name, {'events': np.asarray(events, dtype='S')},
          {'started_unix': time.time(), 'cores': a.cores, 'event_count': len(events),
           'method': 'seven-parameter native independent importance posterior',
           'paper_products_unchanged': True})
@@ -68,6 +84,7 @@ def main():
                    sys.executable, '-u', 'sample_seven_parameter_importance.py',
                    '--source', str(frozen), '--flags', str(snapshot),
                    '--output', str(a.output / 'posterior'), '--library', str(a.library),
+                   '--particles', str(a.particles), '--seed-base', '202611081001',
                    '--optimize-seconds', '5', '--events', *batch]
         result = subprocess.run(command, check=False)
         if result.returncode:
@@ -76,7 +93,7 @@ def main():
              {'processed_events': min(start + len(batch), len(events)),
               'total_events': len(events), 'updated_unix': time.time()})
     verified, unresolved = [], []
-    for event in events:
+    for event in all_events:
         path = a.output / 'posterior' / event / 'posterior.h5'
         good = False
         if path.exists():
@@ -86,7 +103,7 @@ def main():
     save(a.output / 'complete.h5',
          {'verified_events': np.asarray(verified, dtype='S'),
           'unresolved_events': np.asarray(unresolved, dtype='S')},
-         {'finished_unix': time.time(), 'event_count': len(events),
+         {'finished_unix': time.time(), 'event_count': len(all_events),
           'verified_count': len(verified), 'unresolved_count': len(unresolved)})
     print('FINISHED', len(verified), 'verified;', len(unresolved), 'unresolved', flush=True)
 
