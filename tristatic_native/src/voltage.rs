@@ -269,6 +269,7 @@ impl Voltage {
         let mut q=vec![0.,0.,0.,0.,0.,0.,2.,0.];let mut residual=vec![0.;2*n];let mut lognorm=0.;
         assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!(residual.iter().map(|r|r*r).sum::<f64>()<1e-12);
+        model.prepare_fft();
         let diagnostic_cache=compressed::Cache::build(&model,&q,0,1.).unwrap();
         let mut terms=vec![0.;1];
         assert_eq!(unsafe {compressed::voltage_cache_terms(&diagnostic_cache,&model,q.as_ptr(),terms.as_mut_ptr())},1);
@@ -278,6 +279,7 @@ impl Voltage {
         assert!(pulse_diagnostic[2]>=-1e-7);
         assert!((pulse_diagnostic[0]-path).abs()<0.01);
         assert!((pulse_diagnostic[1]-(fd+bandwidth/duration*path/C)).abs()<0.1);
+        model.fft=None;
         q[2]=0.001;
         assert!(model.residual(&q,&mut residual,&mut lognorm));
         assert!(residual.iter().map(|r|r*r).sum::<f64>()>0.001);
