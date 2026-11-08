@@ -162,8 +162,8 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
     let mut xlim = limits(&interval_values, 0.03);
     xlim[0] = xlim[0].min(edges[0]);
     xlim[1] = xlim[1].max(*edges.last().unwrap());
-    let mut f = ArticleLayout::new(90., 10.)?.figure(1., 148.)?;
-    let unit_mm = 64. / 65.;
+    let mut f = ArticleLayout::new(90., 10.)?.figure(1., 108.)?;
+    let unit_mm = 42. / 65.;
     let panel_height = 55. * unit_mm;
     let center = 23. + panel_height;
     // The lower panel reverses every vertical coordinate, including the axes.
@@ -205,11 +205,11 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
         p.errorbars(&points(&xs[j], &ys), Some(&bounds), None, color, 0.65, 2.4, 0.5)?;
         dots(&mut p, &xs[j], &ys, color, 3.2, 0.9, true)?;
         let name = if j == 0 { "Dynamic mass" } else { "RCS mass loss" };
-        f.labels.push(Label::new(name, 44., top + panel_height * if j == 0 {24. / 55.} else {31. / 55.}));
+        f.labels.push(Label::new(name, if j == 0 {44.} else {58.}, top + panel_height * if j == 0 {24. / 55.} else {31. / 55.}));
         f.panels.push(p);
         let mut sa = Axes::new(xlim, if j == 0 { [0., 72.] } else { [-72., 0.] }, "", "");
         sa.show_x_axis = false; sa.show_y_axis = false;
-        sa.secondary_y = Some(SecondaryAxis::new(r"Initial speed ($\mathrm{km\,s^{-1}}$)", vec![0.,20.,40.,60.,72.], move |v| sign*v)?);
+        sa.secondary_y = Some(SecondaryAxis::new(r"Initial speed ($\mathrm{km\,s^{-1}}$)", vec![0.,30.,60.], move |v| sign*v)?);
         f.panels.push(Panel::new(Rect::new(16., if j == 0 {top+2.*unit_mm} else {top+33.*unit_mm}, 56., 20.*unit_mm), sa));
     }
     let mut ca = Axes::new(xlim, [-count_max, count_max], "", format!("Count / ({width:.2} dex)"));
