@@ -18,11 +18,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let day = h.attr("utc_day_start_ns")?.read_scalar::<i64>()?;
     let hours: Vec<_> = time.iter().map(|&v| (v - day) as f64 / 3.6e12).collect();
     let xr = [12., 24.];
-    let xticks = vec![12., 14., 16., 18., 20., 22., 24.];
-    let mut f = Figure::new(IntendedUse::ArticleWide);
-    f.height_mm = 154.;
-    f.font_pt = 9.;
-    f.latex.font_pt = 9.;
+    let xticks = vec![12., 16., 20., 24.];
+    let mut f = ArticleLayout::new(90., 10.)?.figure(1., 154.)?;
     let mut a = Axes::new(xr, limits(&delay, 0.03), "", r"Delay ($\mu\mathrm{s}$)");
     a.show_x_axis = false;
     a.xticks = xticks.clone();
@@ -33,7 +30,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         ticks: xticks.iter().zip(&solar).map(|(&x, &s)| (x, s)).collect(),
         tick_labels: Some(solar.iter().map(|&v| clock(v)).collect()),
     });
-    let mut p = Panel::new(Rect::new(22., 20., 147., 37.), a);
+    let mut p = Panel::new(Rect::new(18., 20., 68., 37.), a);
     p.major_grid("#e4e4e4", 0.4);
     for col in 0..3 {
         let ids: Vec<_> = (0..names.len())
@@ -62,7 +59,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     a.show_x_axis = false;
     a.xticks = xticks.clone();
     a.set_yscale(AxisScale::Log10)?;
-    let mut p = Panel::new(Rect::new(22., 66., 147., 30.), a);
+    let mut p = Panel::new(Rect::new(18., 66., 68., 30.), a);
     p.major_grid("#e4e4e4", 0.4);
     for (col, name) in ["sanya", "danzhou", "wenchang", "tristatic"]
         .iter()
@@ -86,18 +83,14 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         }
         p.push(Layer::Line(l));
     }
-    let mut legend = Legend::new(vec![LegendEntry {
-        label: "Tri-static candidates".into(),
-        symbol: LegendSymbol::Line {
-            color: "#222222".into(),
-            width_pt: 1.2,
-            dash: Some("2 1".into()),
-        },
-    }]);
-    legend.position = LegendPosition::AboveCenter;
-    legend.padding_mm = 0.5;
-    legend.avoid_data = false;
-    p.legend = Some(legend);
+    let mut key = Panel::new(Rect::new(28., 59., 8., 4.), Axes::new([0., 1.], [0., 1.], "", ""));
+    key.axes_visible = false;
+    let mut sample = Line::new(vec![[0., 0.5], [1., 0.5]], "#222222");
+    sample.dash = Some("2 1".into());
+    sample.width_pt = 1.2;
+    key.push(Layer::Line(sample));
+    f.panels.push(key);
+    f.labels.push(Label::new("Tri-static candidates", 60., 61.));
     f.panels.push(p);
     let noise = h.group("noise")?;
     let mut ymax = 0_f64;
@@ -119,7 +112,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     a.yticks = (0..=(ymax * 1.04 / 200.) as usize)
         .map(|i| i as f64 * 200.)
         .collect();
-    let mut p = Panel::new(Rect::new(22., 105., 147., 35.), a);
+    let mut p = Panel::new(Rect::new(18., 105., 68., 35.), a);
     p.major_grid("#e4e4e4", 0.4);
     for (col, site) in ["sanya", "danzhou", "wenchang"].iter().enumerate() {
         let g = noise.group(site)?;
@@ -146,10 +139,11 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             .collect(),
     );
     legend.columns = 3;
+    legend.allow_reused_marker_shapes = true;
     legend.position = LegendPosition::UpperLeft;
     legend.avoid_data = false;
     legend.padding_mm = 0.5;
     p.legend = Some(legend);
     f.panels.push(p);
-    article_figure(f, 1.)
+    Ok(f)
 }

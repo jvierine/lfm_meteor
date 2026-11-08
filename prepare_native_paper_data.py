@@ -134,14 +134,14 @@ def rcs():
     print("Scientific RCS arrays prepared", flush=True)
 
 
-def detection():
+def detection(observations_path=None, noise_path=None):
     from astropy.time import Time
     import plot_pygdsm_station_sky_noise as sky_science
     from sanya_sky_data import GSM2008
     import noise_model
 
     with h5py.File(
-        ROOT / "results/paper_rustplotlib/detection_observations.h5"
+        observations_path or ROOT / "results/paper_rustplotlib/detection_observations.h5"
     ) as old, h5py.File(OUT / "detection.h5", "w") as h:
         observations = h.create_group("observations")
         for key in old:
@@ -170,7 +170,7 @@ def detection():
         group["hour"] = bins + 0.5
         group["count"] = [np.count_nonzero(hours == hour) for hour in bins]
         with h5py.File(
-            ROOT / "results/sanya_4mhz_system_noise_power_100pulse.h5"
+            noise_path or ROOT / "results/sanya_4mhz_system_noise_power_100pulse.h5"
         ) as noise:
             nt = noise["bins/time_utc_mid_ns"][()]
             sid = noise["bins/station_id"][()]
