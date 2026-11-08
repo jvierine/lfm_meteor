@@ -12,9 +12,11 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--event', default='tri_0012_1713798481419350028')
 parser.add_argument('--catalog', type=Path, default=ROOT/'results/tristatic_cached_shrinking_20261029')
 parser.add_argument('--flags', type=Path, default=ROOT/'results/review_flags_scatter_snapshot')
+parser.add_argument('--output', type=Path)
 args = parser.parse_args()
 EVENT = args.event
-OUT = ROOT/f'results/article_review_event_{EVENT.split("_")[1]}.h5'
+OUT = args.output or ROOT/f'results/article_review_event_{EVENT.split("_")[1]}.h5'
+OUT.parent.mkdir(parents=True,exist_ok=True)
 d = Store(args.catalog, args.flags, latest=args.catalog).data(EVENT)
 assert d['annotation']['version'] == d['fit_flag_revision']
 assert d['rcs_mass']
