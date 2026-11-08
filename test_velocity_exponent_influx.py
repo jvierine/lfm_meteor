@@ -1,5 +1,6 @@
 """Sensitivity of the current influx to the velocity-weight exponent."""
 from pathlib import Path
+import argparse
 import hashlib
 
 import h5py
@@ -16,22 +17,44 @@ def weights_at_exponent(reference_weights, speed, exponent):
     return reference_weights * (72. / speed) ** (exponent - 3.)
 
 
+def influx_ton_day(weights, masses):
+    return np.asarray(weights) @ np.asarray(masses) / 1000.
+
+
 def main():
-    rng = np.random.default_rng(20261108)
-    exponent_draws = np.random.default_rng(20261109).uniform(3., 3.5, 20000)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--minimum-exponent', type=float, default=3.)
+    parser.add_argument('--maximum-exponent', type=float, default=3.5)
+    parser.add_argument('--seed', type=int, default=20261108)
+    parser.add_argument('--realizations', type=int, default=20000)
+    parser.add_argument('--output', type=Path, default=OUTPUT)
+    args = parser.parse_args()
+    if not (np.isfinite(args.minimum_exponent) and np.isfinite(args.maximum_exponent)
+            and 3. <= args.minimum_exponent < args.maximum_exponent <= 6.
+            and args.realizations > 0):
+        parser.error('Require 3 <= minimum < maximum <= 6 and positive realizations')
+    exponents = np.unique(np.r_[np.linspace(args.minimum_exponent, args.maximum_exponent,
+                              int(np.ceil((args.maximum_exponent-args.minimum_exponent)*10))+1),
+                              EXPONENTS[(EXPONENTS>=args.minimum_exponent)&(EXPONENTS<=args.maximum_exponent)],
+                              5.3 if args.minimum_exponent<=5.3<=args.maximum_exponent else args.minimum_exponent])
+    nrep = args.realizations
+    rng = np.random.default_rng(args.seed)
+    exponent_draws = np.random.default_rng(args.seed+1).uniform(args.minimum_exponent, args.maximum_exponent, nrep)
     with h5py.File(AREA) as area:
-        area_factors = np.random.default_rng(20261110).choice(area['relative_rate_factor_draws'][:], 20000)
-    with h5py.File(SOURCE) as source, h5py.File(OUTPUT, 'w') as output:
+        area_factors = np.random.default_rng(args.seed+2).choice(area['relative_rate_factor_draws'][:], nrep)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(SOURCE) as source, h5py.File(args.output, 'w') as output:
         output.attrs.update(source_sha256=hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
-                            source_program=Path(__file__).read_text(), seed=20261108,
-                            reference_speed_km_s=72., n_realizations=20000,
+                            source_program=Path(__file__).read_text(), seed=args.seed,
+                            reference_speed_km_s=72., n_realizations=nrep,
+                            minimum_exponent=args.minimum_exponent, maximum_exponent=args.maximum_exponent,
                             interpretation='Effective-exponent sensitivity, not equivalent calibrations of head-echo detection probability.',
-                            fixed='Mass selection, saved mass distributions, area, radiant exposure, altitude factor; same mass and Poisson draws across exponents.')
-        output['exponent'] = EXPONENTS
+                            fixed='Mass selection, saved mass distributions, radiant exposure, altitude factor; same mass and Poisson draws across exponents; common area uncertainty applied to final joint draws.')
+        output['exponent'] = exponents
         output['uncertainty_exponent_draws'] = exponent_draws
         output['uncertainty_area_factors'] = area_factors
         output.attrs['area_uncertainty_sha256'] = hashlib.sha256(AREA.read_bytes()).hexdigest()
-        output.attrs['exponent_uncertainty'] = 'One uniform(3,3.5) exponent shared by all events and both mass estimators per realization.'
+        output.attrs['exponent_uncertainty'] = f'One uniform({args.minimum_exponent},{args.maximum_exponent}) exponent shared by all events and both mass estimators per realization.'
         for kind in ['dynamic', 'rcs']:
             g = source[kind]
             names = g['event_id'].asstr()[:]
@@ -40,12 +63,13 @@ def main():
             reference = g['plus_altitude_heuristic/weight_per_day'][:]
             np.testing.assert_allclose(np.sum(reference * mass) / 1000.,
                                        g['plus_altitude_heuristic'].attrs['rate_ton_day'])
-            draws = np.array([rng.choice(g['input_mass_draws'][name][:], 20000) for name in names])
+            draws = np.array([rng.choice(g['input_mass_draws'][name][:], nrep) for name in names])
             counts = rng.poisson(1., draws.shape)
-            weights = np.array([weights_at_exponent(reference, speed, p) for p in EXPONENTS])
-            rates = weights @ mass / 1000.
-            samples = weights @ (draws * counts) / 1000.
-            np.testing.assert_allclose(weights[0], reference)
+            weights = np.array([weights_at_exponent(reference, speed, p) for p in exponents])
+            rates = influx_ton_day(weights, mass)
+            samples = influx_ton_day(weights, draws * counts)
+            if exponents[0] == 3.:
+                np.testing.assert_allclose(weights[0], reference)
             assert np.all(np.diff(rates) > 0)
             target = output.create_group(kind)
             target['event_id'] = np.asarray(names, dtype=h5py.string_dtype())
@@ -69,7 +93,7 @@ def main():
             target['count_scaled_area_interval95_ton_day'] = factor*np.quantile(with_area, [.025,.975])
             print(kind, 'including area 95%', np.quantile(with_area, [.025,.975]),
                   'count-scaled', factor*np.quantile(with_area, [.025,.975]), flush=True)
-            for p, rate, interval in zip(EXPONENTS, rates, target['interval95_ton_day'][:]):
+            for p, rate, interval in zip(exponents, rates, target['interval95_ton_day'][:]):
                 print(kind, 'exponent', p, 'rate', round(rate, 3), '95%', np.round(interval, 3),
                       'count-scaled', round(rate * factor, 3))
 
