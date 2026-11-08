@@ -19,10 +19,10 @@ fn conditional_gaussian(mean:V, maximum:V, measurement_cov:M, logs:[f64;2])->Opt
     let prior=M::from_diagonal(&V::new((2.*logs[0]).exp(),(2.*logs[1]).exp()));
     let sum=prior+measurement_cov;
     let inverse=sum.try_inverse()?;
-    let covariance=if prior.trace()>measurement_cov.trace() {
-        measurement_cov-measurement_cov*inverse*measurement_cov
-    }else{prior-prior*inverse*prior};
-    let covariance=(covariance+covariance.transpose())/2.;
+    // Precision addition avoids subtracting nearly equal matrices when one
+    // scatter scale is tiny and the other is large.
+    let covariance=(measurement_cov.try_inverse()?+M::from_diagonal(&V::new(
+        (-2.*logs[0]).exp(),(-2.*logs[1]).exp()))).cholesky()?.inverse();
     let factor=covariance.cholesky()?.l();
     let delta=maximum-mean;
     Some(Conditional{mean:mean+prior*inverse*delta,factor,
@@ -333,6 +333,17 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn conditional_covariance_survives_anisotropic_scales() {
+        let measurement=M::new(0.3,0.08,0.08,0.2);
+        for logs in [[-18.,12.],[12.,-18.]] {
+            let c=conditional_gaussian(V::zeros(),V::new(0.1,-0.4),measurement,logs).unwrap();
+            let covariance=c.factor*c.factor.transpose();
+            let small=if logs[0]<0. {0}else{1};
+            assert!((covariance[(small,small)]/(2.*logs[small]).exp()-1.).abs()<1e-10);
+            assert!(covariance.determinant()>0.);
+        }
+    }
     #[test]
     fn centered_scale_update_matches_quadrature() {
         let logp=|x|centered_scale_logp(x,5.,0.8);
