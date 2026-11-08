@@ -192,7 +192,7 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
         for i in 7..13 {proposal_base[(i,i)]=0.16;}
         let proposal_cov=model.proposal_metric(v,&physical,&logs,&proposal_base)
             .ok_or_else(||anyhow::anyhow!("Invalid Jacobian proposal metric"))?;
-        let chol=proposal_cov.clone().cholesky().ok_or_else(||anyhow::anyhow!("Invalid proposal covariance"))?.l();
+        let mut chol=proposal_cov.clone().cholesky().ok_or_else(||anyhow::anyhow!("Invalid proposal covariance"))?.l();
         let mut conditionals=model.conditionals(v,physical.as_slice(),&logs).ok_or_else(||anyhow::anyhow!("Invalid conditional covariance"))?;
         let mut epsilon=vec![V::zeros();values.len()];
         let mut corrections:Vec<f64>=(0..values.len()).map(|i|model.correction(i,&conditionals[i],epsilon[i])).collect();
@@ -222,6 +222,21 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
             if step<warmup {
                 let count=(step/13+10) as f64;
                 scales[component]=(scales[component]+count.powf(-0.6)*((if accept {1.}else{0.})-0.44)).clamp(-8.,4.);
+                if step%500==499 && step+500<warmup {
+                    if let Some(cov)=model.proposal_metric(v,&physical,&logs,&proposal_base) {
+                        let mut transform=DMatrix::identity(13,13);
+                        for j in 0..7 {
+                            let mut a=state.rows(0,7).into_owned();let mut b=a.clone();
+                            a[j]+=1e-5;b[j]-=1e-5;
+                            let derivative=(transport.physical(&a)-transport.physical(&b))/2e-5;
+                            for k in 0..7 {transform[(k,j)]=derivative[k];}
+                        }
+                        if let Some(inverse)=transform.try_inverse() {
+                            let covariance=&inverse*cov*inverse.transpose();
+                            if let Some(factor)=covariance.cholesky() {chol=factor.l();scales=[0.;13];}
+                        }
+                    }
+                }
             }else{component_trials[component]+=1;}
             for i in 0..values.len() {
                 let independent=rng.gen::<f64>()<0.75;
@@ -250,6 +265,8 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
         h.new_dataset_builder().with_data(&scales.map(f64::exp)).create("frozen_component_scales")?;
         let metric:Vec<f64>=(0..13).flat_map(|i|(0..13).map(move |j|(i,j))).map(|(i,j)|proposal_cov[(i,j)]).collect();
         h.new_dataset::<f64>().shape((13,13)).create("jacobian_proposal_covariance")?.write_raw(&metric)?;
+        let final_metric:Vec<f64>=(0..13).flat_map(|i|(0..13).map(move |j|(i,j))).map(|(i,j)|chol[(i,j)]).collect();
+        h.new_dataset::<f64>().shape((13,13)).create("frozen_proposal_factor")?.write_raw(&final_metric)?;
         h.new_dataset::<f64>().create("elapsed_seconds")?.write_scalar(&started.elapsed().as_secs_f64())?;
         h.new_dataset::<f64>().create("preparation_seconds")?.write_scalar(&elapsed_prepare)?;
         h.new_dataset::<u64>().create("latent_count")?.write_scalar(&(latent_count as u64))?;
