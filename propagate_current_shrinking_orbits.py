@@ -46,11 +46,18 @@ def prepare(folder, flags, output, nsamples):
             assert not bool(h.attrs.get('bad',False)), 'Excluded from scientific catalogue by review'
             current_revision = int(h.attrs['version'])
     assert current_revision == revision, 'Manual flags await refit'
+    weights = None
     if 'importance' in method:
-        sources = [folder / 'state_posterior.h5']
-        with h5py.File(sources[0]) as h:
+        with h5py.File(folder / 'state_posterior.h5') as h:
+            posterior_path = Path(h.attrs['posterior_source'])
+        sources = [posterior_path]
+        with h5py.File(posterior_path) as h:
             assert h.attrs['convergence_verified'], 'Unverified importance posterior'
             draws = h['samples'][:]
+            weights = h['weights'][:]
+        keep = weights > 0
+        draws, weights = draws[keep], weights[keep]
+        weights = weights/weights.sum()
     elif 'random-deletion' in method:
         sources = [folder / 'random_deletion.h5']
         with h5py.File(sources[0]) as h:
@@ -70,11 +77,17 @@ def prepare(folder, flags, output, nsamples):
         length = min(map(len, chains))
         draws = np.asarray([c[:length] for c in chains]).reshape(-1, 7)
     assert draws.ndim == 2 and draws.shape[1] == 7 and np.isfinite(draws).all()
-    assert np.allclose(np.quantile(10**draws[:, 6], [.025, .5, .975]),
+    if weights is None:
+        sampled_radius_interval = np.quantile(10**draws[:, 6], [.025, .5, .975])
+    else:
+        from sample_seven_parameter_importance import quantiles
+        sampled_radius_interval = 10**quantiles(draws[:,6],weights)
+    assert np.allclose(sampled_radius_interval,
                        radius_interval, rtol=.01, atol=0), 'State samples do not match published intervals'
     # No cut on radius uncertainty: weak mass constraints need not imply weak orbits.
     rng = np.random.default_rng(int(hashlib.sha256(folder.name.encode()).hexdigest()[:8], 16))
-    sample = draws[rng.choice(len(draws), min(nsamples, len(draws)), replace=False)]
+    sample = draws[rng.choice(len(draws), min(nsamples, len(draws)),
+                              replace=weights is not None, p=weights)]
     states = center[None, :] + 1000 * sample[:, :6]
     best_state = center + 1000 * best[:6]
     path = output / 'inputs' / (folder.name + '.h5')
