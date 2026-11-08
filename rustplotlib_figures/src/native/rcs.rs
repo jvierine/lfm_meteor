@@ -91,6 +91,16 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     a.yticklabels = a.xticklabels.clone();
     let mut p = Panel::new(Rect::new(188., 10., 47., 53.), a);
     p.major_grid("#e4e4e4", 0.4);
+    if h.link_exists("mass_powerlaw") {
+        let fit = h.group("mass_powerlaw")?;
+        p.uncertainty_band(
+            &array(&fit, "dynamic_mass_kg")?,
+            &array(&fit, "rcs_lower95_kg")?,
+            &array(&fit, "rcs_upper95_kg")?,
+            "#0072b2",
+            0.25,
+        )?;
+    }
     p.errorbars(
         &points(&x, &y),
         Some(&xb),
@@ -104,6 +114,13 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let mut l = Line::new(vec![[xr[0], xr[0]], [xr[1], xr[1]]], "#666666");
     l.dash = Some("2 1".into());
     p.push(Layer::Line(l));
+    if h.link_exists("mass_powerlaw") {
+        let fit = h.group("mass_powerlaw")?;
+        curve(&mut p, &array(&fit, "dynamic_mass_kg")?, &array(&fit, "rcs_mass_kg")?, "#0072b2", 1.4);
+        let mut legend = Legend::new(vec![LegendEntry::line("Fit", "#0072b2")]);
+        legend.position = LegendPosition::LowerRight;
+        p.legend = Some(legend);
+    }
     panel_label(&mut f, &p, "(c)");
     f.panels.push(p);
     f.colorbars.push(Colorbar::new(

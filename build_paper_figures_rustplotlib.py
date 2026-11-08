@@ -37,7 +37,7 @@ SOURCES = {
         "orbits",
         ROOT / "results/tristatic_shrinking_orbits_current_20261107/orbits.h5",
     ),
-    "sanya_rcs_from_snr_article": ("rcs", ROOT / "results/native_paper_data/rcs.h5"),
+    "sanya_rcs_from_snr_article": ("rcs", ROOT / "results/rcs_mass_powerlaw_20261108/figure8.h5"),
     "sun_centered_ecliptic_radiants": (
         "radiants",
         ROOT / "results/native_radiant_scientific_data.h5",
