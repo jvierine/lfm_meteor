@@ -18,6 +18,64 @@ fn student_constant(dimension:usize)->f64 {
     gamma_ratio-0.5*dimension as f64*(8.*std::f64::consts::PI).ln()
 }
 
+fn newton_mode<F:Fn(&DVector<f64>)->f64>(logp:F,initial:DVector<f64>,factor:&DMatrix<f64>,seconds:f64)->DVector<f64> {
+    let began=Instant::now();let mut x=initial;let n=x.len();
+    for _ in 0..50 {
+        if began.elapsed().as_secs_f64()>seconds {break;}
+        let origin=logp(&x);if !origin.is_finite(){break;}
+        let mut steps=vec![0.08_f64;n];let mut first=vec![0.;n];let mut second=vec![0.;n];
+        let mut valid=true;
+        for j in 0..n {
+            if n==7 && factor[(6,j)]!=0. {
+                let sign=if factor[(6,j)]*( -4.5-x[6])>=0. {1.}else{-1.};steps[j]*=sign;
+            }
+            let mut found=false;
+            for _ in 0..12 {
+                first[j]=logp(&(&x+factor.column(j)*steps[j]));
+                second[j]=logp(&(&x+factor.column(j)*(2.*steps[j])));
+                if first[j].is_finite() && second[j].is_finite(){found=true;break;}
+                steps[j]*=0.5;
+            }
+            if !found {valid=false;break;}
+        }
+        if !valid {break;}
+        let mut gradient=DVector::zeros(n);let mut information=DMatrix::zeros(n,n);
+        for j in 0..n {
+            gradient[j]=(-3.*origin+4.*first[j]-second[j])/(2.*steps[j]);
+            information[(j,j)]=-(second[j]-2.*first[j]+origin)/steps[j].powi(2);
+            for k in 0..j {
+                let corner=logp(&(&x+factor.column(j)*steps[j]+factor.column(k)*steps[k]));
+                let value=if corner.is_finite(){-(corner-first[j]-first[k]+origin)/(steps[j]*steps[k])}else{0.};
+                information[(j,k)]=value;information[(k,j)]=value;
+            }
+        }
+        if gradient.norm()<1e-3 {break;}
+        let eig=information.symmetric_eigen();let floor=(eig.eigenvalues.max()*1e-4).max(0.05);
+        let mut direction=&eig.eigenvectors*DMatrix::from_diagonal(&eig.eigenvalues.map(|x|1./x.max(floor)))
+            *eig.eigenvectors.transpose()*gradient;
+        let norm=direction.norm();if norm>30. {direction*=30./norm;}
+        let mut changed=false;
+        for k in 0..16 {
+            let candidate=&x+factor*&direction*2_f64.powi(-k);
+            if logp(&candidate)>origin+1e-8 {x=candidate;changed=true;break;}
+        }
+        if !changed {break;}
+    }
+    x
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn voltage_importance_optimize(cache:*const Cache,voltage:*const Voltage,
+    initial:*const f64,covariance:*const f64,seconds:f64,result:*mut f64)->i32 {
+    let cache=&*cache;let voltage=&*voltage;
+    let initial=DVector::from_column_slice(std::slice::from_raw_parts(initial,7));
+    let covariance=DMatrix::from_row_slice(7,7,std::slice::from_raw_parts(covariance,49));
+    let Some(factor)=covariance.cholesky() else{return 0;};
+    let optimized=newton_mode(|q|cache.logp(voltage,q.as_slice()),initial,&factor.l(),seconds);
+    std::slice::from_raw_parts_mut(result,7).copy_from_slice(optimized.as_slice());
+    if cache.logp(voltage,optimized.as_slice()).is_finite(){1}else{0}
+}
+
 impl Proposal {
     fn new(center:DVector<f64>,covariance:DMatrix<f64>)->Option<Self> {
         let factor=covariance.clone().cholesky()?.l();let inverse=factor.clone().try_inverse()?;
@@ -85,6 +143,16 @@ pub unsafe extern "C" fn voltage_importance_sample(cache:*const Cache,voltage:*c
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn newton_initializer_recovers_from_perturbed_correlated_start() {
+        let truth=DVector::from_vec(vec![0.2,-0.3,0.1,0.4,0.2,-0.1,-4.]);
+        let mut factor=DMatrix::identity(7,7)*0.02;for j in 1..7 {factor[(j,j-1)]=0.008;}
+        let inverse=factor.clone().try_inverse().unwrap();
+        let initial=&truth+&factor*DVector::from_vec(vec![8.,-12.,6.,-4.,10.,-7.,9.]);
+        let objective=|x:&DVector<f64>|{let z=&inverse*(x-&truth);-0.5*z.norm_squared()-0.01*z[6].powi(4)};
+        let result=newton_mode(objective,initial,&factor,2.);
+        assert!((&inverse*(result-truth)).norm()<0.002);
+    }
     #[test]
     fn independent_weights_recover_correlated_seven_dimensional_density() {
         let center=DVector::from_vec(vec![0.2,-0.3,0.1,0.4,0.2,-0.1,-4.]);

@@ -62,15 +62,13 @@ def main():
     if comm.rank == 0:
         metric = np.ascontiguousarray(covariance(cache, seed))
         if a.optimize_seconds > 0:
-            lib.voltage_cache_weighted_fit.argtypes = [ct.c_void_p,ct.c_void_p,PTR,PTR,PTR,PTR,ct.c_double]
-            lib.voltage_cache_weighted_fit.restype = ct.c_int
-            transform = np.ascontiguousarray(np.linalg.cholesky(metric))
-            weights_fit = np.ones(len(data["time_s"]))
+            lib.voltage_importance_optimize.argtypes = [ct.c_void_p,ct.c_void_p,PTR,PTR,ct.c_double,PTR]
+            lib.voltage_importance_optimize.restype = ct.c_int
             optimized = np.empty(7)
-            lib.voltage_cache_weighted_fit(cache.handle, model.handle,
-                seed.ctypes.data_as(PTR),transform.ctypes.data_as(PTR),weights_fit.ctypes.data_as(PTR),
-                optimized.ctypes.data_as(PTR),a.optimize_seconds)
-            if cache.logp(optimized) > cache.logp(seed):
+            ok = lib.voltage_importance_optimize(cache.handle, model.handle,
+                seed.ctypes.data_as(PTR),metric.ctypes.data_as(PTR),a.optimize_seconds,
+                optimized.ctypes.data_as(PTR))
+            if ok and cache.logp(optimized) > cache.logp(seed):
                 seed = optimized
                 metric = np.ascontiguousarray(covariance(cache, seed))
     else:
@@ -128,6 +126,10 @@ def main():
         posterior_covariance = centered.T@(centered*w_valid[:, None])
         attrs = dict(parameter_count=7, sampled_scatter_parameters=0,
             seed_base=a.seed_base,
+            source_input_sha256=hashlib.sha256((source/"input.h5").read_bytes()).hexdigest(),
+            source_fit_sha256=hashlib.sha256((source/"fit.h5").read_bytes()).hexdigest(),
+            manual_flag_revision=revision,
+            parameterization="Position/velocity offsets from input center in km and km/s, followed by log10 radius in metres",
             method="Independent defensive importance sampling of the voltage posterior",
             prior="Uniform position/velocity and log10 radius, log10 radius in [-7,-2]",
             receiver_noise_unchanged=True, inter_pulse_correlation_assumed=False,
