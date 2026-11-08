@@ -33,7 +33,9 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     anyhow::ensure!(!keep.is_empty(), "No finite orbit intervals for display");
     let class: Vec<_> = probability.iter().map(|&p| p >= 0.5).collect();
     let mut f = Figure::new(IntendedUse::ArticleWide);
-    f.height_mm = 132.;
+    f.height_mm = 108.8;
+    let cometary_color = LineStyle::for_series(0).color;
+    let asteroidal_color = LineStyle::for_series(1).color;
     f.font_pt = 8.;
     f.latex.font_pt = 8.;
     let panels = [
@@ -97,14 +99,14 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         let mut p = Panel::new(
             Rect::new(
                 20. + (index % 2) as f64 * 82.,
-                10. + (index / 2) as f64 * 61.,
+                8. + (index / 2) as f64 * 48.8,
                 66.,
-                48.,
+                35.5,
             ),
             axes,
         );
         p.major_grid("#e2e2e2", 0.4);
-        for (category, color) in [(1, COLORS[1]), (0, COLORS[2]), (2, "#222222")] {
+        for (category, color) in [(1, cometary_color.as_str()), (0, asteroidal_color.as_str()), (2, "#222222")] {
             let ids: Vec<_> = good
                 .iter()
                 .copied()
@@ -139,8 +141,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         }
         if index == 0 {
             let mut entries = vec![
-                LegendEntry::circle("Cometary", COLORS[1]),
-                LegendEntry::circle("Asteroidal", COLORS[2]),
+                LegendEntry::circle("Cometary", &cometary_color),
+                LegendEntry::circle("Asteroidal", &asteroidal_color),
             ];
             if good.iter().any(|&i| ee[i][0] >= 1.) {
                 entries.push(LegendEntry::marker("Hyperbolic", MarkerShape::Triangle, "#222222"));
