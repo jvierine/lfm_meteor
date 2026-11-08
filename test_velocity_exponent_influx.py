@@ -17,6 +17,7 @@ def weights_at_exponent(reference_weights, speed, exponent):
 
 def main():
     rng = np.random.default_rng(20261108)
+    exponent_draws = np.random.default_rng(20261109).uniform(3., 3.5, 20000)
     with h5py.File(SOURCE) as source, h5py.File(OUTPUT, 'w') as output:
         output.attrs.update(source_sha256=hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
                             source_program=Path(__file__).read_text(), seed=20261108,
@@ -24,6 +25,8 @@ def main():
                             interpretation='Effective-exponent sensitivity, not equivalent calibrations of head-echo detection probability.',
                             fixed='Mass selection, saved mass distributions, area, radiant exposure, altitude factor; same mass and Poisson draws across exponents.')
         output['exponent'] = EXPONENTS
+        output['uncertainty_exponent_draws'] = exponent_draws
+        output.attrs['exponent_uncertainty'] = 'One uniform(3,3.5) exponent shared by all events and both mass estimators per realization.'
         for kind in ['dynamic', 'rcs']:
             g = source[kind]
             names = g['event_id'].asstr()[:]
@@ -48,6 +51,13 @@ def main():
             factor = len(source['catalogue_event_id']) / len(names)
             target.attrs['missing_mass_count_factor'] = factor
             target['count_scaled_rate_ton_day'] = rates * factor
+            sampled_weights = reference[:, None] * (72. / speed[:, None]) ** (exponent_draws[None, :] - 3.)
+            joint = np.sum(sampled_weights * draws * counts, axis=0) / 1000.
+            target['mass_count_exponent_draws_ton_day'] = joint
+            target['mass_count_exponent_interval95_ton_day'] = np.quantile(joint, [.025, .975])
+            target['count_scaled_joint_interval95_ton_day'] = factor * np.quantile(joint, [.025, .975])
+            print(kind, 'combined exponent uncertainty 95%', np.quantile(joint, [.025,.975]),
+                  'count-scaled', factor*np.quantile(joint, [.025,.975]), flush=True)
             for p, rate, interval in zip(EXPONENTS, rates, target['interval95_ton_day'][:]):
                 print(kind, 'exponent', p, 'rate', round(rate, 3), '95%', np.round(interval, 3),
                       'count-scaled', round(rate * factor, 3))
