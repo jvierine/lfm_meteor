@@ -60,13 +60,15 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--draws", type=int, default=2000)
     p.add_argument("--output", type=Path, default=ROOT / "results/rcs_mass_powerlaw_20261108")
+    p.add_argument("--source", type=Path, default=SOURCE)
+    p.add_argument("--mass-distribution", type=Path, default=CANONICAL)
     args = p.parse_args()
     self_test()
     args.output.mkdir(parents=True, exist_ok=True)
-    with h5py.File(SOURCE) as source, h5py.File(CANONICAL) as canonical:
+    with h5py.File(args.source) as source, h5py.File(args.mass_distribution) as canonical:
         group = source["mass_comparison"]
         ids = group["event_id"].asstr()[:]
-        assert len(ids) == 133 and len(source["pulses/time_ns"]) == 1515
+        assert len(ids) >= 4 and len(set(ids)) == len(ids)
         np.testing.assert_array_equal(ids, canonical["rcs_event_id"].asstr()[:])
         index = dict(zip(canonical["event_id"].asstr()[:], canonical["initial_mass_kg"][:]))
         mx, my = group["dynamic_mass_kg"][:], group["rcs_mass_kg"][:]
@@ -99,8 +101,8 @@ def main():
             for key, value in summary.items():
                 g.attrs[key] = value
             g.attrs.update(source_program=Path(__file__).read_text(),
-                           data_sha256=hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
-                           source_data=str(SOURCE), bootstrap_events=args.draws,
+                           data_sha256=hashlib.sha256(args.source.read_bytes()).hexdigest(),
+                           source_data=str(args.source), bootstrap_events=args.draws,
                            model="log10(m_rcs/pivot)=alpha+beta*log10(m_dyn/pivot), intrinsic vertical Gaussian scatter",
                            likelihood="variance=sigma_y^2+beta^2*sigma_x^2+scatter^2; includes log variance term",
                            error_model="Logarithmic 95% interval widths divided by 3.919927969; independent x/y measurement errors",

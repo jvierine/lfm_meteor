@@ -17,7 +17,7 @@ from astropy.coordinates import solar_system_ephemeris
 from mpi4py import MPI
 
 from propagate_tristatic_orbits_1000d_classification import (
-    propagate_event, summarize_classification, write_outputs,
+    propagate_event, summarize_classification, write_outputs, jopek_williams_criteria,
 )
 
 
@@ -163,6 +163,18 @@ def main():
             h.create_dataset('uncertainty_method',data=[r[1] for r in rows],dtype=dtype)
             h.create_dataset('excluded_event_id',data=[r[0] for r in failures],dtype=dtype)
             h.create_dataset('exclusion_reason',data=[r[1] for r in failures],dtype=dtype)
+            probability = []
+            for ev in events:
+                bound = (np.asarray(ev['e']) < 1.) & np.isfinite(ev['a_au']) & (ev['a_au'] > 0)
+                votes = jopek_williams_criteria(*(np.asarray(ev[k])[bound]
+                         for k in ('a_au','e','i_deg','period_years')))
+                probability.append(float(np.mean(list(votes.values()))) if np.any(bound) else np.nan)
+            energy_width = np.quantile(h['specific_energy_j_kg'][:]/1e6,.975,axis=1)-np.quantile(h['specific_energy_j_kg'][:]/1e6,.025,axis=1)
+            q_width = np.quantile(h['Q_au'][:],.975,axis=1)-np.quantile(h['Q_au'][:],.025,axis=1)
+            keep = (np.median(h['e'][:],axis=1)>=1) | (np.isfinite(q_width)&(q_width<=20)&(energy_width<=100))
+            h['plot_keep'] = keep
+            h['cometary_probability_bound'] = probability
+            h['hyperbolic_sample_count'] = np.sum(h['e'][:]>=1,axis=1)
         print('COMPLETE',len(events),'excluded',len(failures),flush=True)
         for row in summary:
             print(row['key'],row['cometary_event_mean_fraction'],flush=True)

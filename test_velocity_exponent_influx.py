@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--seed', type=int, default=20261108)
     parser.add_argument('--realizations', type=int, default=20000)
     parser.add_argument('--output', type=Path, default=OUTPUT)
+    parser.add_argument('--source', type=Path, default=SOURCE)
+    parser.add_argument('--area-uncertainty', type=Path, default=AREA)
     args = parser.parse_args()
     if not (np.isfinite(args.minimum_exponent) and np.isfinite(args.maximum_exponent)
             and 3. <= args.minimum_exponent < args.maximum_exponent <= 6.
@@ -40,11 +42,11 @@ def main():
     nrep = args.realizations
     rng = np.random.default_rng(args.seed)
     exponent_draws = np.random.default_rng(args.seed+1).uniform(args.minimum_exponent, args.maximum_exponent, nrep)
-    with h5py.File(AREA) as area:
+    with h5py.File(args.area_uncertainty) as area:
         area_factors = np.random.default_rng(args.seed+2).choice(area['relative_rate_factor_draws'][:], nrep)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(SOURCE) as source, h5py.File(args.output, 'w') as output:
-        output.attrs.update(source_sha256=hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
+    with h5py.File(args.source) as source, h5py.File(args.output, 'w') as output:
+        output.attrs.update(source_sha256=hashlib.sha256(args.source.read_bytes()).hexdigest(),
                             source_program=Path(__file__).read_text(), seed=args.seed,
                             reference_speed_km_s=72., n_realizations=nrep,
                             minimum_exponent=args.minimum_exponent, maximum_exponent=args.maximum_exponent,
@@ -53,7 +55,7 @@ def main():
         output['exponent'] = exponents
         output['uncertainty_exponent_draws'] = exponent_draws
         output['uncertainty_area_factors'] = area_factors
-        output.attrs['area_uncertainty_sha256'] = hashlib.sha256(AREA.read_bytes()).hexdigest()
+        output.attrs['area_uncertainty_sha256'] = hashlib.sha256(args.area_uncertainty.read_bytes()).hexdigest()
         output.attrs['exponent_uncertainty'] = f'One uniform({args.minimum_exponent},{args.maximum_exponent}) exponent shared by all events and both mass estimators per realization.'
         for kind in ['dynamic', 'rcs']:
             g = source[kind]
