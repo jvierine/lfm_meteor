@@ -16,6 +16,7 @@ fn page(h: &hdf5::File, ids: &[String], scores: &[f64], indices: &[usize], outpu
     f.raster_dpi = 170.;
     f.latex.cache = output.parent().unwrap().join(".rustplotlib-cache");
     let window = h.attr("primary_window_ms")?.read_scalar::<f64>()?;
+    let abrupt = h.attr("detector").is_ok();
     let case = h.group(&format!("cases/snr20_gain10_window{window:.0}"))?;
     let high = case.dataset("high_index")?.read_raw::<i64>()?;
     let low = case.dataset("low_index")?.read_raw::<i64>()?;
@@ -43,12 +44,13 @@ fn page(h: &hdf5::File, ids: &[String], scores: &[f64], indices: &[usize], outpu
         if high[index] >= 0 && low[index] >= 0 {
             let i = high[index] as usize; let j = low[index] as usize;
             let median = |v: &[f64]| { let mut a = v.to_vec(); a.sort_by(f64::total_cmp); a[a.len()/2] };
-            let top = [median(&time[i..i+3]), median(&rcs[i..i+3])];
-            let bottom = [median(&time[j..j+3]), median(&rcs[j..j+3])];
+            let top = if abrupt { full[i] } else { [median(&time[i..i+3]), median(&rcs[i..i+3])] };
+            let bottom = if abrupt { full[j] } else { [median(&time[j..j+3]), median(&rcs[j..j+3])] };
             let mut guide = Line::new(vec![top, bottom], "#171717");
             guide.dash = Some("2 2".into()); guide.width_pt = 0.8;
             panel.push(Layer::Line(guide));
-            dots(&mut panel, &[top, bottom], "#171717", 3.5)?;
+            let markers = if abrupt { vec![top, bottom, full[j+1]] } else { vec![top, bottom] };
+            dots(&mut panel, &markers, "#171717", 3.5)?;
         }
         let number = ids[index].split('_').nth(1).unwrap();
         f.labels.push(Label::new(format!("{}: {:.1} dB", number, scores[index].max(0.)), rect.x + rect.width / 2., rect.y - 3.));
