@@ -72,6 +72,10 @@ def kinematics(root, library, ancillary):
     radiants.main()
     pulses = importlib.import_module('prepare_current_rcs_pulses')
     pulses.main()
+    area_uncertainty = importlib.import_module('estimate_collecting_area_uncertainty')
+    area_uncertainty.SOURCE = k.AREA
+    area_uncertainty.OUTPUT = root/'products/area_uncertainty.h5'
+    area_uncertainty.main()
     print('KINEMATICS',len(ids),flush=True)
 
 
