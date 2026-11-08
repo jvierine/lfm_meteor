@@ -46,6 +46,10 @@ fn nuisance_logprior(log_s:&[f64])->f64 {
     log_s.iter().map(|&x|x-2.*(1.+(2.*x).exp()/3.).ln()).sum()
 }
 
+fn centered_scale_logp(log_scale:f64,count:f64,squares:f64)->f64 {
+    -count*log_scale-0.5*squares*(-2.*log_scale).exp()+nuisance_logprior(&[log_scale])
+}
+
 fn gaussian_draw(mean:V, covariance:M, rng:&mut StdRng)->V {
     let l=covariance.cholesky().unwrap().l();
     mean+l*V::new(rng.sample(StandardNormal),rng.sample(StandardNormal))
@@ -125,7 +129,10 @@ impl Scatter {
         }).sum()
     }
     fn conditionals(&self,v:&Voltage,q:&[f64],logs:&[f64])->Option<Vec<Conditional>> {
-        let means=self.means(v,q)?;let transform=shear();let inverse=M::new(1.,0.,-1.,1.);
+        self.conditionals_at(&self.means(v,q)?,logs)
+    }
+    fn conditionals_at(&self,means:&[V],logs:&[f64])->Option<Vec<Conditional>> {
+        let transform=shear();let inverse=M::new(1.,0.,-1.,1.);
         self.data.iter().enumerate().map(|(i,d)| {
             let precision=transform.transpose()*d.precision*transform;
             conditional_gaussian(inverse*means[i],inverse*d.maximum,precision.try_inverse()?,
@@ -175,7 +182,7 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
         let mut rng=StdRng::seed_from_u64(seed);let x=DVector::from_column_slice(q);
         let base=DMatrix::from_row_slice(7,7,std::slice::from_raw_parts(covariance,49));
         let transport=RadiusTransport::new(&x,&base);
-        let mut physical=transport.physical(&x);let means=model.means(v,physical.as_slice()).unwrap();
+        let mut physical=transport.physical(&x);let mut means=model.means(v,physical.as_slice()).unwrap();
         let values:Vec<V>=model.data.iter().map(|d|d.maximum).collect();
         let mut logs=[-3.;6];
         for s in 0..3 {for j in 0..2 {
@@ -197,6 +204,7 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
         let mut epsilon=vec![V::zeros();values.len()];
         let mut corrections:Vec<f64>=(0..values.len()).map(|i|model.correction(i,&conditionals[i],epsilon[i])).collect();
         let mut scales=[0_f64;13];let mut component_trials=[0u64;13];let mut component_accepted=[0u64;13];
+        let mut centered_scales=[0_f64;6];let mut centered_trials=[0u64;6];let mut centered_accepted=[0u64;6];
         let mut accepted=[0u64;5];
         let mut samples=Vec::new();let mut nuisance=Vec::new();let mut probability=Vec::new();
         let mut latent_sum=vec![V::zeros();values.len()];let mut latent_count=0usize;
@@ -218,6 +226,7 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
             let accept=candidate.is_finite() && rng.gen::<f64>().ln()<candidate-current;
             if accept {state=proposed;physical=proposed_physical;conditionals=proposed_conditionals.unwrap();
                 corrections=proposed_corrections;logs.copy_from_slice(&state.as_slice()[7..13]);
+                means=model.means(v,physical.as_slice()).unwrap();
                 if step>=warmup {accepted[0]+=1;component_accepted[component]+=1;}}
             if step<warmup {
                 let count=(step/13+10) as f64;
@@ -238,7 +247,46 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
                     }
                 }
             }else{component_trials[component]+=1;}
+            // Interweave centered scale updates with conditional-normal updates.
+            // Holding actual pulse coordinates fixed removes the scale/offset funnel.
+            let inv_shear=M::new(1.,0.,-1.,1.);
+            let actual:Vec<V>=conditionals.iter().zip(&epsilon).map(|(c,e)|c.mean+c.factor*e).collect();
+            let which=step%6;let station=which/2;let coordinate=which%2;
+            let mut count=0.;let mut sum=0.;
+            for (i,d) in model.data.iter().enumerate() {if d.station==station {
+                let residual=actual[i]-inv_shear*means[i];sum+=residual[coordinate].powi(2);count+=1.;
+            }}
+            let next=logs[which]+centered_scales[which].exp()*rng.sample::<f64,_>(StandardNormal);
+            let change=centered_scale_logp(next,count,sum)-centered_scale_logp(logs[which],count,sum);
+            let mut candidate_logs=logs;candidate_logs[which]=next;
+            let next_conditionals=if change.is_finite() && rng.gen::<f64>().ln()<change {
+                model.conditionals_at(&means,&candidate_logs)
+            }else{None};
+            let centered_ok=next_conditionals.is_some();
+            if let Some(c)=next_conditionals {
+                let moved:Option<Vec<V>>=c.iter().zip(&actual).map(|(g,u)|Some(g.factor.try_inverse()?*(*u-g.mean))).collect();
+                if let Some(e)=moved {conditionals=c;epsilon=e;logs=candidate_logs;state[7+which]=next;
+                    if step>=warmup {centered_accepted[which]+=1;}}
+            }
+            if step<warmup {
+                centered_scales[which]=(centered_scales[which]+((step/6+10) as f64).powf(-0.6)
+                    *((if centered_ok {1.}else{0.})-0.44)).clamp(-8.,4.);
+            }else{centered_trials[which]+=1;}
             for i in 0..values.len() {
+                if rng.gen::<f64>()<0.05 {
+                    // A prior draw can reach other pulse-likelihood peaks. Its
+                    // MH ratio contains only the exact voltage likelihood.
+                    let s=model.data[i].station;
+                    let prior=inv_shear*means[i]+V::new(logs[2*s].exp()*rng.sample::<f64,_>(StandardNormal),
+                        logs[2*s+1].exp()*rng.sample::<f64,_>(StandardNormal));
+                    let old=shear()*(conditionals[i].mean+conditionals[i].factor*epsilon[i]);
+                    let new=shear()*prior;let delta=model.ll(i,new)-model.ll(i,old);
+                    if delta.is_finite() && rng.gen::<f64>().ln()<delta {
+                        epsilon[i]=conditionals[i].factor.try_inverse().unwrap()*(prior-conditionals[i].mean);
+                        corrections[i]=model.ll(i,new)-quadratic(new,model.data[i].maximum,model.data[i].precision);
+                        if step>=warmup {accepted[3]+=1;}
+                    }
+                }
                 let independent=rng.gen::<f64>()<0.75;
                 let proposal=if independent {V::new(rng.sample(StandardNormal),rng.sample(StandardNormal))}
                     else {epsilon[i]+0.5*V::new(rng.sample(StandardNormal),rng.sample(StandardNormal))};
@@ -262,6 +310,8 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
         h.new_dataset_builder().with_data(&accepted).create("accepted")?;
         h.new_dataset_builder().with_data(&component_trials).create("component_trials")?;
         h.new_dataset_builder().with_data(&component_accepted).create("component_accepted")?;
+        h.new_dataset_builder().with_data(&centered_trials).create("centered_scale_trials")?;
+        h.new_dataset_builder().with_data(&centered_accepted).create("centered_scale_accepted")?;
         h.new_dataset_builder().with_data(&scales.map(f64::exp)).create("frozen_component_scales")?;
         let metric:Vec<f64>=(0..13).flat_map(|i|(0..13).map(move |j|(i,j))).map(|(i,j)|proposal_cov[(i,j)]).collect();
         h.new_dataset::<f64>().shape((13,13)).create("jacobian_proposal_covariance")?.write_raw(&metric)?;
@@ -283,6 +333,36 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn centered_scale_update_matches_quadrature() {
+        let logp=|x|centered_scale_logp(x,5.,0.8);
+        let mut norm=0.;let mut mean=0.;
+        for k in 0..40000 {let x=-10.+k as f64*18./40000.;let w=logp(x).exp();norm+=w;mean+=w*x;}
+        mean/=norm;
+        let mut rng=StdRng::seed_from_u64(230);let mut x=-2.;let mut sum=0.;
+        for k in 0..90000 {
+            let proposed=x+0.5*rng.sample::<f64,_>(StandardNormal);
+            if rng.gen::<f64>().ln()<logp(proposed)-logp(x){x=proposed;}
+            if k>=10000 {sum+=x;}
+        }
+        assert!((sum/80000.-mean).abs()<0.015);
+    }
+    #[test]
+    fn centered_and_conditional_scale_targets_agree() {
+        let actual=V::new(0.4,-0.8);let mean=V::new(-0.2,0.1);
+        let maximum=V::new(0.1,-0.4);let measurement=M::new(0.3,0.08,0.08,0.2);
+        let residual=actual-mean;let mut difference:Option<f64>=None;
+        for logs in [[-3.,-2.],[0.2,-0.5],[2.,1.]] {
+            let c=conditional_gaussian(mean,maximum,measurement,logs).unwrap();
+            let epsilon=c.factor.try_inverse().unwrap()*(actual-c.mean);
+            let centered=centered_scale_logp(logs[0],1.,residual[0].powi(2))
+                +centered_scale_logp(logs[1],1.,residual[1].powi(2));
+            let transformed=c.gaussian-0.5*epsilon.norm_squared()+nuisance_logprior(&logs)
+                -c.factor.determinant().ln();
+            if let Some(d)=difference {assert!((transformed-centered-d).abs()<1e-8);}
+            else {difference=Some(transformed-centered);}
+        }
+    }
     #[test]
     fn conditional_coordinates_preserve_joint_density() {
         let mean=V::new(0.3,-0.2);let maximum=V::new(-0.1,0.7);
