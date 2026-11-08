@@ -8,6 +8,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / 'results/submission_mass_remote_20261107/current_mass_influx.h5'
 OUTPUT = ROOT / 'results/velocity_exponent_influx_20261108.h5'
+AREA = ROOT / 'results/collecting_area_uncertainty_20261108.h5'
 EXPONENTS = np.array([3., 3.1, 3.5])
 
 
@@ -18,6 +19,8 @@ def weights_at_exponent(reference_weights, speed, exponent):
 def main():
     rng = np.random.default_rng(20261108)
     exponent_draws = np.random.default_rng(20261109).uniform(3., 3.5, 20000)
+    with h5py.File(AREA) as area:
+        area_factors = np.random.default_rng(20261110).choice(area['relative_rate_factor_draws'][:], 20000)
     with h5py.File(SOURCE) as source, h5py.File(OUTPUT, 'w') as output:
         output.attrs.update(source_sha256=hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
                             source_program=Path(__file__).read_text(), seed=20261108,
@@ -26,6 +29,8 @@ def main():
                             fixed='Mass selection, saved mass distributions, area, radiant exposure, altitude factor; same mass and Poisson draws across exponents.')
         output['exponent'] = EXPONENTS
         output['uncertainty_exponent_draws'] = exponent_draws
+        output['uncertainty_area_factors'] = area_factors
+        output.attrs['area_uncertainty_sha256'] = hashlib.sha256(AREA.read_bytes()).hexdigest()
         output.attrs['exponent_uncertainty'] = 'One uniform(3,3.5) exponent shared by all events and both mass estimators per realization.'
         for kind in ['dynamic', 'rcs']:
             g = source[kind]
@@ -58,6 +63,12 @@ def main():
             target['count_scaled_joint_interval95_ton_day'] = factor * np.quantile(joint, [.025, .975])
             print(kind, 'combined exponent uncertainty 95%', np.quantile(joint, [.025,.975]),
                   'count-scaled', factor*np.quantile(joint, [.025,.975]), flush=True)
+            with_area = joint * area_factors
+            target['mass_count_exponent_area_draws_ton_day'] = with_area
+            target['mass_count_exponent_area_interval95_ton_day'] = np.quantile(with_area, [.025,.975])
+            target['count_scaled_area_interval95_ton_day'] = factor*np.quantile(with_area, [.025,.975])
+            print(kind, 'including area 95%', np.quantile(with_area, [.025,.975]),
+                  'count-scaled', factor*np.quantile(with_area, [.025,.975]), flush=True)
             for p, rate, interval in zip(EXPONENTS, rates, target['interval95_ton_day'][:]):
                 print(kind, 'exponent', p, 'rate', round(rate, 3), '95%', np.round(interval, 3),
                       'count-scaled', round(rate * factor, 3))
