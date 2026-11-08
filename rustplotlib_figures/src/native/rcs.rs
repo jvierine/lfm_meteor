@@ -18,10 +18,14 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let cid = f.scale(color.clone());
     let low = rcs.iter().copied().fold(f64::INFINITY, f64::min);
     let high = rcs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let edges: Vec<_> = (0..34)
+    let mut edges: Vec<_> = (0..34)
         .map(|i| low + (high - low) * i as f64 / 33.)
         .collect();
+    edges[0] = low;
+    edges[33] = high;
     let counts = histogram(&rcs, &edges);
+    anyhow::ensure!(counts.iter().sum::<f64>() == rcs.len() as f64,
+        "RCS histogram must include every retained pulse");
     let mut a = Axes::new(
         [low, high],
         [0., counts.iter().copied().fold(0_f64, f64::max) * 1.1],
