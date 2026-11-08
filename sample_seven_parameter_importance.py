@@ -144,6 +144,7 @@ def main():
             uncertainty_scope="Conditional on fixed drag, density, ablation and receiver calibration; not total physical uncertainty")
         save(output/"posterior.h5", dict(samples=x, log_weights=logw, weights=weights,
             proposal_center=seed,proposal_covariance=metric,
+            parameter_quantiles=np.array([quantiles(x[:,j],weights) for j in range(7)]).T,
             posterior_mean=mean, posterior_covariance=posterior_covariance,
             log_radius_quantiles=radius, log_radius_quantile_mc_se=mc_error,
             radius_m_quantiles=10**radius,
