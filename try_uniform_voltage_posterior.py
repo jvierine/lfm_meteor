@@ -1,5 +1,6 @@
 """Isolated four-chain posterior-only trial of existing physical trajectory fits."""
 import argparse
+import ctypes as ct
 import hashlib
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import numpy as np
 
 from fit_cached_shrinking_voltage import native, Cached, covariance
 from fit_shrinking_voltage import Model, PTR, finish_export, save
+from arviz_stats.base import array_stats
 
 
 def digest(path):
@@ -27,6 +29,7 @@ def main():
     p.add_argument("--draws", type=int, default=96000)
     p.add_argument("--warmup", type=int, default=4000)
     p.add_argument("--chain-seconds", type=float, default=65.)
+    p.add_argument("--independent-scatter", action="store_true")
     a = p.parse_args()
     world = MPI.COMM_WORLD
     if world.size % 4:
@@ -75,10 +78,20 @@ def main():
                     break
             start = np.ascontiguousarray(start)
             target = folder / f"chain_{chain_index}.h5"
-            ok = lib.voltage_cache_sample(cache.handle, model.handle,
-                start.ctypes.data_as(PTR), cov.ctypes.data_as(PTR), a.warmup,
-                a.draws, a.chain_seconds, 2026110800 + chain_index,
-                os.fsencode(str(target) + ".partial"))
+            if a.independent_scatter:
+                station = np.ascontiguousarray(data["station"], dtype=np.uint64)
+                lib.voltage_scatter_sample.argtypes = [ct.c_void_p, ct.POINTER(ct.c_uint64),
+                    PTR, PTR, ct.c_size_t, ct.c_size_t, ct.c_double, ct.c_uint64, ct.c_char_p]
+                lib.voltage_scatter_sample.restype = ct.c_int
+                ok = lib.voltage_scatter_sample(model.handle,
+                    station.ctypes.data_as(ct.POINTER(ct.c_uint64)), start.ctypes.data_as(PTR),
+                    cov.ctypes.data_as(PTR), a.warmup, a.draws, a.chain_seconds,
+                    2026110800 + chain_index, os.fsencode(str(target) + ".partial"))
+            else:
+                ok = lib.voltage_cache_sample(cache.handle, model.handle,
+                    start.ctypes.data_as(PTR), cov.ctypes.data_as(PTR), a.warmup,
+                    a.draws, a.chain_seconds, 2026110800 + chain_index,
+                    os.fsencode(str(target) + ".partial"))
             if not ok:
                 raise RuntimeError("Native posterior sampler failed")
             os.replace(str(target) + ".partial", target)
@@ -124,6 +137,31 @@ def main():
                                  ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parent, text=True).strip(),
                              uncertainty_updated_unix=time.time())
                 finish_export(folder, model, fields, attrs, chains)
+                if a.independent_scatter:
+                    scatter = []
+                    for i in range(4):
+                        with h5py.File(folder / f"chain_{i}.h5") as h:
+                            scatter.append(h["scatter_samples"][:n])
+                    scatter = np.stack(scatter)
+                    statistics = np.log(scatter).transpose(2, 0, 1)
+                    rh = float(np.max(array_stats.rhat(statistics, chain_axis=1, draw_axis=2)))
+                    bulk = float(np.min(array_stats.ess(statistics, chain_axis=1, draw_axis=2)))
+                    tail = float(np.min(array_stats.ess(statistics, method="tail", prob=.025, chain_axis=1, draw_axis=2)))
+                    nuisance_pass = rh < 1.01 and min(bulk, tail) >= 400
+                    with h5py.File(folder / "plot.h5", "r+") as h:
+                        h.attrs.update(uncertainty_method="Metropolis-Hastings posterior with independent per-pulse delay/Doppler scatter",
+                            likelihood="Exact sampled-voltage likelihood plus independent Gaussian physical delay/Doppler deviations; receiver-noise variance unchanged",
+                            scatter_prior="Independent half-Student-t(3) scales: c/bandwidth metres and 1/pulse_duration Hz",
+                            pulse_correlation_assumed=False, scatter_max_rhat=rh,
+                            scatter_min_bulk_ess=bulk, scatter_min_tail_ess=tail,
+                            scatter_converged=nuisance_pass,
+                            uncertainty_converged=bool(h.attrs["uncertainty_converged"]) and nuisance_pass)
+                        h["scatter_sigma_quantiles"] = np.quantile(scatter.reshape(-1, 6), [.025, .5, .975], axis=0)
+                    save(folder / "scatter_posterior.h5", dict(samples=scatter),
+                         dict(columns="Sanya path_m,doppler_Hz,Danzhou path_m,doppler_Hz,Wenchang path_m,doppler_Hz",
+                              converged=nuisance_pass, max_rhat=rh, min_bulk_ess=bulk, min_tail_ess=tail))
+                    with h5py.File(folder / "dynamic_mass_posterior.h5", "r+") as h:
+                        h.attrs["convergence_verified"] = bool(h.attrs["convergence_verified"]) and nuisance_pass
                 with h5py.File(folder / "plot.h5") as h:
                     result = dict(h.attrs)
                     quantiles = h["initial_mass_kg_quantiles"][:]

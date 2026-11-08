@@ -9,17 +9,17 @@ use std::time::Instant;
 struct Surface {origin:[f64;2],half:[f64;2],n:usize,path_cells:usize,values:Vec<f64>,offset:f64}
 pub struct Cache {pulses:Vec<super::reduced::Pulse>,offsets:Vec<f64>}
 
-fn tune_scale(log_scale:f64,step:usize,accept:bool)->f64 {
+pub(super) fn tune_scale(log_scale:f64,step:usize,accept:bool)->f64 {
     (log_scale+(step as f64+10.).powf(-0.6)*((if accept {1.}else{0.})-0.234)).clamp(-8.,4.)
 }
 
-struct RadiusTransport {reference:f64,beta:Vec<f64>}
+pub(super) struct RadiusTransport {reference:f64,beta:Vec<f64>}
 impl RadiusTransport {
-    fn new(x:&DVector<f64>,cov:&DMatrix<f64>)->Self {
+    pub(super) fn new(x:&DVector<f64>,cov:&DMatrix<f64>)->Self {
         let beta=(0..6).map(|i|if x.len()==7 {cov[(i,6)]/cov[(6,6)]}else{0.}).collect();
         Self{reference:x[6],beta}
     }
-    fn physical(&self,y:&DVector<f64>)->DVector<f64> {
+    pub(super) fn physical(&self,y:&DVector<f64>)->DVector<f64> {
         let mut x=y.clone();
         if y.len()!=7 || !(-7. ..=-2.).contains(&y[6]){return x;}
         let delta=y[6]-self.reference;

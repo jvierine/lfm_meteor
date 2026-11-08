@@ -6,6 +6,7 @@ use rustfft::{Fft,FftPlanner,num_complex::Complex};
 use std::sync::Arc;
 mod compressed;
 mod reduced;
+mod scatter;
 
 struct WhiteningFft {forward:Arc<dyn Fft<f64>>,inverse:Arc<dyn Fft<f64>>,filters:Vec<Vec<Complex<f64>>>}
 
