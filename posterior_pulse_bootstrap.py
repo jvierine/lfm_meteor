@@ -38,6 +38,7 @@ def main():
     p.add_argument('--draws', type=int, default=256)
     p.add_argument('--optimize-seconds', type=float, default=2.)
     p.add_argument('--seed', type=int, default=202611090000)
+    p.add_argument('--resume', action='store_true')
     a = p.parse_args()
     world = MPI.COMM_WORLD
     index = world.rank % len(a.events)
@@ -45,6 +46,11 @@ def main():
     event = a.events[index]
     source, output = a.source/event, a.output/event
     output.mkdir(parents=True, exist_ok=True)
+    input_hash = hashlib.sha256((source/'input.h5').read_bytes()).hexdigest()
+    if a.resume and (output/'posterior.h5').exists():
+        with h5py.File(output/'posterior.h5') as h:
+            if h.attrs['source_input_sha256'] != input_hash:
+                raise ValueError('Cannot resume with changed measurements or flags')
     began = time.monotonic()
     with h5py.File(source/'input.h5') as h:
         data = {k: h[k][()] for k in h}
@@ -85,14 +91,29 @@ def main():
     for draw in range(comm.rank, a.draws, comm.size):
         seed = (a.seed ^ int.from_bytes(hashlib.sha256(event.encode()).digest()[:8], 'little') ^ draw) % 2**64
         weights = weights_for(data['station'], seed)
-        params, diagnostic = fit(center, metric, weights)
-        for attempt in range(3):
+        target = output/f'draw_{draw:04d}.h5'
+        start, current_metric = center, metric
+        if a.resume and target.exists():
+            with h5py.File(target) as h:
+                np.testing.assert_array_equal(h['weights'][:],weights)
+                old_params, old_diagnostics = h['params'][:], h['diagnostics'][:]
+                parity = float(h.attrs['cache_raw_difference'])
+            if old_diagnostics[2] < .01:
+                rows.append((draw,old_params,old_diagnostics,parity))
+                continue
+            start = np.ascontiguousarray(old_params)
+            current_metric = np.ascontiguousarray(covariance(cache,start))
+            save(output/f'draw_{draw:04d}_resume_input.h5',
+                 dict(params=old_params,diagnostics=old_diagnostics),dict(preserved_previous_attempt=True))
+        params, diagnostic = fit(start, current_metric, weights)
+        for attempt in range(6):
             if diagnostic[2] <= .01:
                 break
             save(output/f'draw_{draw:04d}_attempt_{attempt}.h5',
                  dict(params=params, diagnostics=diagnostic), dict(unresolved_optimization=True))
             previous = diagnostic[0]
-            params, diagnostic = fit(np.ascontiguousarray(params), metric, weights)
+            current_metric = np.ascontiguousarray(covariance(cache,params))
+            params, diagnostic = fit(np.ascontiguousarray(params), current_metric, weights)
             diagnostic[2] = max(diagnostic[2], diagnostic[0]-previous)
         parity = np.nan
         if draw < comm.size:
@@ -112,6 +133,9 @@ def main():
         radii = 10**params[:,6]
         masses = 4*np.pi/3*3000*radii**3
         boundary = (params[:,6] < -6.99) | (params[:,6] > -2.01)
+        rng = np.random.default_rng(19)
+        endpoints = np.array([np.quantile(3*params[rng.integers(0,len(params),len(params)),6],
+            [.025,.5,.975]) for _ in range(128)])
         checks = (len(rows)==a.draws and np.isfinite(params).all()
             and np.max(diagnostics[:,2]) < .01 and np.nanmax(parity) < .01)
         save(output/'posterior.h5', dict(samples=params, mass_kg=masses, radius_m=radii,
@@ -119,7 +143,8 @@ def main():
             radius_m_quantiles=np.quantile(radii,[.025,.5,.975]),
             parameter_quantiles=np.quantile(params,[.025,.5,.975],axis=0),
             best_params=center, diagnostics=diagnostics, cache_raw_difference=parity,
-            radius_prior_boundary=boundary),
+            radius_prior_boundary=boundary,
+            log_mass_quantile_monte_carlo_se=np.std(endpoints,axis=0,ddof=1)),
             dict(method='Stratified independent pulse weighted-likelihood posterior bootstrap',
                 parameter_count=7, nuisance_scatter_parameters=0,
                 original_parametric_posterior=False, receiver_noise_unchanged=True,
@@ -127,7 +152,8 @@ def main():
                 numerical_checks_passed=bool(checks), model_discrepancy_validated=False,
                 interval_usable=False, prior_boundary_fraction=float(np.mean(boundary)),
                 density_kg_m3=3000.,Gamma=1.,sigma_s2_m2=1e-8,
-                source_input_sha256=hashlib.sha256((source/'input.h5').read_bytes()).hexdigest(),
+                source_input_sha256=input_hash,
+                library_sha256=hashlib.sha256(a.library.read_bytes()).hexdigest(),
                 source_git_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
                 elapsed_seconds=time.monotonic()-began,
                 uncertainty_scope='Independent pulse variation of physical fit; not shared systematic density, drag, ablation or calibration errors'))
