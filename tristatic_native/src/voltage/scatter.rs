@@ -250,7 +250,7 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
         let mut state=DVector::zeros(13);
         state.rows_mut(0,7).copy_from(&x);
         for i in 0..6 {state[7+i]=logs[i];}
-        let proxy=LinearProxy::build(&model,v,&transport,&state).ok_or_else(||anyhow::anyhow!("Invalid linearized proposal model"))?;
+        let mut proxy=LinearProxy::build(&model,v,&transport,&state).ok_or_else(||anyhow::anyhow!("Invalid linearized proposal model"))?;
         let mut proposal_base=DMatrix::zeros(13,13);
         proposal_base.view_mut((0,0),(7,7)).copy_from(&(&base*100.));
         for i in 7..13 {proposal_base[(i,i)]=0.16;}
@@ -300,6 +300,7 @@ pub unsafe extern "C" fn voltage_scatter_sample(v:*const Voltage,stations:*const
                 if step>=warmup {accepted[0]+=1;}}
             if step<warmup {
                 if step%500==499 && step+500<warmup {
+                    if let Some(updated)=LinearProxy::build(&model,v,&transport,&state){proxy=updated;}
                     if let Some(c)=curvature_covariance(|z|{let value=proxy.logp(&(&state+&chol*z));
                         if value.is_finite(){Some(value)}else{None}},&chol).and_then(|c|c.cholesky()) {
                         chol=c.l();scales=[0.;13];proxy_warmup_counts=[0;13];
