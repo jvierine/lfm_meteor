@@ -8,6 +8,7 @@ mod compressed;
 mod reduced;
 mod scatter;
 mod radius_grid;
+mod importance;
 
 struct WhiteningFft {forward:Arc<dyn Fft<f64>>,inverse:Arc<dyn Fft<f64>>,filters:Vec<Vec<Complex<f64>>>}
 
