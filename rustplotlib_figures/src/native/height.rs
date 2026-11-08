@@ -102,7 +102,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         (-20., "#666666", 0.5),
         (-13., "#444444", 0.6),
         (-3., "#222222", 1.),
-        (level, "#25734a", 0.8),
+        (level, "#000000", 1.4),
     ] {
         let c = Contour::new(
             grid.clone(),
@@ -115,6 +115,11 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         let mut points = Vec::new();
         for s in c.segments(lv) {
             points.extend([s[0], s[1], [f64::NAN; 2]]);
+        }
+        if lv == level {
+            let mut halo = Line::new(points.clone(), "#ffffff");
+            halo.width_pt = 2.4;
+            p.push(Layer::Line(halo));
         }
         let mut line = Line::new(points, color);
         line.width_pt = width;
