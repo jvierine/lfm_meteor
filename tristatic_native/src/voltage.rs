@@ -275,6 +275,7 @@ impl Voltage {
         let mut terms=vec![0.;1];
         assert_eq!(unsafe {compressed::voltage_cache_terms(&diagnostic_cache,&model,q.as_ptr(),terms.as_mut_ptr())},1);
         assert!((terms[0]-diagnostic_cache.logp(&model,&q)).abs()<1e-10);
+        assert!((diagnostic_cache.weighted_logp(&model,&q,&[3.5])-3.5*terms[0]).abs()<1e-10);
         let mut pulse_diagnostic=vec![0.;8];
         assert_eq!(unsafe {compressed::voltage_cache_pulse_audit(&diagnostic_cache,&model,q.as_ptr(),pulse_diagnostic.as_mut_ptr())},1);
         assert!(pulse_diagnostic[2]>=-1e-7);

@@ -139,6 +139,10 @@ impl Cache {
     pub(super) fn logp(&self,v:&Voltage,q:&[f64])->f64 {
         self.evaluate(v,q).map_or(f64::NEG_INFINITY,|x|x.iter().sum())
     }
+    pub(super) fn weighted_logp(&self,v:&Voltage,q:&[f64],weights:&[f64])->f64 {
+        self.evaluate(v,q).map_or(f64::NEG_INFINITY,|values|values.iter().zip(weights)
+            .filter(|(_,w)|**w>0.).map(|(x,w)|x*w).sum())
+    }
     fn exact(&self,v:&Voltage,q:&[f64])->f64 {
         let Some(obs)=v.observables(q) else{return f64::NEG_INFINITY;};let k=v.bandwidth/v.duration/C;
         obs.iter().enumerate().map(|(i,o)|v.pulse_logp(i,o[0],o[1]+k*o[0])-self.offsets[i]).sum()
@@ -164,6 +168,50 @@ impl Cache {
     let Some(values)=c.evaluate(v,std::slice::from_raw_parts(q,v.dimension())) else{return 0;};
     std::slice::from_raw_parts_mut(out,values.len()).copy_from_slice(&values);
     1
+}
+
+/// Weighted complete-pulse likelihood. Weights never separate delay and beat.
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_weighted_logp(c:*const Cache,v:*const Voltage,
+    q:*const f64,weights:*const f64,exact:i32)->f64 {
+    let c=&*c;let v=&*v;let q=std::slice::from_raw_parts(q,7);
+    let w=std::slice::from_raw_parts(weights,c.pulses.len());
+    if exact==0 {return c.weighted_logp(v,q,w);}
+    let Some(obs)=v.observables(q) else{return f64::NEG_INFINITY;};
+    let k=v.bandwidth/v.duration/C;
+    obs.iter().enumerate().filter(|(i,_)|w[*i]>0.).map(|(i,o)|
+        w[i]*(v.pulse_logp(i,o[0],o[1]+k*o[0])-c.offsets[i])).sum()
+}
+
+/// Independent weighted-likelihood posterior-bootstrap optimization.
+/// Multi-start and repeat-gain checks are retained for every draw.
+#[no_mangle] pub unsafe extern "C" fn voltage_posterior_bootstrap_fit(c:*const Cache,v:*const Voltage,
+    initial:*const f64,covariance:*const f64,weights:*const f64,seconds:f64,
+    result:*mut f64,diagnostics:*mut f64)->i32 {
+    let c=&*c;let v=&*v;let began=Instant::now();
+    let initial=DVector::from_column_slice(std::slice::from_raw_parts(initial,7));
+    let cov=DMatrix::from_row_slice(7,7,std::slice::from_raw_parts(covariance,49));
+    let Some(factor)=cov.clone().cholesky() else{return 0;};let factor=factor.l();
+    let weights=std::slice::from_raw_parts(weights,c.pulses.len());
+    if weights.iter().any(|x|!x.is_finite() || *x<0.) || weights.iter().sum::<f64>()<=0. {return 0;}
+    let transport=RadiusTransport::new(&initial,&cov);
+    let logp=|z:&DVector<f64>|c.weighted_logp(v,transport.physical(z).as_slice(),weights);
+    let mut best=initial.clone();let initial_value=logp(&best);
+    for delta in [0.,0.35,-0.35] {
+        let mut start=initial.clone();let radius=(initial[6]+delta).clamp(-6.999999,-2.000001);
+        let change=radius-initial[6];start[6]=radius;
+        for j in 0..6 {start[j]+=cov[(j,6)]/cov[(6,6)]*change;}
+        let q=super::importance::newton_mode(logp,start,&(&factor*4.),seconds);
+        if logp(&q)>logp(&best) {best=q;}
+    }
+    let first=logp(&best);
+    let final_q=super::importance::newton_mode(logp,best.clone(),&factor,seconds);
+    let gain=(logp(&final_q)-first).max(0.);
+    if logp(&final_q)>first {best=final_q;}
+    let physical=transport.physical(&best);let value=logp(&best);
+    if !value.is_finite(){return 0;}
+    std::slice::from_raw_parts_mut(result,7).copy_from_slice(physical.as_slice());
+    std::slice::from_raw_parts_mut(diagnostics,4).copy_from_slice(&[
+        value,value-initial_value,gain,began.elapsed().as_secs_f64()]);1
 }
 
 /// Fit each pulse's path/envelope and beat jointly, without any trajectory ODE.
