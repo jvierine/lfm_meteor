@@ -46,7 +46,12 @@ def prepare(folder, flags, output, nsamples):
             assert not bool(h.attrs.get('bad',False)), 'Excluded from scientific catalogue by review'
             current_revision = int(h.attrs['version'])
     assert current_revision == revision, 'Manual flags await refit'
-    if 'random-deletion' in method:
+    if 'importance' in method:
+        sources = [folder / 'state_posterior.h5']
+        with h5py.File(sources[0]) as h:
+            assert h.attrs['convergence_verified'], 'Unverified importance posterior'
+            draws = h['samples'][:]
+    elif 'random-deletion' in method:
         sources = [folder / 'random_deletion.h5']
         with h5py.File(sources[0]) as h:
             assert np.all(h['optimizer_converged'][:]), 'Subset optimizers failed'

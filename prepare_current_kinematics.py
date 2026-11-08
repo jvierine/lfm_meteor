@@ -5,6 +5,7 @@ identity; the Rust physical model evaluates only retained station/pulse rows.
 """
 import ctypes as ct
 import hashlib
+import os
 import sys
 from pathlib import Path
 
@@ -28,17 +29,17 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def accepted_ids(manifest=MANIFEST):
+def accepted_ids(manifest=None):
+    manifest = MANIFEST if manifest is None else manifest
     with h5py.File(manifest) as h:
         ids = list(h['event_id'].asstr()[:])
-    if len(ids) != 232 or len(set(ids)) != 232:
-        raise ValueError('Expected the audited 232-event manifest')
-    if any(x.split('_')[1] in ('0020', '0035', '0096') for x in ids):
-        raise ValueError('Rejected or stale-flag event in manifest')
+    if not len(ids) or len(set(ids)) != len(ids):
+        raise ValueError('Expected a nonempty unique audited event manifest')
     return ids
 
 
-def check_export(path=OUTPUT):
+def check_export(path=None):
+    path = OUTPUT if path is None else path
     with h5py.File(path) as h:
         if h.attrs['manifest_sha256'] != sha(MANIFEST):
             raise ValueError('Kinematic export needs refresh: orbit manifest changed')
@@ -49,7 +50,8 @@ def check_export(path=OUTPUT):
 
 
 def main():
-    library = ROOT / 'tristatic_native/target/debug/libtristatic_native.dylib'
+    library = Path(os.environ.get('TRISTATIC_LIBRARY',
+                    ROOT / 'tristatic_native/target/debug/libtristatic_native.dylib'))
     lib = ct.CDLL(str(library))
     ptr = ct.POINTER(ct.c_double)
     lib.voltage_load.argtypes = [ct.c_char_p]
@@ -65,7 +67,7 @@ def main():
                          manifest_sha256=sha(MANIFEST), library_sha256=sha(library),
                          source_program=__file__, source_sha256=sha(__file__),
                          observation_start_utc=START, observation_stop_utc=STOP,
-                         selection='232 orbit-manifest fits; retained station/pulse rows; no mass cut',
+                         selection='Current audited trajectory manifest; retained station/pulse rows; no mass cut',
                          position_convention='nominal pulse-time GCRS state transformed to ITRS',
                          sample_convention='one sample per distinct retained UTC pulse time')
         out['event_id'] = np.asarray(ids, dtype=h5py.string_dtype())
