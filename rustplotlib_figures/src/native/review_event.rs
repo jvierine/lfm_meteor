@@ -79,10 +79,13 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let mut p=Panel::new(Rect::new(126.,bottom,54.,panel_height),Axes::new([-extent,extent],[-extent,extent],"East--west offset (m)","North--south offset (m)"));
     let contours=b.group("contours")?;
     for name in contours.member_names()?{let g=contours.group(&name)?;for path in g.member_names()?{let a=array(&g,&path)?;let mut l=Line::new(a.chunks_exact(2).map(|v|[v[0],v[1]]).collect(),"#999999");l.width_pt=0.6;p.push(Layer::Line(l));}}
-    let east=array(&b,"east_m")?;let north=array(&b,"north_m")?;let snr=array(&b,"snr_db")?;
-    let scale=Scale::new(limits(&snr,0.01),Normalization::Linear,ColorMap::plasma())?;let cid=f.scale(scale.clone());
-    curve(&mut p,&east,&north,"#999999",0.6);p.scatter_colored(&points(&east,&north),&snr,&scale,3.,1.,"none")?;
-    let ticks=(scale.limits[0].ceil() as i32..=scale.limits[1].floor() as i32).filter(|v|v%10==0).map(|v|v as f64).collect();
-    f.colorbars.push(Colorbar::new(Rect::new(184.,bottom,2.,panel_height),cid,"SNR (dB)",ticks));panel_label(&mut f,&p,"f)");f.panels.push(p);
+    let east=array(&b,"east_m")?;let north=array(&b,"north_m")?;let height=array(&b,"height_km")?;
+    anyhow::ensure!(height.len()==east.len() && height.iter().all(|v|v.is_finite()), "Beam altitudes must match plotted positions");
+    let scale=Scale::new(limits(&height,0.01),Normalization::Linear,ColorMap::plasma())?;let cid=f.scale(scale.clone());
+    curve(&mut p,&east,&north,"#999999",0.6);p.scatter_colored(&points(&east,&north),&height,&scale,3.,1.,"none")?;
+    let span=scale.limits[1]-scale.limits[0];
+    let step=if span<1. {0.2} else if span<3. {0.5} else {1.};
+    let ticks=((scale.limits[0]/step).ceil() as i32..=(scale.limits[1]/step).floor() as i32).map(|v|v as f64*step).collect();
+    f.colorbars.push(Colorbar::new(Rect::new(184.,bottom,2.,panel_height),cid,"Altitude (km)",ticks));panel_label(&mut f,&p,"f)");f.panels.push(p);
     Ok(f)
 }

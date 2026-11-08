@@ -41,6 +41,13 @@ with h5py.File(OUT, 'w') as h:
         elif isinstance(value, list):
             h['beam/'+key] = np.asarray([np.nan if x is None else float(x) for x in value])
         else: h.require_group('beam').attrs[key] = value
+    import jcoord
+    with h5py.File(args.catalog/EVENT/'physical_states.h5') as states:
+        index = {int(t): i for i, t in enumerate(states['time_ns'][:])}
+        xyz = states['position_ecef_m'][:]
+        h['beam/height_km'] = [jcoord.ecef2geodetic(*xyz[index[int(t)]])[2]/1000
+                               for t in d['beam']['time_ns']]
+        h['beam/height_km'].attrs['units'] = 'km'
     for key, value in d['rcs_mass'].items():
         if key != 'curves': h.require_group('rcs_mass').attrs[key] = value
     h['excluded_ids'] = np.asarray(d['annotation']['excluded'], dtype=h5py.string_dtype())
