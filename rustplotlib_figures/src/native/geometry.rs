@@ -31,7 +31,7 @@ fn path(
     p.push(Layer::Line(l));
 }
 pub fn figure(h: &hdf5::File) -> Result<Figure> {
-    let width = 200.;
+    let width = 90.;
     let height = width * 946. / 1706.;
     let center = xyz(h, "center")?[0];
     // Reference-view reconstruction from the three station markers and common volume.
@@ -56,10 +56,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         42.,
         width / height,
     )?;
-    let mut f = Figure::new(IntendedUse::Custom {
-        width_mm: width,
-        font_pt: 10. * width / 184.,
-    });
+    let mut f = ArticleLayout::new(width, 10.)?.figure(1., height)?;
     f.height_mm = height;
     let mut p = Panel::new(
         Rect::new(0., 0., width, height),
@@ -166,7 +163,9 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             let item = g.group(&name)?;
             let degrees = item.attr("degrees")?.read_scalar::<f64>()?;
             // Keep the same sparse geographic references as the original view.
-            if (kind == "lonTicks" && degrees > 109.5) || (kind == "latTicks" && degrees > 18.5) {
+            if (kind == "lonTicks" && degrees > 109.5)
+                || (kind == "latTicks" && (degrees - 18.5).abs() > 0.01)
+            {
                 continue;
             }
             let q = screen(&camera, xyz(&item, end)?[0]).unwrap();
@@ -183,5 +182,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         }
     }
     f.panels.push(p);
-    article_figure(f, 1.)
+    let article = ArticleLayout::new(90., 10.)?;
+    article.check_inclusion(&f, 90.)?;
+    Ok(f)
 }
