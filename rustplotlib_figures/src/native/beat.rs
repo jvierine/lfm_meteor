@@ -40,6 +40,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let peak = attr(h, "peak_frequency_hz")? / 1000.;
     let start = attr(h, "fit_echo_window_shift_us")?;
     let duration = attr(h, "pulse_length_us")?;
+    let colors: Vec<String> = (0..6).map(|i| LineStyle::for_series(i).color).collect();
     let mut f = ArticleLayout::new(90., 10.)?.figure(1., 145.)?;
     let mut upper_axes = Axes::new(
         [-50., 250.],
@@ -55,7 +56,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         line(
             &mut upper,
             vec![[x, -2.], [x, 2.]],
-            "#888888",
+            &colors[4],
             0.9,
             Some("1.2 0.8"),
             1.,
@@ -65,13 +66,13 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         line(
             &mut upper,
             vec![[x, -2.], [x, 2.]],
-            "#853ca4",
+            &colors[5],
             1.1,
             Some("2 1"),
             1.,
         );
     }
-    for (imaginary, color) in [(false, "#58778c"), (true, "#b17c56")] {
+    for (imaginary, index) in [(false, 0), (true, 1)] {
         let points = |data: &[Complex]| {
             time.iter()
                 .zip(data)
@@ -81,21 +82,21 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         line(
             &mut upper,
             points(&corrected),
-            color,
-            0.8,
+            &colors[index + 2],
+            1.,
             Some("0.35 0.8"),
-            0.35,
+            1.,
         );
-        line(&mut upper, points(&voltage), color, 0.85, None, 1.);
+        line(&mut upper, points(&voltage), &colors[index], 0.85, None, 1.);
     }
     // A compact external key keeps the echo itself unobstructed.
     let key = [
-        ("Zero-Doppler gate", "#888888", Some("1.2 0.8")),
-        ("Corrected real", "#58778c", Some("0.35 0.8")),
-        ("Real", "#58778c", None),
-        ("Fitted envelope", "#853ca4", Some("2 1")),
-        ("Corrected imag.", "#b17c56", Some("0.35 0.8")),
-        ("Imaginary", "#b17c56", None),
+        ("Zero-Doppler gate", colors[4].as_str(), Some("1.2 0.8")),
+        ("Corrected real", colors[2].as_str(), Some("0.35 0.8")),
+        ("Real", colors[0].as_str(), None),
+        ("Fitted envelope", colors[5].as_str(), Some("2 1")),
+        ("Corrected imag.", colors[3].as_str(), Some("0.35 0.8")),
+        ("Imaginary", colors[1].as_str(), None),
     ];
     let mut key_panel = Panel::new(Rect::new(0., 0., 90., 20.), Axes::new([0.,90.], [0.,20.], "", ""));
     key_panel.axes_visible = false;
@@ -122,11 +123,11 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         .zip(&power)
         .filter_map(|(&x, &y)| ((x / 1000. - peak).abs() <= 80.).then_some([x / 1000., y]))
         .collect();
-    line(&mut lower, points, "#222222", 1., None, 1.);
+    line(&mut lower, points, &colors[0], 1., None, 1.);
     line(
         &mut lower,
         vec![[peak, -55.], [peak, 3.]],
-        "#bc4541",
+        &colors[1],
         1.1,
         None,
         1.,
