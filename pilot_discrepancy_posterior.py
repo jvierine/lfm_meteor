@@ -22,10 +22,9 @@ from fit_shrinking_voltage import Model, PTR, save
 from sample_seven_parameter_importance import quantiles
 
 
-def metric(logp, q, base):
+def metric(logp, q, base, step=.25):
     factor = np.linalg.cholesky(base)
     origin = logp(q)
-    step = .25
     information = np.empty((7, 7))
     for j in range(7):
         a = step*factor[:, j]
@@ -35,6 +34,8 @@ def metric(logp, q, base):
             information[j, k] = information[k, j] = -(logp(q+a+b)-logp(q+a-b)
                 -logp(q-a+b)+logp(q-a-b))/(4*step**2)
     if not np.isfinite(information).all():
+        if step > 1e-5:
+            return metric(logp, q, base, step/2)
         raise ValueError('Invalid pilot curvature; no posterior precision claim')
     eigenvalues, vectors = np.linalg.eigh(information)
     # Proposal stabilization only. Importance weights use the unmodified target.
