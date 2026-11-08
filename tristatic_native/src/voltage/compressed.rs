@@ -136,7 +136,7 @@ impl Cache {
         let obs=v.observables(q)?;let k=v.bandwidth/v.duration/C;
         Some(obs.iter().enumerate().map(|(i,o)|self.pulses[i].logp(o[0],o[1]+k*o[0])-self.offsets[i]).collect())
     }
-    fn logp(&self,v:&Voltage,q:&[f64])->f64 {
+    pub(super) fn logp(&self,v:&Voltage,q:&[f64])->f64 {
         self.evaluate(v,q).map_or(f64::NEG_INFINITY,|x|x.iter().sum())
     }
     fn exact(&self,v:&Voltage,q:&[f64])->f64 {
@@ -175,7 +175,7 @@ impl Cache {
     if ok {1}else{0}
 }
 
-fn simplex_minimize<F:Fn(&DVector<f64>)->f64>(f:F,n:usize,seconds:f64)->(DVector<f64>,bool) {
+pub(super) fn simplex_minimize<F:Fn(&DVector<f64>)->f64>(f:F,n:usize,seconds:f64)->(DVector<f64>,bool) {
     let started=Instant::now();
     let mut x=vec![DVector::zeros(n);n+1];
     for i in 0..n {x[i+1][i]=1.;}
