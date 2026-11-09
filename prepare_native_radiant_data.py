@@ -8,6 +8,7 @@ from astropy.time import Time
 from astropy.utils import iers
 from prepare_current_kinematics import OUTPUT, AREA, MANIFEST, START, STOP, check_export, sha
 from plot_sun_centered_ecliptic_radiants import load_fits, calculate_radiants
+from radiant_symmetry import symmetry_members
 
 iers.conf.auto_download = False
 ROOT = Path(__file__).resolve().parent
@@ -43,8 +44,7 @@ def main():
     grid_lon, grid_lat = np.meshgrid((270.-x)%360.,y)
     visible, effective = exposure(grid_lon,grid_lat,samples,equinox,dt)
     # Four symmetry members; numerator four is NOT included in these hours.
-    family_lon = np.column_stack([relative,(540.-relative)%360.,relative,(540.-relative)%360.])
-    family_lat = np.column_stack([lat,lat,-lat,-lat])
+    family_lon, family_lat = symmetry_members(relative, lat)
     _, family_hours = exposure(family_lon,family_lat,samples,equinox,dt)
     with h5py.File(AREA) as area:
         area_km2 = float(area.attrs['area_horizontal_km2'])

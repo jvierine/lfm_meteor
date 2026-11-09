@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import h5py
 import numpy as np
 import estimate_current_mass_influx as masses
+from radiant_symmetry import daily_weight_from_summed_hours
 
 ROOT=Path(__file__).resolve().parent
 INPUT=ROOT/'results/current_kinematics_20261107'
@@ -17,7 +18,7 @@ ORBITS=ROOT/'results/tristatic_shrinking_orbits_current_20261107/orbits.h5'
 
 
 def summarize(g,names,rows,exposure,speed,area,rng,altitude_factor):
-    base=4*np.pi*(6371+95)**2/area*4*24/exposure
+    base=4*np.pi*(6371+95)**2/area*daily_weight_from_summed_hours(exposure)
     velocity=(72/speed)**3
     mass=np.array([rows[n][0] for n in names])
     draws=np.array([rng.choice(rows[n][1],20000) for n in names])
