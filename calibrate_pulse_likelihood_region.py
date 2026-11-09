@@ -115,6 +115,10 @@ def main():
                 endpoints.append((inside+outside)/2)
             fields['log_radius_profile_endpoints']=np.array(endpoints)
             fields['mass_profile_endpoints_kg']=4*np.pi/3*3000*10**(3*np.array(endpoints))
+            reported=fields['mass_profile_endpoints_kg'].copy()
+            if limited[0]:reported[0]=0.
+            if limited[1]:reported[1]=np.inf
+            fields['mass_confidence_interval_kg']=reported
             attrs.update(lower_endpoint_boundary_limited=limited[0],upper_endpoint_boundary_limited=limited[1])
         fields['profile_radius_and_likelihood_ratio']=np.asarray(profile)
         attrs['elapsed_seconds']=time.monotonic()-began
