@@ -204,6 +204,26 @@ impl Cache {
         let q=super::importance::newton_mode(logp,start,&(&factor*4.),seconds);
         if logp(&q)>logp(&best) {best=q;}
     }
+    if initial[6]>-2.1 || initial[6]<-6.9 {
+        // At an unresolved drag boundary a local radius perturbation is not a
+        // useful restart. Refit the six kinematic terms at separated radii.
+        let cross=cov.view((0,6),(6,1)).into_owned();
+        let conditional=cov.view((0,0),(6,6)).into_owned()-&cross*cross.transpose()/cov[(6,6)];
+        if let Some(chol)=conditional.cholesky() {
+            let six=chol.l();
+            for radius in [-5.,-4.5,-4.,-3.5,-3.] {
+                let make=|x:&DVector<f64>| {let mut q=initial.clone();q.rows_mut(0,6).copy_from(x);q[6]=radius;q};
+                let conditional_logp=|x:&DVector<f64>|c.weighted_logp(v,make(x).as_slice(),weights);
+                let start=initial.rows(0,6).into_owned();
+                if !conditional_logp(&start).is_finite(){continue;}
+                let x=super::importance::newton_mode(conditional_logp,start,&(&six*4.),seconds.min(0.3));
+                let mut z=make(&x);let delta=radius-initial[6];
+                let shift=-(-std::f64::consts::LN_10*delta).exp_m1()/std::f64::consts::LN_10-delta;
+                for j in 0..6 {z[j]-=cov[(j,6)]/cov[(6,6)]*shift;}
+                if logp(&z)>logp(&best){best=z;}
+            }
+        }
+    }
     let first=logp(&best);
     let final_q=super::importance::newton_mode(logp,best.clone(),&factor,seconds);
     let gain=(logp(&final_q)-first).max(0.);
