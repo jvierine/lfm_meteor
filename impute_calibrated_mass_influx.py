@@ -47,6 +47,7 @@ def main():
         with h5py.File(root/'current_mass_influx.h5') as previous:
             rcs=previous['rcs']; ids=rcs['event_id'].asstr()[:]
             assert set(ids).issubset(catalogue)
+            bounds=np.array([np.quantile(rcs['input_mass_draws/'+event][:],[.025,.975]) for event in ids])
             g=out.create_group('rcs')
             g.attrs.update(n_measured=len(ids),n_imputed=len(catalogue)-len(ids),imputation_statistic='median weighted contribution',
                 source_sha256=hashlib.sha256((root/'current_mass_influx.h5').read_bytes()).hexdigest())
@@ -55,8 +56,13 @@ def main():
                 target=g.create_group(name)
                 rate=rcs[stage].attrs['rate_ton_day']
                 median=np.median(rcs[stage+'/contribution_ton_day'][:])
+                weights=rcs[stage+'/weight_per_day'][:]/1000
+                weighted_bounds=bounds*weights[:,None]
+                envelope=weighted_bounds.sum(axis=0)+(len(catalogue)-len(ids))*np.median(weighted_bounds,axis=0)
+                target['total_endpoint_envelope_ton_day']=envelope
                 target.attrs.update(measured_rate_ton_day=rate,imputed_per_event_ton_day=median,
                     total_rate_ton_day=rate+(len(catalogue)-len(ids))*median)
+                print('RCS',name,'endpoint envelope',envelope)
             print('RCS imputed total',g['beam_sampling'].attrs['total_rate_ton_day'])
 
 
