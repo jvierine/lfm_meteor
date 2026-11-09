@@ -237,7 +237,14 @@ impl Cache {
         let candidate=super::importance::newton_mode(logp,start,&(&factor*4.),seconds);
         if logp(&candidate)>logp(&best){best=candidate;}
     }
-    let before=logp(&best);if !before.is_finite(){return 0;}
+    if !logp(&best).is_finite(){return 0;}
+    // Sample-envelope edges can frustrate Hessian steps. Polish the same
+    // six-dimensional objective without derivatives before checking a repeat.
+    let pivot=best.clone();
+    let (step,_)=simplex_minimize(|z| -logp(&(&pivot+&factor*z)),6,seconds);
+    let candidate=&pivot+&factor*step;
+    if logp(&candidate)>logp(&best){best=candidate;}
+    let before=logp(&best);
     best=super::importance::newton_mode(logp,best,&factor,seconds);
     let after=logp(&best);let q=make(&best);
     std::slice::from_raw_parts_mut(result,7).copy_from_slice(q.as_slice());

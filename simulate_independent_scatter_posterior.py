@@ -18,6 +18,7 @@ def main():
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--event", required=True)
     p.add_argument("--replicates", type=int, default=32)
+    p.add_argument("--seed-base", type=int, default=20261108000)
     p.add_argument("--sigma-path", type=float, nargs=3, default=[5.,3.,3.])
     p.add_argument("--sigma-doppler", type=float, nargs=3, default=[300.,150.,150.])
     a = p.parse_args()
@@ -52,7 +53,7 @@ def main():
     for index in range(a.replicates):
         target = a.output / f"sim_{index:03d}"
         target.mkdir(exist_ok=True)
-        rng = np.random.default_rng(20261108000+index)
+        rng = np.random.default_rng(a.seed_base+index)
         path_error = rng.normal(size=len(sigma_path))*sigma_path
         doppler_error = rng.normal(size=len(sigma_path))*sigma_doppler
         signal = amplitudes[:, None]*waveform(observables[:, 0]+path_error, observables[:, 1]+doppler_error)
@@ -68,7 +69,7 @@ def main():
         shutil.copy2(source / "plot.h5", target / "plot.h5")
         save(target / "truth.h5", dict(params=truth, sigma_path_m=sigma_path,
              sigma_doppler_hz=sigma_doppler, path_error_m=path_error, doppler_error_hz=doppler_error),
-             dict(seed=20261108000+index, receiver_noise_unchanged=True,
+             dict(seed=a.seed_base+index, receiver_noise_unchanged=True,
                   inter_pulse_correlation=False, source_program=Path(__file__).read_text()))
     lib.voltage_free(model.handle)
     print("Prepared", a.replicates, "independent simulated events", flush=True)
