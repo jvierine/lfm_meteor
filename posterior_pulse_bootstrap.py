@@ -81,7 +81,7 @@ def main():
         metric = np.ascontiguousarray(covariance(cache, q))
         center, diagnostics = fit(q, metric, np.ones(len(data['station'])))
         metric = np.ascontiguousarray(covariance(cache, center))
-        save(output/'central_fit.h5', dict(params=center, previous_params=q,
+        save(output/'central_fit.h5', dict(params=center, previous_params=q, cache_seed=q,
             covariance=metric, diagnostics=diagnostics),
             dict(repeat_gain=float(diagnostics[2]), unchanged_likelihood=True))
         print('CENTER', event, 'gain', diagnostics[1], 'repeat',diagnostics[2],flush=True)

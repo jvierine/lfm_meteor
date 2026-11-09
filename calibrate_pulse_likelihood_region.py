@@ -35,12 +35,17 @@ def main():
         with h5py.File(source/'fit.h5') as h:seed=np.ascontiguousarray(h['params'][:])
         with h5py.File(a.posterior/event/'central_fit.h5') as h:
             center=np.ascontiguousarray(h['params'][:]);metric=np.ascontiguousarray(h['covariance'][:])
+            cache_seed=np.ascontiguousarray(h['cache_seed'][:]) if 'cache_seed' in h else None
         with h5py.File(a.posterior/event/'posterior.h5') as h:
             draws=len(h['samples']);numerical=bool(h.attrs['numerical_checks_passed'])
+        if not numerical:
+            raise ValueError('Unresolved bootstrap draws cannot calibrate a confidence region')
         # Reconstruct the same cache offset used for the stored weighted maxima.
         # Real runs seed from the original parametric posterior, simulations from fit.h5.
         original=a.source.parent/'posterior'/event/'posterior.h5'
-        if original.exists():
+        if cache_seed is not None:
+            seed=cache_seed
+        elif original.exists():
             with h5py.File(original) as h:seed=np.ascontiguousarray(h['proposal_center'][:])
         lib=native(a.library);model=Model(lib,source,data)
         cache=Cached(model,seed,0,1.,output/'cache.h5')
