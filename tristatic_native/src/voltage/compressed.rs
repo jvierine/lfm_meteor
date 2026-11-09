@@ -173,7 +173,8 @@ impl Cache {
 /// Weighted complete-pulse likelihood. Weights never separate delay and beat.
 #[no_mangle] pub unsafe extern "C" fn voltage_cache_weighted_logp(c:*const Cache,v:*const Voltage,
     q:*const f64,weights:*const f64,exact:i32)->f64 {
-    let c=&*c;let v=&*v;let q=std::slice::from_raw_parts(q,7);
+    let c=&*c;let v=&*v;if v.dimension()!=7 {return f64::NEG_INFINITY;}
+    let q=std::slice::from_raw_parts(q,7);
     let w=std::slice::from_raw_parts(weights,c.pulses.len());
     if exact==0 {return c.weighted_logp(v,q,w);}
     let Some(obs)=v.observables(q) else{return f64::NEG_INFINITY;};
@@ -187,7 +188,7 @@ impl Cache {
 #[no_mangle] pub unsafe extern "C" fn voltage_posterior_bootstrap_fit(c:*const Cache,v:*const Voltage,
     initial:*const f64,covariance:*const f64,weights:*const f64,seconds:f64,
     result:*mut f64,diagnostics:*mut f64)->i32 {
-    let c=&*c;let v=&*v;let began=Instant::now();
+    let c=&*c;let v=&*v;if v.dimension()!=7 {return 0;}let began=Instant::now();
     let initial=DVector::from_column_slice(std::slice::from_raw_parts(initial,7));
     let cov=DMatrix::from_row_slice(7,7,std::slice::from_raw_parts(covariance,49));
     let Some(factor)=cov.clone().cholesky() else{return 0;};let factor=factor.l();

@@ -60,6 +60,8 @@ def main():
     if a.posterior:
         with h5py.File(a.posterior/event/'posterior.h5') as h:
             q = np.ascontiguousarray(h['proposal_center'][:])
+    if q.shape != (7,) or 'height_m' not in data:
+        raise ValueError('A direct seven-parameter shrinking-radius model with atmosphere is required')
     lib = native(a.library)
     model = Model(lib, source, data)
     cache = Cached(model, q, 0, 1., output/f'cache_{comm.rank:03d}.h5')

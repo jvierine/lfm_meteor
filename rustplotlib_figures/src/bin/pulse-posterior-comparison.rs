@@ -29,7 +29,7 @@ fn main()->Result<()> {
         panel.push(Layer::Line(Line::new(new.iter().zip(&probability).map(|(&x,&y)|[x,y]).collect(),"#D55E00")));
         figure.labels.push(Label::new(format!("{}) Event {}",(b'a'+i as u8) as char,event.split('_').nth(1).unwrap()),
             rect.x+rect.width/2.,rect.y-4.));
-        if i==0 {
+        if i==2 {
             let mut legend=Legend::new(vec![LegendEntry::line("Noise only","#0072B2"),
                 LegendEntry::line("Pulse posterior","#D55E00")]);
             legend.position=LegendPosition::LowerRight;legend.padding_mm=0.5;legend.avoid_data=false;
