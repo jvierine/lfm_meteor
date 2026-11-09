@@ -204,7 +204,7 @@ impl Cache {
         let q=super::importance::newton_mode(logp,start,&(&factor*4.),seconds);
         if logp(&q)>logp(&best) {best=q;}
     }
-    if initial[6]>-2.1 || initial[6]<-6.9 {
+    if initial[6]> -2.1 || initial[6]< -6.9 {
         // At an unresolved drag boundary a local radius perturbation is not a
         // useful restart. Refit the six kinematic terms at separated radii.
         let cross=cov.view((0,6),(6,1)).into_owned();
