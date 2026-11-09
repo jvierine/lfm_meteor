@@ -71,8 +71,10 @@ def covariance(cache,q):
     inv=(u/np.maximum(w,max(np.max(w)*1e-12,1e-12)))@u.T
     cov=step[:,None]*inv*step[None,:]
     limit=np.r_[np.full(3,1.),np.full(3,10.),1.]
-    scale=min(1.,float(np.min(limit/np.sqrt(np.diag(cov)))))
-    return cov*scale**2
+    # A weak radius must not shrink every well-measured trajectory coordinate.
+    # Diagonal congruence retains a positive-definite proposal and correlations.
+    scale=np.minimum(1.,limit/np.sqrt(np.diag(cov)))
+    return cov*scale[:,None]*scale[None,:]
 
 
 def optimize(cache,q):

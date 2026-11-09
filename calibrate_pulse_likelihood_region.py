@@ -6,7 +6,9 @@ is conservative. Fixed-radius profiles still refit all six position/velocity ter
 """
 import argparse
 import ctypes as ct
+import hashlib
 from pathlib import Path
+import subprocess
 import time
 
 import h5py
@@ -85,7 +87,10 @@ def main():
             Bayesian_credible_interval=False,joint_parameter_count=7,
             nominal_joint_confidence=.95,mass_projection_conservative=True,
             cutoff=cutoff,bootstrap_numerical_checks_passed=numerical,
-            physical_systematic_errors_included=False)
+            physical_systematic_errors_included=False,
+            source_git_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            library_sha256=hashlib.sha256(a.library.read_bytes()).hexdigest(),
+            source_input_sha256=hashlib.sha256((source/'input.h5').read_bytes()).hexdigest())
         if (source/'truth.h5').exists():
             with h5py.File(source/'truth.h5') as h:truth=h['params'][:]
             attrs['mass_projection_covered']=bool(at(truth[6])<=0)
