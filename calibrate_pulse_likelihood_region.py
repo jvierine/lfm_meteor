@@ -15,7 +15,7 @@ import h5py
 from mpi4py import MPI
 import numpy as np
 
-from fit_cached_shrinking_voltage import native, Cached
+from fit_cached_shrinking_voltage import native, Cached, covariance
 from fit_shrinking_voltage import Model, PTR, save
 
 
@@ -68,14 +68,17 @@ def main():
             if not ok:
                 raise ValueError('Conditional profile failed; cannot treat optimizer failure as exclusion')
             else:
-                for _ in range(4):
+                for _ in range(12):
                     if diagnostic[1]<.01:break
                     next_params=np.empty(7)
+                    local_metric=np.ascontiguousarray(covariance(cache,params))
                     lib.voltage_profile_radius_fit(cache.handle,model.handle,
-                        np.ascontiguousarray(params).ctypes.data_as(PTR),metric.ctypes.data_as(PTR),
+                        np.ascontiguousarray(params).ctypes.data_as(PTR),local_metric.ctypes.data_as(PTR),
                         float(radius),.5,next_params.ctypes.data_as(PTR),diagnostic.ctypes.data_as(PTR))
                     params=next_params
                 if diagnostic[1]>=.01:
+                    save(output/'profile_failure.h5',dict(params=params,diagnostics=diagnostic,
+                        previous_profile=np.asarray(profile)),dict(log_radius=radius,event=event))
                     raise ValueError('Unresolved conditional profile optimization')
                 value=2*(base-diagnostic[0])
                 if value < -.01:
@@ -134,4 +137,10 @@ def main():
                 'joint',sum(x[1]['joint_truth_covered'] for x in rows),'of',len(rows),flush=True)
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    try:
+        main()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        MPI.COMM_WORLD.Abort(1)

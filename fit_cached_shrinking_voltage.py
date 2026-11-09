@@ -15,6 +15,7 @@ from mpi4py import MPI
 from fit_shrinking_voltage import Model, prepare, save, export, full_products, PTR, C
 from run_native_voltage_catalog import beat_peak
 from run_native_voltage_catalog import load_library
+from radar_proposal_metric import cap_covariance
 
 
 def native(path):
@@ -73,8 +74,7 @@ def covariance(cache,q):
     limit=np.r_[np.full(3,1.),np.full(3,10.),1.]
     # A weak radius must not shrink every well-measured trajectory coordinate.
     # Diagonal congruence retains a positive-definite proposal and correlations.
-    scale=np.minimum(1.,limit/np.sqrt(np.diag(cov)))
-    return cov*scale[:,None]*scale[None,:]
+    return cap_covariance(cov,limit)
 
 
 def optimize(cache,q):
