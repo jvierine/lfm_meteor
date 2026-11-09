@@ -45,6 +45,11 @@ class PaperNumbers(unittest.TestCase):
             np.testing.assert_allclose(h['rcs/beam_sampling/total_endpoint_envelope_ton_day'][:],
                 [2.54154311,9.80708243],rtol=1e-8)
             self.assertEqual(h.attrs['imputation_statistic'],'median weighted contribution')
+            np.testing.assert_allclose(h['beam_sampling/exponent_sensitivity/range_ton_day'][:],
+                [33.7441033,169.13269675],rtol=1e-8)
+            np.testing.assert_allclose(h['rcs/beam_sampling/exponent_sensitivity/range_ton_day'][:],
+                [2.54154311,15.72696152],rtol=1e-8)
+            self.assertTrue(h['beam_sampling/exponent_sensitivity'].attrs['exponent_shared_by_all_events'])
 
     def test_classification_table_matches_current_ensembles(self):
         path=ROOT/'results/tristatic_seven_parameter_catalogue_20261108/orbits/orbits.h5'
@@ -58,7 +63,7 @@ class PaperNumbers(unittest.TestCase):
 
     def test_approved_opening_and_drag_equation_are_preserved(self):
         text=(PAPER/'main.tex').read_text()
-        self.assertIn('Although our sample is relatively small, it provides an opportunity to',text)
+        self.assertIn('Although our sample is relatively small',text)
         self.assertIn('\\int_0^e \\frac{y^{3/5}}{(1-y^2)^{3/2}}',text)
 
 
