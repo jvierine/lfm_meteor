@@ -215,6 +215,35 @@ impl Cache {
         value,value-initial_value,gain,began.elapsed().as_secs_f64()]);1
 }
 
+/// Refit six trajectory coordinates at fixed physical log radius.
+#[no_mangle] pub unsafe extern "C" fn voltage_profile_radius_fit(c:*const Cache,v:*const Voltage,
+    initial:*const f64,covariance:*const f64,radius:f64,seconds:f64,
+    result:*mut f64,diagnostics:*mut f64)->i32 {
+    let c=&*c;let v=&*v;
+    if v.dimension()!=7 || !(-7. ..=-2.).contains(&radius){return 0;}
+    let seed=DVector::from_column_slice(std::slice::from_raw_parts(initial,7));
+    let cov=DMatrix::from_row_slice(7,7,std::slice::from_raw_parts(covariance,49));
+    let cross=cov.view((0,6),(6,1)).into_owned();
+    let conditional=cov.view((0,0),(6,6)).into_owned()-&cross*cross.transpose()/cov[(6,6)];
+    let Some(factor)=conditional.cholesky() else{return 0;};let factor=factor.l();
+    let make=|x:&DVector<f64>| {let mut q=seed.clone();q.rows_mut(0,6).copy_from(x);q[6]=radius;q};
+    let logp=|x:&DVector<f64>|c.logp(v,make(x).as_slice());
+    let plain=seed.rows(0,6).into_owned();let delta=radius-seed[6];
+    let shift=-(-std::f64::consts::LN_10*delta).exp_m1()/std::f64::consts::LN_10;
+    let mut best=plain.clone();
+    for start in [plain.clone(),&plain+cross.column(0)*(delta/cov[(6,6)]),
+        &plain+cross.column(0)*(shift/cov[(6,6)])] {
+        if !logp(&start).is_finite(){continue;}
+        let candidate=super::importance::newton_mode(logp,start,&(&factor*4.),seconds);
+        if logp(&candidate)>logp(&best){best=candidate;}
+    }
+    let before=logp(&best);if !before.is_finite(){return 0;}
+    best=super::importance::newton_mode(logp,best,&factor,seconds);
+    let after=logp(&best);let q=make(&best);
+    std::slice::from_raw_parts_mut(result,7).copy_from_slice(q.as_slice());
+    std::slice::from_raw_parts_mut(diagnostics,2).copy_from_slice(&[after,(after-before).max(0.)]);1
+}
+
 /// Fit each pulse's path/envelope and beat jointly, without any trajectory ODE.
 /// This is an adequacy diagnostic, not additional independent trajectory data.
 #[no_mangle] pub unsafe extern "C" fn voltage_cache_pulse_audit(c:*const Cache,v:*const Voltage,
