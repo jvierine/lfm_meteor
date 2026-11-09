@@ -85,7 +85,7 @@ def main():
                     raise ValueError('Profile improves central fit; central optimum must be refit')
             profile.append((radius,value))
             return value-cutoff
-        fields=dict(bootstrap_joint_likelihood_ratio=gains)
+        fields=dict(bootstrap_joint_likelihood_ratio=gains,best_params=center)
         attrs=dict(uncertainty_method='Whole-pulse multiplier-calibrated joint likelihood confidence region',
             Bayesian_credible_interval=False,joint_parameter_count=7,
             nominal_joint_confidence=.95,mass_projection_conservative=True,
@@ -94,6 +94,8 @@ def main():
             source_git_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
             library_sha256=hashlib.sha256(a.library.read_bytes()).hexdigest(),
             source_input_sha256=hashlib.sha256((source/'input.h5').read_bytes()).hexdigest())
+        attrs.update(density_kg_m3=3000.,Gamma=1.,sigma_s2_m2=1e-8,
+            confidence_region='2*(maximum log likelihood - trial log likelihood) <= calibrated cutoff')
         if (source/'truth.h5').exists():
             with h5py.File(source/'truth.h5') as h:truth=h['params'][:]
             attrs['mass_projection_covered']=bool(at(truth[6])<=0)
@@ -102,6 +104,10 @@ def main():
         if a.bounds:
             endpoints=[];limited=[]
             for direction,boundary in [(-1.,-7.),(1.,-2.)]:
+                # A feasible point at the largest tested radius already proves
+                # that no upper bound has been resolved within this domain.
+                if direction>0 and at(boundary)<=0:
+                    endpoints.append(boundary);limited.append(True);continue
                 inside=center[6];outside=None
                 for step in [.01,.03,.1,.3,.6,1.,2.,5.]:
                     trial=float(np.clip(center[6]+direction*step,-7.,-2.))
