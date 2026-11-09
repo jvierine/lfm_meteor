@@ -60,11 +60,21 @@ def main():
         lib.voltage_profile_radius_fit.argtypes=[ct.c_void_p,ct.c_void_p,PTR,PTR,ct.c_double,ct.c_double,PTR,PTR]
         lib.voltage_profile_radius_fit.restype=ct.c_int
         profile=[]
+        solutions=[(float(center[6]),center.copy())]
         def at(radius):
-            params=np.empty(7);diagnostic=np.empty(2)
-            ok=lib.voltage_profile_radius_fit(cache.handle,model.handle,
-                center.ctypes.data_as(PTR),metric.ctypes.data_as(PTR),float(radius),.5,
-                params.ctypes.data_as(PTR),diagnostic.ctypes.data_as(PTR))
+            # Continue from nearby solved profiles, with the original optimum
+            # as an independent start. This avoids numerical branch hopping.
+            nearby=sorted(solutions,key=lambda row:abs(row[0]-radius))[:2]
+            candidates=[]
+            for _,start in nearby+[(float(center[6]),center)]:
+                local_metric=np.ascontiguousarray(covariance(cache,start))
+                trial=np.empty(7);diagnostic=np.empty(2)
+                ok=lib.voltage_profile_radius_fit(cache.handle,model.handle,
+                    np.ascontiguousarray(start).ctypes.data_as(PTR),local_metric.ctypes.data_as(PTR),
+                    float(radius),.5,trial.ctypes.data_as(PTR),diagnostic.ctypes.data_as(PTR))
+                if ok:candidates.append((float(diagnostic[0]),trial,diagnostic.copy()))
+            ok=bool(candidates)
+            if ok:_,params,diagnostic=max(candidates,key=lambda row:row[0])
             if not ok:
                 raise ValueError('Conditional profile failed; cannot treat optimizer failure as exclusion')
             else:
@@ -84,6 +94,7 @@ def main():
                 if value < -.01:
                     raise ValueError('Profile improves central fit; central optimum must be refit')
             profile.append((radius,value))
+            solutions.append((float(radius),params.copy()))
             return value-cutoff
         fields=dict(bootstrap_joint_likelihood_ratio=gains,best_params=center)
         attrs=dict(uncertainty_method='Whole-pulse multiplier-calibrated joint likelihood confidence region',
