@@ -4,6 +4,12 @@ use rustplotlib::*;
 pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let tri = array(h, "tristatic_height_km")?;
     let mono = array(h, "monostatic_height_km")?;
+    let correction_path = std::path::PathBuf::from(h.filename())
+        .parent().unwrap().join("altitude_correction.h5");
+    let correction = hdf5::File::open(correction_path)?;
+    let count = |name: &str| -> Result<i64> {
+        Ok(correction.attr(name)?.read_scalar::<i64>()?)
+    };
     let edges: Vec<_> = (80..=120).map(|i| i as f64).collect();
     let tc = histogram(&tri, &edges);
     let mc = histogram(&mono, &edges);
@@ -22,6 +28,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     a.yticks = vec![80., 90., 100., 110., 120.];
     let mut p = Panel::new(Rect::new(23., 24., 54., 59.), a);
     p.major_grid("#e4e4e4", 0.4);
+    let xmax = p.axes.as_ref().unwrap().xlim[1];
+    rect(&mut p, [0., xmax], [92., 95.], "#777777", 0.10);
     let mut step = vec![[0., 80.]];
     for i in 0..tc.len() {
         rect(
@@ -42,6 +50,15 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     l.padding_mm = 0.;
     l.avoid_data = false;
     p.legend = Some(l);
+    let lines = [
+        format!(r"Events: mono / tri"),
+        format!(r"$N_{{\rm total}}={}/{}$", count("monostatic_events")?, count("tristatic_events")?),
+        format!(r"92--95 km: ${}/{}$", count("monostatic_common_events")?, count("tristatic_common_events")?),
+    ];
+    for (i, text) in lines.iter().enumerate() {
+        let label = Label::new(format!(r"{{\footnotesize {text}}}"), 59., 69. + i as f64 * 4.5);
+        f.labels.push(label);
+    }
     panel_label(&mut f, &p, "(a)");
     f.panels.push(p);
     let mut a = Axes::new([-5., 43.], [80., 120.], "Receiver gain (dBi)", "");
