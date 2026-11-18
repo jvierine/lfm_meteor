@@ -1,0 +1,31 @@
+# Paths may be absolute; relative paths resolve against this configuration file.
+input_glob = "/Volumes/LaCie/SYISR_data/20261117/*.dat*"
+output_dir = "output"
+
+# Header clock is assumed Beijing time. Confirm with the radar operator.
+clock_utc_offset_hours = 8
+# Extra IQ-sized word after the declared payload, observed in November 2026 files.
+trailer_bytes = 8
+# Zero makes malformed boundaries fatal. Recovery is bounded and recorded.
+max_resync_bytes = 300000
+chirp_direction = "down"
+# Do not transplant the April 2024 satellite calibration to this recording.
+delay_correction_us = 0.0
+delay_calibration = "uncalibrated: header gate front only"
+
+# These are apparent MONOSTATIC ranges c*tau/2, not heights.
+min_range_km = 70.0
+max_range_km = 180.0
+# Peak matched-filter power / median matched-filter power in the search window.
+snr_threshold_db = 14.0
+max_gap_ipps = 10
+min_event_pulses = 6
+max_range_rate_km_s = 100.0
+range_slack_km = 0.3
+max_event_duration_s = 5.0
+raw_padding_us = 50.0
+matched_filter_half_width_us = 20.0
+
+# Zero means all. Use CLI overrides for a bounded local pilot.
+max_files = 0
+max_frames_per_file = 0
