@@ -68,3 +68,10 @@ has maximum relative difference 1.89e-7 from Rust output.
 Output directories and raw data are ignored/not committed. A failed initial
 strict pilot remains locally at output-serial-pilot; it has no catalogue.h5.
 The two successful directories contain the final catalogues and event products.
+
+The serial-only release build was independently tested on the same three files
+at output-serial-native. All 147 compared datasets match the MPI output exactly,
+excluding the configuration path and build-revision metadata. Launching this
+serial-only executable with two MPI tasks fails promptly as intended. Both
+build.sh variants work with the local older Bash, including its empty-array
+behavior under nounset.
