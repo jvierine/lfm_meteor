@@ -5,6 +5,9 @@ mod filter;
 #[path = "../src/raw.rs"]
 #[allow(dead_code)]
 mod raw;
+#[path = "../src/rfi.rs"]
+#[allow(dead_code)]
+mod rfi;
 use anyhow::{ensure, Result};
 use num_complex::{Complex32, Complex64};
 use rustplotlib::*;
@@ -31,18 +34,25 @@ fn coherent_candidate(c: &Cell) -> bool {
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
     ensure!(
-        args.len() == 3,
-        "usage: ionosphere PRODUCT_DIRECTORY OUTPUT_PREFIX"
+        args.len() == 3 || args.len() == 5,
+        "usage: ionosphere PRODUCT_DIRECTORY OUTPUT_PREFIX [START_UTC_NS START_FILE]"
     );
-    process(Path::new(&args[1]),&args[2],0,0)?;
+    let start = if args.len() == 5 { args[3].parse()? } else { 0 };
+    let file = if args.len() == 5 { args[4].parse()? } else { 0 };
+    process(Path::new(&args[1]), &args[2], start, file)?;
     Ok(())
 }
-pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i64,usize,u64)> {
+pub fn process(
+    root: &Path,
+    prefix: &str,
+    start_ns: i64,
+    start_file: usize,
+) -> Result<(i64, usize, u64)> {
     let cat = hdf5::File::open(root.join("catalogue.h5"))?;
     let starts = cat.dataset("event_start_utc_ns")?.read_raw::<i64>()?;
     let stops = cat.dataset("event_stop_utc_ns")?.read_raw::<i64>()?;
     let mut epoch = start_ns;
-    let mut last_file=start_file;
+    let mut last_file = start_file;
     let mut grid = vec![Cell::default(); 60 * 400];
     let mut late_power = vec![0.; 60];
     let mut late_count = vec![0u64; 60];
@@ -53,9 +63,21 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
     let mut excluded = 0u64;
     let mut az = 0.;
     let mut el = 0.;
+    let whiten = std::env::var_os("SYISR_WHITEN").is_some();
+    let mut whitening_psd = Vec::new();
+    let mut taps = Vec::new();
+    let mut compressor: Option<filter::Filter> = None;
+    let mut compressor_n = 0;
+    let mut rfi_rejected = 0u64;
+    let mut spectral_shape = Vec::new();
+    let mut base_noise = 0.;
+    let mut spectral_noise_sum = vec![0.; 60];
+    let mut spectral_noise_count = vec![0u64; 60];
     'files: for file_index in start_file..854 {
-        last_file=file_index;
-        let index = hdf5::File::open(root.join(format!("work/pulses_{file_index:06}.h5")))?;
+        last_file = file_index;
+        let index = hdf5::File::with_options()
+            .with_fapl(|p| p.core_filebacked(false))
+            .open(root.join(format!("work/pulses_{file_index:06}.h5")))?;
         let t = index.dataset("pulses/utc_ns")?.read_raw::<i64>()?;
         let offsets = index
             .dataset("pulses/frame_byte_offset")?
@@ -85,6 +107,39 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
             j = prior[j];
         }
         let mut reader = raw::Reader::open(Path::new(&path), 8, 8)?;
+        if whiten && taps.is_empty() {
+            let window_start = if epoch == 0 {
+                *t.iter().zip(&valid).find(|(_, v)| **v).unwrap().0
+            } else {
+                epoch
+            };
+            let mut training = Vec::new();
+            let mut early_training = Vec::new();
+            for i in (0..t.len())
+                .filter(|i| {
+                    valid[*i] && t[*i] >= window_start && t[*i] < window_start + 60_000_000_000
+                })
+                .take(128)
+            {
+                reader.seek(offsets[i])?;
+                let mut fr = reader.next()?.unwrap();
+                rfi::remove_offsets(&mut fr.iq);
+                training.push(rfi::periodogram(&fr.iq));
+                early_training.push(rfi::periodogram(&fr.iq[..rfi::PSD_N]));
+            }
+            if !training.is_empty() {
+                whitening_psd = rfi::robust_psd(&training);
+                spectral_shape = rfi::noise_shape(&whitening_psd);
+                let early = rfi::robust_psd(&early_training);
+                for (late, front) in whitening_psd.iter_mut().zip(early) {
+                    if front > 3. * *late {
+                        *late = front;
+                    }
+                }
+                taps = rfi::whitening_taps(&whitening_psd);
+                rfi::notch_offsets(&mut taps);
+            }
+        }
         for i in 0..t.len() {
             if !valid[i] {
                 continue;
@@ -108,7 +163,7 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
                 continue;
             }
             reader.seek(offsets[i])?;
-            let fr = reader.next()?.unwrap();
+            let mut fr = reader.next()?.unwrap();
             ensure!(fr.header.utc_ns == t[i], "source timestamp mismatch");
             ensure!(
                 (fr.header.ipp_us - 5000.).abs() < 1.,
@@ -116,18 +171,65 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
             );
             az = fr.header.az_deg;
             el = fr.header.el_deg;
+            let mut pulse_scale = 1.;
+            if whiten {
+                rfi::remove_offsets(&mut fr.iq);
+                let spectrum = rfi::periodogram(&fr.iq);
+                let (scale, iqr) = rfi::spectral_scale(&spectrum, &spectral_shape);
+                pulse_scale = scale as f64;
+                if !scale.is_finite() || scale <= 0. || iqr / scale < 0.65 || iqr / scale > 1.5 {
+                    rfi_rejected += 1;
+                    previous = None;
+                    continue;
+                }
+                let mut floor = whitening_psd.clone();
+                let level = rfi::median(&mut floor);
+                if spectrum
+                    .iter()
+                    .zip(&whitening_psd)
+                    .any(|(p, b)| *p > 100. * b.max(0.2 * level))
+                {
+                    rfi_rejected += 1;
+                    previous = None;
+                    continue;
+                }
+            }
             let mut powers: Vec<_> = fr.iq.iter().map(|z| z.norm_sqr()).collect();
             let noise = filter::median(&mut powers) as f64 / 2f64.ln() * 800.;
-            let mut f = filter::Filter::new(fr.iq.len(), true);
-            let y = f.apply(&fr.iq);
+            if compressor_n != fr.iq.len() {
+                compressor = Some(if whiten {
+                    filter::Filter::whitened(fr.iq.len(), true, &taps)
+                } else {
+                    filter::Filter::new(fr.iq.len(), true)
+                });
+                compressor_n = fr.iq.len();
+                if whiten {
+                    base_noise = compressor.as_ref().unwrap().noise_power(&spectral_shape);
+                }
+            }
+            let noise = if whiten {
+                base_noise * pulse_scale
+            } else {
+                noise
+            };
+            let y = compressor.as_mut().unwrap().apply(&fr.iq);
             let second = ((t[i] - epoch) / 1_000_000_000) as usize;
+            if whiten {
+                spectral_noise_sum[second] += noise;
+                spectral_noise_count[second] += 1;
+            }
             let mask: Vec<_> = y
                 .iter()
-                .map(|z| (z.norm_sqr() as f64) < 100. * noise)
+                .enumerate()
+                .map(|(j, z)| {
+                    (z.norm_sqr() as f64) < 100. * noise
+                        && (!whiten || (j >= 256 && j + 256 < y.len()))
+                })
                 .collect();
             // Last 200 us of valid full-pulse matched-filter lags. The recorder
             // does not extend to the literal end of the 5 ms IPP.
-            for j in y.len().saturating_sub(800)..y.len() {
+            let guard = if whiten { 256 } else { 0 };
+            for j in y.len().saturating_sub(800 + guard)..y.len() - guard {
                 if mask[j] {
                     late_power[second] += y[j].norm_sqr() as f64;
                     late_count[second] += 1;
@@ -167,6 +269,59 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
     let mut result = vec![Cell::default(); 400];
     let mut rejected = vec![0u64; 400];
     let mut sec_reject = vec![0u8; 60 * 400];
+    let profiles: Vec<_> = grid
+        .iter()
+        .map(|c| if c.n > 0 { c.p / c.n as f64 } else { f64::NAN })
+        .collect();
+    let med = |v: &[f64]| {
+        let mut x: Vec<_> = v.iter().filter(|v| v.is_finite()).copied().collect();
+        x.sort_by(f64::total_cmp);
+        if x.is_empty() {
+            f64::NAN
+        } else {
+            x[x.len() / 2]
+        }
+    };
+    let mut candidate = vec![false; 60 * 400];
+    let mut strong = candidate.clone();
+    for s in 0..60 {
+        for b in 0usize..400 {
+            let j = s * 400 + b;
+            let local = med(&profiles[s * 400 + b.saturating_sub(8)..s * 400 + (b + 9).min(400)]);
+            let deviations: Vec<_> = profiles
+                [s * 400 + b.saturating_sub(8)..s * 400 + (b + 9).min(400)]
+                .iter()
+                .map(|v| (v - local).abs())
+                .collect();
+            let scale = if spectral_noise_count[s] > 0 {
+                spectral_noise_sum[s] / spectral_noise_count[s] as f64
+            } else {
+                local
+            };
+            candidate[j] =
+                profiles[j] > local + (0.05 * scale).max(4.5 * 1.4826 * med(&deviations));
+            strong[j] = profiles[j] > local + 0.25 * scale;
+        }
+    }
+    for s in 0usize..60 {
+        for b in 0usize..400 {
+            if candidate[s * 400 + b] {
+                let adjacent = [s.checked_sub(1), if s < 59 { Some(s + 1) } else { None }]
+                    .into_iter()
+                    .flatten()
+                    .any(|t| {
+                        (b.saturating_sub(5)..(b + 6).min(400)).any(|k| candidate[t * 400 + k])
+                    });
+                if adjacent || strong[s * 400 + b] {
+                    for t in s.saturating_sub(1)..(s + 2).min(60) {
+                        for k in b.saturating_sub(2)..(b + 3).min(400) {
+                            sec_reject[t * 400 + k] = 2;
+                        }
+                    }
+                }
+            }
+        }
+    }
     for s in 0..60 {
         for b in 0..400 {
             let c = &grid[s * 400 + b];
@@ -174,6 +329,10 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
             if coherent_candidate(c) {
                 rejected[b] += 1;
                 sec_reject[s * 400 + b] = 1;
+                continue;
+            }
+            if sec_reject[s * 400 + b] != 0 {
+                rejected[b] += 1;
                 continue;
             }
             let r = &mut result[b];
@@ -185,8 +344,37 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
             r.variance += c.variance;
         }
     }
-    if used==0 {return Ok((epoch,last_file,0));}
+    if used == 0 {
+        return Ok((epoch, last_file, 0));
+    }
     let out = hdf5::File::create(format!("{prefix}.h5"))?;
+    out.new_dataset_builder()
+        .with_data(&[u8::from(whiten)])
+        .create("spectral_whitening_applied")?;
+    out.new_dataset_builder()
+        .with_data(&[rfi_rejected])
+        .create("transient_rfi_pulses_rejected")?;
+    if whiten {
+        let spectral_noise: Vec<_> = spectral_noise_sum
+            .iter()
+            .zip(&spectral_noise_count)
+            .map(|(p, n)| if *n > 0 { p / *n as f64 } else { f64::NAN })
+            .collect();
+        out.new_dataset_builder()
+            .with_data(&spectral_noise)
+            .create("robust_spectral_noise_power_by_second")?;
+        out.new_dataset_builder().with_data(b"Median of late-window periodogram / robust spectral shape divided by ln(2); IQR/ln(3) consistency check. Noise covariance propagated as sum |S*|G|^2|^2 PSD / FFT length. Spectral shape is 17-bin median of median-over-pulse PSD. DC/Nyquist robust offsets fitted across full raw gate; smooth finite FIR has exact DC/Nyquist zeros.").create("spectral_noise_method_utf8")?;
+        out.new_dataset_builder()
+            .with_data(&whitening_psd)
+            .create("robust_training_psd")?;
+        out.new_dataset_builder()
+            .with_data(&taps.iter().map(|v| v.re).collect::<Vec<_>>())
+            .create("whitening_fir_real")?;
+        out.new_dataset_builder()
+            .with_data(&taps.iter().map(|v| v.im).collect::<Vec<_>>())
+            .create("whitening_fir_imag")?;
+        out.new_dataset_builder().with_data(b"Late 1024 raw samples; robust complex DC and alternating-sample Nyquist fit removed per pulse; median periodograms from up to 128 training pulses; 257-tap Hann-tapered FIR applied identically to data and reference through squared frequency response; linear padding, 256-lag guards. Late-window spectral excursions >100 times training PSD reject pulse. Training uses first eligible pulses of this minute.").create("whitening_method_utf8")?;
+    }
     let mut snr = Vec::new();
     let mut phase = Vec::new();
     let mut freq = Vec::new();
@@ -453,7 +641,7 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
             bounds[1]
         };
         let mut p = Panel::new(
-            Rect::new(27., 7. + row as f64 * 43., 135., 32.),
+            Rect::new(33., 7. + row as f64 * 43., 129., 32.),
             Axes::new([80., 140.], [bounds[0], max], "Slant range (km)", label),
         );
         p.push(Layer::Line(Line::new(
@@ -467,13 +655,15 @@ pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i6
         )));
         fig.panels.push(p);
     }
-    fig.save(format!("{prefix}.png"))?;
+    if std::env::var_os("SYISR_NO_PROFILE_PLOTS").is_none() {
+        fig.save(format!("{prefix}.png"))?;
+    }
     println!("used={used}, meteor-excluded={excluded}, coherent candidate blocks={}, significant phase bins={}",rejected.iter().sum::<u64>(),freq.iter().filter(|v|v.is_finite()).count());
     println!(
         "off-echo-subtracted bins above diagnostic threshold: {}",
         residual_frequency.iter().filter(|f| f.is_finite()).count()
     );
-    Ok((epoch,last_file,used))
+    Ok((epoch, last_file, used))
 }
 
 #[cfg(test)]

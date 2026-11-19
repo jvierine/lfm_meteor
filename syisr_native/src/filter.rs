@@ -23,16 +23,50 @@ pub struct Filter {
     reference: Vec<Complex32>,
     work: Vec<Complex32>,
     scratch: Vec<Complex32>,
+    pub reference_energy: f64,
 }
 impl Filter {
+    /// Expected compressed noise variance from an unshifted raw-sample PSD.
+    /// PSD entries have units of raw complex-sample power (not power/Hz).
+    pub fn noise_power(&self, psd: &[f32]) -> f64 {
+        self.reference
+            .iter()
+            .enumerate()
+            .map(|(j, s)| {
+                let x = j as f64 * psd.len() as f64 / self.len as f64;
+                let k = x.floor() as usize;
+                let t = x - k as f64;
+                s.norm_sqr() as f64
+                    * ((1. - t) * psd[k % psd.len()] as f64 + t * psd[(k + 1) % psd.len()] as f64)
+            })
+            .sum::<f64>()
+            / self.len as f64
+    }
     pub fn new(n: usize, down: bool) -> Self {
-        let len = (n + PULSE_SAMPLES - 1).next_power_of_two();
+        Self::whitened(n, down, &[Complex32::new(1., 0.)])
+    }
+    /// Correlate Wz with Ws using the same finite linear whitening filter.
+    /// Both whitening phases cancel; extra padding prevents circular leakage.
+    pub fn whitened(n: usize, down: bool, taps: &[Complex32]) -> Self {
+        let len = (n + PULSE_SAMPLES + 2 * taps.len() - 3).next_power_of_two();
         let mut plan = FftPlanner::new();
         let fwd = plan.plan_fft_forward(len);
         let inv = plan.plan_fft_inverse(len);
         let mut reference = vec![Complex32::default(); len];
         reference[..PULSE_SAMPLES].copy_from_slice(&chirp(down));
         fwd.process(&mut reference);
+        let mut w = vec![Complex32::default(); len];
+        w[..taps.len()].copy_from_slice(taps);
+        fwd.process(&mut w);
+        let reference_energy = reference
+            .iter()
+            .zip(&w)
+            .map(|(s, w)| s.norm_sqr() as f64 * w.norm_sqr() as f64)
+            .sum::<f64>()
+            / len as f64;
+        for (s, w) in reference.iter_mut().zip(&w) {
+            *s *= w.norm_sqr();
+        }
         let scratch = vec![
             Complex32::default();
             fwd.get_inplace_scratch_len()
@@ -45,6 +79,7 @@ impl Filter {
             reference,
             work: vec![Complex32::default(); len],
             scratch,
+            reference_energy,
         }
     }
     // y[k] = sum_j z[k+j] conj(s[j]); k is the echo-envelope start sample.

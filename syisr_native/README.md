@@ -93,6 +93,21 @@ excluded. Range bins are 2 km; plotted altitude uses recorded elevation and a
 retains the power, counts, rejection masks, noise-window delays and pulse-pair
 diagnostics. The pilot does not establish a de-aliased ionospheric velocity.
 
+Full experimental reduction with spectral noise estimation and whitening:
+
+```sh
+SYISR_WHITEN=1 SYISR_NO_PROFILE_PLOTS=1 cargo run --release --locked \
+  --example ionosphere_full -- /data/products/sanya-20261117 /data/products/ionosphere-whitened
+```
+
+Use a new output directory. This is separate from the meteor catalogue.
+Late-window PSD median/ln(2) and IQR/ln(3) estimates are checked for consistency;
+the noise spectrum is propagated through the actual compression filter.
+Voltage and chirp receive identical finite-FIR whitening, with DC/Nyquist
+removal and edge guards. Localized interference and moving-scatter masks are
+saved in minute files. The RTI updates every minute. Power is not calibrated
+temperature or electron density.
+
 To independently replay a raw-voltage cut and compare zero-Doppler filtering
 with Doppler predicted from its fitted range migration:
 

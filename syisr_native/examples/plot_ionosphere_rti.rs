@@ -14,7 +14,7 @@ fn main() -> Result<()> {
     let counts = h.dataset("block_sample_count")?.read_raw::<u64>()?;
     let mask = h.dataset("coherent_candidate_mask")?.read_raw::<u8>()?;
     let background = h
-        .dataset("late_gate_noise_power_by_second")?
+        .dataset(if h.link_exists("robust_spectral_noise_power_by_second"){"robust_spectral_noise_power_by_second"}else{"late_gate_noise_power_by_second"})?
         .read_raw::<f64>()?;
     let ranges = h.dataset("slant_range_km")?.read_raw::<f64>()?;
     let pointing = h.dataset("tx_azimuth_elevation_deg")?.read_raw::<f64>()?;
