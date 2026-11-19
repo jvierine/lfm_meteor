@@ -1,9 +1,8 @@
 use crate::{
-    config::Config, finalize, group_events, noise, part_path, pulses_read, track, write_event,
-    Pulse,
+    config::Config, finalize, group_events, noise, open_index, part_path, pulses_read, track,
+    write_event, Pulse,
 };
 use anyhow::{ensure, Context, Result};
-use hdf5::File;
 use std::{collections::VecDeque, path::PathBuf};
 
 struct Chunk {
@@ -39,7 +38,7 @@ impl<'a> Live<'a> {
     }
     pub fn poll(&mut self) -> Result<bool> {
         while self.loaded < self.files.len() && part_path(self.c, self.loaded).exists() {
-            let f = File::open(part_path(self.c, self.loaded)).with_context(|| {
+            let f = open_index(&part_path(self.c, self.loaded)).with_context(|| {
                 format!("reading index {}", part_path(self.c, self.loaded).display())
             })?;
             let mut rows = pulses_read(&f.group("pulses")?)?;

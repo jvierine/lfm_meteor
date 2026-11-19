@@ -240,6 +240,16 @@ fn modified_ns(path: &Path) -> Result<u64> {
         .as_nanos()
         .try_into()?)
 }
+fn open_index(path: &Path) -> Result<File> {
+    // Immutable small indexes are loaded once, avoiding tiny random HDD reads.
+    if path.metadata()?.len() <= 64 * 1024 * 1024 {
+        Ok(File::with_options()
+            .with_fapl(|p| p.core_filebacked(false))
+            .open(path)?)
+    } else {
+        Ok(File::open(path)?)
+    }
+}
 fn verify_config(f: &File, c: &Config, allow_build_change: bool) -> Result<()> {
     let mut old: Config = toml::from_str(&String::from_utf8(
         f.dataset("config_toml_utf8")?.read_raw::<u8>()?,
@@ -262,7 +272,7 @@ fn reusable(c: &Config, path: &Path, index: usize, allow_build_change: bool) -> 
     if !part.exists() {
         return Ok(false);
     }
-    let f = File::open(part)?;
+    let f = open_index(&part)?;
     verify_config(&f, c, allow_build_change)?;
     ensure!(
         String::from_utf8(f.dataset("source_path_utf8")?.read_raw::<u8>()?)?
@@ -1087,6 +1097,15 @@ mod tests {
         }
         assert_eq!(n.dataset("pulses/utc_ns").unwrap().size(), 16);
         let inputs = c.files().unwrap();
+        let native = File::open(part_path(&c, 0)).unwrap();
+        let core = open_index(&part_path(&c, 0)).unwrap();
+        let a = pulses_read(&native.group("pulses").unwrap()).unwrap();
+        let b = pulses_read(&core.group("pulses").unwrap()).unwrap();
+        assert!(a.iter().zip(&b).all(|(a, b)| a.utc == b.utc
+            && a.offset == b.offset
+            && a.snr.to_bits() == b.snr.to_bits()
+            && a.noise.to_bits() == b.noise.to_bits()
+            && a.raw_noise.to_bits() == b.raw_noise.to_bits()));
         assert!(reusable(&c, &inputs[0], 0, false).unwrap());
         let mut different = c.clone();
         different.snr_threshold_db += 1.;
