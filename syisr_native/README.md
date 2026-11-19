@@ -6,6 +6,8 @@ plots. Use the same program at Sanya, Danzhou and Wenchang. Python and MATLAB ar
 not required. The older tri-static analysis elsewhere in this repository is
 unchanged.
 
+**Start here: [Linux Quick Start](LINUX.md)** for installation, build and run commands.
+
 Cuts and plots are published **during processing**, once enough neighbouring
 data are ready to cover an event and its padding. MPI rank zero coordinates
 extraction/plotting while the other ranks scan files. A serial run publishes
@@ -54,8 +56,12 @@ The assumed header clock is Beijing time (UTC+8); confirm with the operator.
 target/release/syisr-native inspect /data/Sanya/20261117/first-file.dat1-1-0
 
 # Full dataset: no --max-files or --max-frames limits.
-mpirun -np 8 target/release/syisr-native process --config sanya.toml
+target/release/syisr-native process --config sanya.toml
 ```
+
+For fast storage and an MPI build, use
+`mpirun -np 4 target/release/syisr-native process --config sanya.toml`.
+Prefer a single process when reading one mechanical hard disk.
 
 A bounded test can add `--max-files 3 --output /data/products/pilot`.
 `--event-output /another/disk/event-cuts` places voltage cuts separately from
