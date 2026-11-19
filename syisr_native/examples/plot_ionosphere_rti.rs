@@ -47,42 +47,7 @@ fn main() -> Result<()> {
     let mut f = Figure::new(IntendedUse::ArticleWide);
     f.width_mm = 160.;
     f.height_mm = 95.;
-    // Storm RGB control points, peepomap 0.2.2 (MIT). Native interpolation:
-    // https://pypi.org/project/peepomap/ ; no Matplotlib runtime is used.
-    let storm = ColorMap::new(vec![
-        [0.2, 0.2, 0.7],
-        [0.4, 0.3, 0.9],
-        [0.5, 0.5, 1.0],
-        [0.7, 0.6, 1.0],
-        [0.8, 0.8, 1.0],
-        [1.0, 0.9, 0.9],
-        [1.0, 0.6, 0.6],
-        [0.9, 0.4, 0.4],
-        [0.8, 0.2, 0.2],
-        [0.6, 0.0, 0.0],
-        [0.9, 0.1, 0.0],
-        [1.0, 0.2, 0.0],
-        [1.0, 0.4, 0.0],
-        [1.0, 0.6, 0.0],
-        [1.0, 0.8, 0.2],
-        [1.0, 0.9, 0.5],
-        [1.0, 1.0, 0.7],
-        [0.9, 1.0, 1.0],
-        [0.6, 0.8, 1.0],
-        [0.3, 0.6, 1.0],
-        [0.2, 0.5, 0.9],
-        [0.1, 0.4, 0.8],
-        [0.0, 0.3, 0.7],
-        [0.0, 0.5, 0.0],
-        [0.1, 0.7, 0.1],
-        [0.3, 0.9, 0.3],
-        [0.6, 1.0, 0.5],
-        [0.8, 1.0, 0.7],
-        [0.4, 0.4, 0.4],
-        [0.6, 0.6, 0.6],
-        [0.7, 0.7, 0.7],
-        [0.9, 0.9, 0.9],
-    ])?;
+    let storm = ColorMap::storm();
     let scale = f.scale(Scale::new([0.95, 1.5], Normalization::Linear, storm)?);
     let start = chrono::DateTime::from_timestamp_nanos(bounds[0]);
     let mut p = Panel::new(
@@ -130,7 +95,7 @@ fn main() -> Result<()> {
         .new_dataset_builder()
         .with_data(&bounds)
         .create("utc_bounds_ns")?;
-    product.new_dataset_builder().with_data(b"Straight ray at recorded elevation; spherical Earth radius 6371 km; site height assumed zero. Approximate geometric altitude, no refraction. Power/noise includes noise; no subtraction. Noise from latest full-pulse matched-filter gates available near end of IPP. Storm control points from peepomap 0.2.2.").create("methods_utf8")?;
+    product.new_dataset_builder().with_data(b"Straight ray at recorded elevation; spherical Earth radius 6371 km; site height assumed zero. Approximate geometric altitude, no refraction. Power/noise includes noise; no subtraction. Noise from latest full-pulse matched-filter gates available near end of IPP. Rustplotlib ColorMap::storm().").create("methods_utf8")?;
     Ok(())
 }
 
