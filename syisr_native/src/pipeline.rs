@@ -104,9 +104,12 @@ impl<'a> Live<'a> {
                 "overlapping valid UTCs in event window"
             );
             let (groups, long) = group_events(self.c, window.clone());
+            let candidates = groups.len();
+            let mut fit_rejections = 0;
             self.long += long;
             for group in groups {
                 let Some(t) = track::fit(self.c, group) else {
+                    fit_rejections += 1;
                     continue;
                 };
                 if t.pulses[0].file != self.owner as u64 {
@@ -134,6 +137,7 @@ impl<'a> Live<'a> {
                 self.events.push(t);
             }
             self.owner += 1;
+            eprintln!("EXTRACT file {}: through {} UTC; {} candidate windows, {} fit rejections, {} events published",self.owner-1,chrono::DateTime::from_timestamp_nanos(last),candidates,fit_rejections,self.events.len());
             let next_first = self
                 .cache
                 .iter()

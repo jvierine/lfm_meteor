@@ -2,6 +2,20 @@ use crate::config::Config;
 use anyhow::{ensure, Context, Result};
 use rustplotlib::*;
 use std::{path::Path, process::Command};
+pub fn render_complete(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    (|| -> std::io::Result<bool> {
+        let mut f = std::fs::File::open(path)?;
+        let mut head = [0; 8];
+        let mut tail = [0; 12];
+        f.read_exact(&mut head)?;
+        f.seek(SeekFrom::End(-12))?;
+        f.read_exact(&mut tail)?;
+        Ok(head == [137, 80, 78, 71, 13, 10, 26, 10]
+            && tail == [0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130])
+    })()
+    .unwrap_or(false)
+}
 
 pub fn check_tools() -> Result<()> {
     for tool in ["latex", "dvisvgm"] {
@@ -127,6 +141,11 @@ pub fn render(path: &Path) -> Result<()> {
     ));
     let dir = path.parent().unwrap().join("plots");
     std::fs::create_dir_all(&dir)?;
-    f.save(dir.join(path.file_stem().unwrap()).with_extension("png"))?;
+    let staging = dir.join(".rendering");
+    std::fs::create_dir_all(&staging)?;
+    let name = Path::new(path.file_stem().unwrap()).with_extension("png");
+    let temp = staging.join(&name);
+    f.save(&temp)?;
+    std::fs::rename(temp, dir.join(name))?;
     Ok(())
 }

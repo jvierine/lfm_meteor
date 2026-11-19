@@ -507,6 +507,47 @@ fn write_event(
     track: &track::Track,
 ) -> Result<()> {
     let dest = c.event_dir().join(format!("event_{index:06}.h5"));
+    if dest.exists() {
+        let reusable = (|| -> Result<bool> {
+            let old = open_index(&dest)?;
+            let previous: Config = toml::from_str(&String::from_utf8(
+                old.dataset("config_toml_utf8")?.read_raw::<u8>()?,
+            )?)?;
+            if toml::to_string(&previous)? != toml::to_string(c)? {
+                return Ok(false);
+            }
+            let same = old.dataset("pulses/utc_ns")?.read_raw::<i64>()?
+                == p.iter().map(|p| p.utc).collect::<Vec<_>>()
+                && old.dataset("pulses/frame_byte_offset")?.read_raw::<u64>()?
+                    == p.iter().map(|p| p.offset).collect::<Vec<_>>()
+                && old.dataset("pulses/source_file_index")?.read_raw::<u64>()?
+                    == p.iter().map(|p| p.file).collect::<Vec<_>>()
+                && old.dataset("track_epoch_utc_ns")?.read_raw::<i64>()?[0] == track.epoch
+                && old.dataset("ransac_inlier")?.read_raw::<u8>()?
+                    == p.iter()
+                        .map(|p| u8::from(track.pulses.iter().any(|t| t.utc == p.utc)))
+                        .collect::<Vec<_>>()
+                && old.dataset("track_range_at_epoch_km")?.read_raw::<f64>()?[0].to_bits()
+                    == track.intercept.to_bits()
+                && old.dataset("track_range_rate_km_s")?.read_raw::<f64>()?[0].to_bits()
+                    == track.rate.to_bits();
+            old.close()?;
+            Ok(same)
+        })()
+        .unwrap_or(false);
+        if reusable {
+            if c.make_plots {
+                #[cfg(feature = "plots")]
+                {
+                    let image = c.event_dir().join(format!("plots/event_{index:06}.png"));
+                    if !plots::render_complete(&image) {
+                        plots::render(&dest)?;
+                    }
+                }
+            }
+            return Ok(());
+        }
+    }
     let tmp = dest.with_extension("h5.partial");
     let f = File::create(&tmp)?;
     metadata(&f, c)?;
@@ -1097,6 +1138,18 @@ mod tests {
         }
         assert_eq!(n.dataset("pulses/utc_ns").unwrap().size(), 16);
         let inputs = c.files().unwrap();
+        let event_path = c.event_dir().join("event_000000.h5");
+        let before = modified_ns(&event_path).unwrap();
+        let fit = track::fit(
+            &c,
+            cuts.iter()
+                .filter(|p| p.snr >= c.snr_threshold_db)
+                .cloned()
+                .collect(),
+        )
+        .unwrap();
+        write_event(&c, &inputs, 0, &cuts, &fit).unwrap();
+        assert_eq!(modified_ns(&event_path).unwrap(), before);
         let native = File::open(part_path(&c, 0)).unwrap();
         let core = open_index(&part_path(&c, 0)).unwrap();
         let a = pulses_read(&native.group("pulses").unwrap()).unwrap();
