@@ -77,6 +77,19 @@ only after processing and extraction finish. Failed jobs exit nonzero.
 
 ## Noise and Plots
 
+To independently replay a raw-voltage cut and compare zero-Doppler filtering
+with Doppler predicted from its fitted range migration:
+
+```sh
+cargo run --release --locked --example replay_cut -- event_cuts/event_000001.h5 replay
+```
+
+This writes `replay.h5` and `replay.png` (blue: zero Doppler; orange: migration
+correction), and checks the replay against the cached complex response.
+It searches delay at a fixed migration-derived Doppler, not a free two-dimensional
+delay/Doppler grid. Range acceleration can bias that Doppler estimate through
+LFM coupling; the example is a diagnostic, not a trajectory refit.
+
 Every normal run calculates noise for **every processed pulse**, not only meteor
 detections. `noise.h5` includes the per-pulse series and 100-pulse averages for
 fitting a sky-noise model. Raw power is in ADC-count-squared units, not kelvin;

@@ -123,6 +123,33 @@ mod tests {
         assert!((y[k].norm() / 800.0 - 0.975).abs() < 0.001);
     }
     #[test]
+    fn doppler_compensation_recovers_echo_for_both_chirps_and_signs() {
+        for down in [true, false] {
+            for fd in [-100000., 100000.] {
+                let mut z = vec![Complex32::default(); 4000];
+                for (j, s) in chirp(down).into_iter().enumerate() {
+                    z[1000 + j] = s * Complex32::from_polar(
+                        1.,
+                        (std::f64::consts::TAU * fd * (1000 + j) as f64 / FS) as f32,
+                    );
+                }
+                for (j, z) in z.iter_mut().enumerate() {
+                    *z *= Complex32::from_polar(
+                        1.,
+                        (-std::f64::consts::TAU * fd * j as f64 / FS) as f32,
+                    );
+                }
+                let mut f = Filter::new(z.len(), down);
+                let y = f.apply(&z);
+                let k = (0..y.len())
+                    .max_by(|a, b| y[*a].norm_sqr().total_cmp(&y[*b].norm_sqr()))
+                    .unwrap();
+                assert_eq!(k, 1000);
+                assert!((y[k].norm() - 800.).abs() < 0.01);
+            }
+        }
+    }
+    #[test]
     fn complex_gaussian_noise_power_normalization() {
         let mut state = 713u32;
         let mut uniform = || {
