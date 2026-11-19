@@ -43,7 +43,7 @@ fn main() -> Result<()> {
             .read_raw::<f64>()?;
         let pointing = h.dataset("tx_azimuth_elevation_deg")?.read_raw::<f64>()?;
         let ranges = h.dataset("slant_range_km")?.read_raw::<f64>()?;
-        let mut row: Vec<f64> = (0..400)
+        let row: Vec<f64> = (0..400)
             .map(|b| {
                 let mut power = 0.;
                 let mut bg = 0.;
@@ -61,20 +61,6 @@ fn main() -> Result<()> {
                 }
             })
             .collect();
-        let original_row = row.clone();
-        for b in 0usize..400 {
-            let mut local: Vec<_> = original_row[b.saturating_sub(8)..(b + 9).min(400)]
-                .iter()
-                .filter(|v| v.is_finite())
-                .copied()
-                .collect();
-            local.sort_by(f64::total_cmp);
-            if !local.is_empty() && original_row[b] > local[local.len() / 2] + 0.025 {
-                for k in b.saturating_sub(2)..(b + 3).min(400) {
-                    row[k] = f64::NAN;
-                }
-            }
-        }
         rows.push(row);
         times.push(start);
         let temporary = dest.join("rti.tmp.h5");
@@ -99,7 +85,7 @@ fn main() -> Result<()> {
         out.new_dataset_builder()
             .with_data(&[u8::from(std::env::var_os("SYISR_WHITEN").is_some())])
             .create("spectral_whitening_applied")?;
-        out.new_dataset_builder().with_data(b"60-second averages, original LFM voltage; meteor and narrow moving-scatter candidates excluded. With SYISR_WHITEN, robust median/IQR late-window PSD is propagated through the whitened matched filter to predict noise variance; otherwise late compressed gates. Residual range-local peaks >0.025 above a 34 km median are masked +/-4 km. No interpolation. Incremental product; complete=0 until run ends. See per-minute spectral/noise metadata and masks.").create("methods_utf8")?;
+        out.new_dataset_builder().with_data(b"60-second robust averages, original LFM voltage; meteor, narrow moving-scatter and temporal outliers excluded before averaging. With SYISR_WHITEN, robust median/IQR late-window PSD is propagated through the whitened matched filter to predict noise variance; otherwise late compressed gates. No cosmetic whole-cell blanking or range interpolation. Incremental product; complete=0 until run ends. See per-minute spectral/noise metadata, accepted counts and rejection masks.").create("methods_utf8")?;
         out.close()?;
         std::fs::rename(&temporary, dest.join("rti.h5"))?;
         let midnight = times[0].div_euclid(86400000000000) * 86400000000000;

@@ -31,6 +31,21 @@ fn coherent_candidate(c: &Cell) -> bool {
         && c.ac.norm() / c.pairs as f64 / (c.p / c.n as f64) > 0.15
         && c.p / c.noise > 1.1
 }
+fn temporal_outliers(values: &[f64]) -> Vec<bool> {
+    let mut sorted: Vec<_> = values.iter().filter(|v| v.is_finite()).copied().collect();
+    if sorted.len() < 10 {
+        return vec![false; values.len()];
+    }
+    sorted.sort_by(f64::total_cmp);
+    let center = sorted[sorted.len() / 2];
+    let mut deviations: Vec<_> = sorted.iter().map(|v| (v - center).abs()).collect();
+    deviations.sort_by(f64::total_cmp);
+    let limit = 4.5 * (1.4826 * deviations[deviations.len() / 2]).max(0.01);
+    values
+        .iter()
+        .map(|v| v.is_finite() && (*v - center).abs() > limit)
+        .collect()
+}
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
     ensure!(
@@ -322,6 +337,23 @@ pub fn process(
             }
         }
     }
+    for b in 0..400 {
+        let values: Vec<_> = (0..60)
+            .map(|s| {
+                let c = &grid[s * 400 + b];
+                if c.n > 0 && c.noise > 0. && sec_reject[s * 400 + b] == 0 {
+                    c.p / c.noise
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
+        for (s, bad) in temporal_outliers(&values).into_iter().enumerate() {
+            if bad {
+                sec_reject[s * 400 + b] = 4;
+            }
+        }
+    }
     for s in 0..60 {
         for b in 0..400 {
             let c = &grid[s * 400 + b];
@@ -348,6 +380,7 @@ pub fn process(
         return Ok((epoch, last_file, 0));
     }
     let out = hdf5::File::create(format!("{prefix}.h5"))?;
+    out.new_dataset_builder().with_data(b"Second/range rejection bits: 1=coherent candidate, 2=range-local moving/strong scatter guard, 4=temporal power/noise outlier. Temporal clipping uses 4.5 MAD sigma, sigma floor 0.01 in power/noise, at least 10 seconds. Average retained samples within minute; no range interpolation, whole-minute replacement, or whole-cell cosmetic blanking.").create("rejection_method_utf8")?;
     out.new_dataset_builder()
         .with_data(&[u8::from(whiten)])
         .create("spectral_whitening_applied")?;
@@ -669,6 +702,16 @@ pub fn process(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporal_rejection_removes_bursts_but_keeps_a_smooth_trend() {
+        let mut v = vec![1.; 60];
+        v[10] = 4.;
+        v[11] = 8.;
+        let bad = temporal_outliers(&v);
+        assert_eq!(bad.iter().filter(|b| **b).count(), 2);
+        let trend: Vec<_> = (0..60).map(|j| 1. + j as f64 / 300.).collect();
+        assert!(temporal_outliers(&trend).iter().all(|b| !*b));
+    }
     #[test]
     fn phase_sign_and_aliases() {
         for (truth, aliased) in [
