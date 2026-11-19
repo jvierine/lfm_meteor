@@ -82,5 +82,11 @@ pulse. `range_padding_truncated` flags gate-edge clipping per pulse, and
 `time_padding_truncated` flags missing coverage at the two requested ends.
 Original counts and arrays are not clipped to hide missing or negative data.
 
+Some recorder files contain a future-dated first header followed by a regular
+pulse sequence. `timing_valid` flags a maximum strictly-increasing subsequence
+within each input file; rejected timestamps are preserved, not reconstructed.
+These frames remain in the per-file power/index product and all-pulse noise
+table, but are excluded from event timing and averaged sky-noise measurements.
+
 Configuration, build version, processed-header hashes and source paths are
 metadata only. No script paths or generator credits are rendered in figures.

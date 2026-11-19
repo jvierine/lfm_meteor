@@ -12,6 +12,9 @@ pub struct NoiseRow {
     az: f64,
     el: f64,
     ipp: f64,
+    valid: u8,
+    file: u64,
+    offset: u64,
 }
 impl From<&Pulse> for NoiseRow {
     fn from(p: &Pulse) -> Self {
@@ -25,15 +28,14 @@ impl From<&Pulse> for NoiseRow {
             az: p.rxaz,
             el: p.rxel,
             ipp: p.ipp,
+            valid: p.timing_valid,
+            file: p.file,
+            offset: p.offset,
         }
     }
 }
 pub fn write(c: &Config, rows: &mut [NoiseRow]) -> Result<()> {
     rows.sort_by_key(|r| r.utc);
-    ensure!(
-        rows.windows(2).all(|r| r[0].utc != r[1].utc),
-        "overlapping timestamps in noise series"
-    );
     let tmp = c.output_dir.join("noise.h5.partial");
     let f = File::create(&tmp)?;
     metadata(&f, c)?;
@@ -63,6 +65,14 @@ pub fn write(c: &Config, rows: &mut [NoiseRow]) -> Result<()> {
     col!("rx_azimuth_deg", az);
     col!("rx_elevation_deg", el);
     col!("ipp_us", ipp);
+    col!("timing_valid", valid);
+    col!("source_file_index", file);
+    col!("frame_byte_offset", offset);
+    let rows: Vec<_> = rows.iter().filter(|r| r.valid == 1).collect();
+    ensure!(
+        rows.windows(2).all(|r| r[0].utc != r[1].utc),
+        "overlapping valid timestamps in noise series"
+    );
     let mut blocks = Vec::new();
     let mut start = 0;
     for i in 1..=rows.len() {

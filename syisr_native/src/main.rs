@@ -4,6 +4,7 @@ mod noise;
 #[cfg(feature = "plots")]
 mod plots;
 mod raw;
+mod timing;
 mod track;
 
 use anyhow::{ensure, Context, Result};
@@ -71,6 +72,9 @@ enum Command {
         /// Reuse verified completed per-file products after interruption.
         #[arg(long)]
         resume: bool,
+        /// Only after confirming numerical compatibility of completed products.
+        #[arg(long)]
+        allow_build_change: bool,
     },
     /// Re-render event HDF5 files without reading raw recordings.
     Plot { events: PathBuf },
@@ -94,6 +98,7 @@ struct Pulse {
     noise_samples: u64,
     rxaz: f64,
     rxel: f64,
+    timing_valid: u8,
 }
 fn dataset<T: H5Type>(g: &Group, name: &str, v: &[T]) -> Result<()> {
     g.new_dataset::<T>()
@@ -116,6 +121,7 @@ fn metadata(f: &File, c: &Config) -> Result<()> {
     textdata(f, "schema_utf8", "syisr-station-v2")?;
     textdata(f, "station_utf8", &c.station)?;
     textdata(f, "range_coordinate_utf8", &c.range_coordinate)?;
+    textdata(f,"timing_quality_utf8","timing_valid selects a maximum strictly-increasing subsequence of original header timestamps within each file. Rejected timestamps are retained with timing_valid=0, excluded from detection and sky-noise averages; timestamps are never reconstructed.")?;
     dataset(f, "range_km_per_delay_us", &[c.km_per_us()])?;
     let instrument = f.create_group("instrument")?;
     dataset(&instrument, "sample_rate_hz", &[FS])?;
@@ -157,6 +163,7 @@ fn pulses_write(g: &Group, p: &[Pulse]) -> Result<()> {
     col!("noise_sample_count", noise_samples);
     col!("rx_azimuth_deg", rxaz);
     col!("rx_elevation_deg", rxel);
+    col!("timing_valid", timing_valid);
     dataset(
         g,
         "total_path_length_km",
@@ -186,6 +193,12 @@ fn pulses_read(g: &Group) -> Result<Vec<Pulse>> {
     let noise_samples = read!("noise_sample_count", u64);
     let rxaz = read!("rx_azimuth_deg", f64);
     let rxel = read!("rx_elevation_deg", f64);
+    // Earlier v2 products passed strict monotonicity checks before being written.
+    let timing_valid = if g.link_exists("timing_valid") {
+        read!("timing_valid", u8)
+    } else {
+        vec![1; utc.len()]
+    };
     Ok((0..utc.len())
         .map(|i| Pulse {
             utc: utc[i],
@@ -204,6 +217,7 @@ fn pulses_read(g: &Group) -> Result<Vec<Pulse>> {
             noise_samples: noise_samples[i],
             rxaz: rxaz[i],
             rxel: rxel[i],
+            timing_valid: timing_valid[i],
         })
         .collect())
 }
@@ -218,7 +232,7 @@ fn modified_ns(path: &Path) -> Result<u64> {
         .as_nanos()
         .try_into()?)
 }
-fn verify_config(f: &File, c: &Config) -> Result<()> {
+fn verify_config(f: &File, c: &Config, allow_build_change: bool) -> Result<()> {
     let mut old: Config = toml::from_str(&String::from_utf8(
         f.dataset("config_toml_utf8")?.read_raw::<u8>()?,
     )?)?;
@@ -232,16 +246,16 @@ fn verify_config(f: &File, c: &Config) -> Result<()> {
         "resume configuration differs from saved processing settings"
     );
     let revision = String::from_utf8(f.dataset("git_revision_utf8")?.read_raw::<u8>()?)?;
-    ensure!(revision==option_env!("SYISR_GIT_REVISION").unwrap_or("unknown"),"resume requires the same build revision; use the original executable or a new output directory");
+    ensure!(allow_build_change || revision==option_env!("SYISR_GIT_REVISION").unwrap_or("unknown"),"resume requires the same build revision; use the original executable or explicitly confirm compatible products with --allow-build-change");
     Ok(())
 }
-fn reusable(c: &Config, path: &Path, index: usize) -> Result<bool> {
+fn reusable(c: &Config, path: &Path, index: usize, allow_build_change: bool) -> Result<bool> {
     let part = part_path(c, index);
     if !part.exists() {
         return Ok(false);
     }
     let f = File::open(part)?;
-    verify_config(&f, c)?;
+    verify_config(&f, c, allow_build_change)?;
     ensure!(
         String::from_utf8(f.dataset("source_path_utf8")?.read_raw::<u8>()?)?
             == path.to_string_lossy(),
@@ -272,11 +286,6 @@ fn process_file(c: &Config, path: &Path, index: usize) -> Result<usize> {
         let Some(fr) = r.next()? else { break };
         let h = &fr.header;
         if let Some(t) = prev_time {
-            ensure!(
-                h.utc_ns > t,
-                "non-increasing timestamps at byte {}",
-                fr.offset
-            );
             if (h.utc_ns - t) as f64 > h.ipp_us * 1500.0 {
                 gap_offsets.push(fr.offset);
                 gap_ns.push(h.utc_ns - t);
@@ -364,7 +373,17 @@ fn process_file(c: &Config, path: &Path, index: usize) -> Result<usize> {
             noise_samples: (nhi - nlo) as u64,
             rxaz: h.rx_az_deg,
             rxel: h.rx_el_deg,
+            timing_valid: 1,
         });
+    }
+    timing::mark(&mut pulses);
+    let rejected: Vec<_> = pulses
+        .iter()
+        .filter(|p| p.timing_valid == 0)
+        .map(|p| p.offset)
+        .collect();
+    if !rejected.is_empty() {
+        eprintln!("WARNING: file {index}: {} temporally inconsistent frames quarantined (original headers retained)",rejected.len());
     }
     let dest = part_path(c, index);
     let temp = dest.with_extension("h5.partial");
@@ -390,6 +409,7 @@ fn process_file(c: &Config, path: &Path, index: usize) -> Result<usize> {
     )?;
     dataset(&f, "timing_gap_before_frame_byte", &gap_offsets)?;
     dataset(&f, "timing_gap_ns", &gap_ns)?;
+    dataset(&f, "timing_rejected_frame_byte_offsets", &rejected)?;
     pulses_write(&f.create_group("pulses")?, &pulses)?;
     f.flush()?;
     drop(f);
@@ -625,9 +645,23 @@ fn merge(c: &Config, files: &[PathBuf]) -> Result<()> {
         let f = File::open(part_path(c, i))?;
         let rows = pulses_read(&f.group("pulses")?)?;
         counts.push(rows.len() as u64);
-        spans.push(rows.first().zip(rows.last()).map(|(a, b)| (a.utc, b.utc)));
+        spans.push(
+            rows.iter()
+                .filter(|p| p.timing_valid == 1)
+                .map(|p| p.utc)
+                .min()
+                .zip(
+                    rows.iter()
+                        .filter(|p| p.timing_valid == 1)
+                        .map(|p| p.utc)
+                        .max(),
+                ),
+        );
         noise_rows.extend(rows.iter().map(noise::NoiseRow::from));
-        pulses.extend(rows.into_iter().filter(|p| p.snr >= c.snr_threshold_db));
+        pulses.extend(
+            rows.into_iter()
+                .filter(|p| p.timing_valid == 1 && p.snr >= c.snr_threshold_db),
+        );
     }
     pulses.sort_by_key(|p| (p.utc, p.file, p.offset));
     ensure!(
@@ -651,7 +685,7 @@ fn merge(c: &Config, files: &[PathBuf]) -> Result<()> {
                 cuts.extend(
                     pulses_read(&f.group("pulses")?)?
                         .into_iter()
-                        .filter(|p| p.utc >= t0 && p.utc <= t1),
+                        .filter(|p| p.timing_valid == 1 && p.utc >= t0 && p.utc <= t1),
                 );
             }
         }
@@ -789,6 +823,7 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
             no_plots,
             noise_only,
             resume,
+            allow_build_change,
         } => {
             let mut c = Config::load(&config)?;
             if let Some(n) = max_files {
@@ -823,7 +858,11 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
             if rank == 0 {
                 if c.output_dir.exists() {
                     ensure!(resume,"output already exists: {}; use --resume with the same configuration and executable",c.output_dir.display());
-                    verify_config(&File::open(c.output_dir.join("run.h5"))?, &c)?;
+                    verify_config(
+                        &File::open(c.output_dir.join("run.h5"))?,
+                        &c,
+                        allow_build_change,
+                    )?;
                 } else {
                     ensure!(
                         !c.event_dir().exists(),
@@ -846,7 +885,7 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
             }
             barrier();
             for (i, p) in files.iter().enumerate().filter(|(i, _)| i % size == rank) {
-                if resume && reusable(&c, p, i)? {
+                if resume && reusable(&c, p, i, allow_build_change)? {
                     continue;
                 }
                 process_file(&c, p, i).with_context(|| format!("{}", p.display()))?;
@@ -930,6 +969,7 @@ mod tests {
                 noise_samples: 1000,
                 rxaz: 15.,
                 rxel: 75.,
+                timing_valid: 1,
             });
         }
         let (e, l) = group_events(&c, p.clone());
@@ -991,6 +1031,7 @@ mod tests {
                 no_plots: true,
                 noise_only: false,
                 resume: false,
+                allow_build_change: false,
             },
         };
         run(cli, 0, 1, || {}).unwrap();
@@ -1044,17 +1085,17 @@ mod tests {
         let n = File::open(c.output_dir.join("noise.h5")).unwrap();
         assert_eq!(n.dataset("pulses/utc_ns").unwrap().size(), 16);
         let inputs = c.files().unwrap();
-        assert!(reusable(&c, &inputs[0], 0).unwrap());
+        assert!(reusable(&c, &inputs[0], 0, false).unwrap());
         let mut different = c.clone();
         different.snr_threshold_db += 1.;
-        assert!(reusable(&different, &inputs[0], 0).is_err());
+        assert!(reusable(&different, &inputs[0], 0, false).is_err());
         std::fs::OpenOptions::new()
             .append(true)
             .open(&inputs[0])
             .unwrap()
             .write_all(&[0])
             .unwrap();
-        assert!(reusable(&c, &inputs[0], 0).is_err());
+        assert!(reusable(&c, &inputs[0], 0, false).is_err());
     }
     #[test]
     fn init_remote_and_delay_coordinates() {

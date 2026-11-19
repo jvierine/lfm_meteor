@@ -123,6 +123,7 @@ mod tests {
                 noise_samples: 1000,
                 rxaz: 15.,
                 rxel: 75.,
+                timing_valid: 1,
             })
             .collect();
         let t = fit(&c, p).unwrap();
