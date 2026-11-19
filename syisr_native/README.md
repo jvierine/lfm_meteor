@@ -1,136 +1,107 @@
-# Sanya Monostatic LFM Processor
+# SYISR Station Meteor Processing
 
-Rust-only binary reader, analytic LFM matched filter, pulse detector and meteor-event
-extractor for the November 2026 Sanya recordings. No MATLAB, Python or intermediate
-MAT files are needed. MPI distributes input files; events are joined across file
-and rank boundaries after processing.
+One Rust program reads station binary recordings, detects linear meteor tracks,
+saves continuous voltage cuts, calculates system-noise power, and makes event
+plots. Use the same program at Sanya, Danzhou and Wenchang. Python and MATLAB are
+not required. The older tri-static analysis elsewhere in this repository is
+unchanged.
 
 ## Build
 
-Install a current stable Rust toolchain, a C compiler, `pkg-config`, and HDF5
-development libraries. MPI builds also need MPI development libraries, `mpicc`,
-and libclang (used when generating the MPI bindings).
+Install current stable Rust, a C compiler, `pkg-config` and HDF5 development
+libraries. MPI also needs `mpicc` and libclang. Plots use Rustplotlib, fetched
+automatically at the pinned version in Cargo.lock, plus `latex` and `dvisvgm`.
 
 ```sh
 cd syisr_native
-bash build.sh                    # serial executable
-cargo test --locked
-bash build.sh --mpi              # replaces it with the MPI-enabled executable
+bash build.sh --mpi             # omit --mpi for a serial-only build
 cargo test --locked --features mpi
 ```
 
-Build on the CentOS cluster itself, after loading its compiler, HDF5, Rust and
-MPI modules. Do not copy a macOS executable there. Use the same MPI installation
-to build and launch. An MPI-enabled executable also works without `mpirun`.
-No parallel-HDF5 installation is required: each worker writes separate files.
+Build on the CentOS cluster after loading its compiler, Rust, HDF5, MPI and LLVM
+modules. Module names differ by cluster. Set `PKG_CONFIG_PATH` for HDF5 and
+`LIBCLANG_PATH` for LLVM if necessary. Build and launch with the same MPI
+installation. No parallel-HDF5 installation is needed. Do not copy a macOS
+executable to Linux. The cluster itself has not yet been tested.
 
-For example, adapting module names to the cluster:
+For offline builds, prepare `cargo vendor --locked vendor` and its printed Cargo
+source configuration on a connected machine before transferring the checkout.
+No separate Rustplotlib checkout or machine-specific path dependency is needed.
 
-```sh
-module load gcc rust hdf5 openmpi llvm
-export MPI_CC="$(command -v mpicc)"
-# If necessary, point these at the cluster's installation directories:
-# export PKG_CONFIG_PATH=/path/to/hdf5/lib/pkgconfig:$PKG_CONFIG_PATH
-# export LIBCLANG_PATH=/path/to/llvm/lib
-# export LD_LIBRARY_PATH=/path/to/hdf5/lib:/path/to/mpi/lib:$LD_LIBRARY_PATH
-bash build.sh --mpi
-```
+## Run a Dataset
 
-The lockfile fixes dependency versions; the build does not enable host-specific
-CPU instructions. Local tests use macOS; a CentOS build still needs to be checked
-on the target cluster. For a cluster without internet access, run `cargo vendor
---locked vendor` on a connected machine and follow its printed Cargo source
-configuration instructions before transferring the checkout and vendor directory.
-
-## Configure and Run
-
-Edit `config.toml`. It is the complete configuration; unknown keys are errors.
-Relative paths in it resolve against the configuration file. Set the input glob
-and a new output directory. Existing output directories are never overwritten.
+Create a configuration, quoting the input glob so the program expands it:
 
 ```sh
-target/release/syisr-native inspect \
-  /Volumes/LaCie/SYISR_data/20261117/SY_2026_11_17_19_44_50.dat1-1-0
-
-# A bounded pilot: two files, at most 1000 pulses per file.
-target/release/syisr-native process --config config.toml \
-  --max-files 2 --max-frames 1000 --output output-pilot
-
-# Full recording, distributed by file. Remove the pilot limits.
-mpirun -np 8 target/release/syisr-native process --config config.toml
+target/release/syisr-native init --station sanya \
+  --input '/data/Sanya/20261117/*.dat*' \
+  --output /data/products/sanya-20261117 --config sanya.toml
 ```
 
-For Slurm, use the cluster's recommended MPI launcher (`srun` or `mpirun`).
-`cluster.slurm` is a starting point. All ranks need the same input paths and a
-shared output directory. A serial build refuses a multi-task launcher. Worker
-errors abort the MPI job rather than leaving other ranks at a barrier. A failed
-run has no final `catalogue.h5`; rerun into a fresh output directory.
+Use `--station danzhou` or `--station wenchang` for a remote receiver. Generated
+remote configurations use total transmitter-target-receiver path length, not
+monostatic range. Review the input/output paths, clock offset, search interval
+and hardware-delay calibration. All remaining settings have working defaults.
+The assumed header clock is Beijing time (UTC+8); confirm with the operator.
 
-The shipped example assumes a Beijing-time header clock (UTC+8). Confirm this
-with the operator; filenames are not timestamps. The delay correction defaults
-to zero and is explicitly marked **uncalibrated**. Set a measured hardware-delay
-correction before interpreting absolute ranges. The old experiment's correction
-is not automatically applied.
+```sh
+# Check the recording metadata first.
+target/release/syisr-native inspect /data/Sanya/20261117/first-file.dat1-1-0
 
-## Products
+# Full dataset: no --max-files or --max-frames limits.
+mpirun -np 8 target/release/syisr-native process --config sanya.toml
+```
 
-All numerical products are HDF5. Configuration, version, source paths and
-scientific conventions are embedded as metadata datasets, not plotted credits.
-Names ending `_utf8` contain UTF-8 bytes. Times are signed UTC nanoseconds since
-1970-01-01. Indexes and sample numbers are zero-based.
+A bounded test can add `--max-files 3 --output /data/products/pilot`.
+`--event-output /another/disk/event-cuts` places voltage cuts separately from
+the summaries and noise series. Output directories must be new; nothing is
+overwritten in a fresh run. To resume an interrupted job, repeat the same command
+with `--resume`, using the same executable: completed file products are verified
+against the configuration and source file size/mtime before reuse. Do not change
+processing settings during a resume. `cluster.slurm` is a launcher example. All workers need the same
+input paths and shared output directories. The final `catalogue.h5` is written
+only after processing and extraction finish. Failed jobs exit nonzero.
 
-- `pulses_NNNNNN.h5`: every processed pulse's timestamp, source byte offset,
-  peak lag, apparent delay/range, SNR, noise power, IPP and pointing. These files
-  also record input size and a SHA-256 of the processed headers, not the full IQ.
-- `catalogue.h5`: event start/stop, pulse counts, peak SNR and median apparent
-  range, input manifest, processed counts and rejected overlong-track count.
-  Its presence means the run completed, including event extraction.
-- `events/event_NNNNNN.h5`: retained detections, signed raw IQ cuts with padding,
-  exact frame headers, and complex matched-filter cuts around the peak.
+## Noise and Plots
 
-In event files, `raw/iq_words_iq` alternates recorder I then Q int32 words.
-The supplied reference readers define complex voltage as **Q + i I**; so does
-this program. `raw/pulse_offsets` indexes IQ pairs, not individual int32 words.
-For pulse `k`, its cut occupies pairs `[offset[k], offset[k+1])`; the first
-original sample is `raw/first_sample[k]`. `raw/frame_headers_u8` contains 1024
-bytes per retained pulse. The matched-filter arrays use their own ragged offsets
-and first-lag samples. Raw cut padding is clipped at the recording boundaries.
-The offsets describe the actual lengths; do not assume all cuts are equal.
+Every normal run calculates noise for **every processed pulse**, not only meteor
+detections. `noise.h5` includes the per-pulse series and 100-pulse averages for
+fitting a sky-noise model. Raw power is in ADC-count-squared units, not kelvin;
+no sky fit or receiver-temperature calibration is applied by this program.
 
-## Measurement Conventions
+```sh
+# Faster full-dataset noise run: skips matched filtering and detection.
+mpirun -np 8 target/release/syisr-native process --config sanya.toml \
+  --noise-only --output /data/products/sanya-noise
 
-Supported layout: little-endian 1024-byte headers, one DBF beam, 430 MHz carrier,
-4 MHz sampling, 4 MHz LFM bandwidth and 200 microsecond pulses. The chirp direction
-is explicit in the configuration because the header does not establish it.
-The observed November files have an extra eight bytes after the declared IQ
-payload. These bytes are skipped, not counted as declared samples. The setting
-is configurable. Unexpected markers trigger a bounded search for the next header
-with valid start and end markers; skipped byte ranges and subsequent timing gaps
-are recorded in each pulse file. Set `max_resync_bytes` to zero for strict
-processing. Unrecoverable boundaries, unsupported modes, invalid clocks and
-truncated frames stop processing. IQ values resembling a header marker alone
-do not create spurious frames.
+# A cluster without TeX can extract first, then plot the HDF5 files elsewhere.
+mpirun -np 8 target/release/syisr-native process --config sanya.toml --no-plots
+target/release/syisr-native plot /data/products/sanya-20261117/event_cuts
+```
 
-The analytic reference matches the 200-microsecond detection reference in
-`matched_filter.py`:
-`s(t) = exp[2 pi i (B t/2 - B t^2/(2 T))]`, inside the pulse, zero outside.
-The valid correlation is `y[k] = sum_j z[k+j] conj(s[j])`; lag `k` is the
-echo-envelope start, with no hidden convolution centering correction. The
-measured delay is `gate_front_us + k/fs + delay_correction_us` (with consistent
-units), and apparent **monostatic range** is `c*delay/2`, never altitude.
-Doppler displaces this zero-Doppler correlation peak; these outputs do not yet
-correct range-Doppler ambiguity or estimate a three-dimensional trajectory.
+Noise-only output marks matched-filter quantities as unavailable (NaN), rather
+than reporting zero power. A build without plot dependencies is also possible:
+`cargo build --release --locked --no-default-features --features mpi`; use
+`--no-plots` with that executable.
 
-SNR is `10 log10(peak power / median power)` over the configured valid search
-lags. This retains the legacy median-noise convention; it is not a mean-noise
-SNR. The default threshold is 14 dB. Noise power is in unnormalized
-matched-filter ADC-count-squared units. Each pulse contributes its largest peak;
-simultaneous weaker echoes are not searched separately.
+## What Is Saved
 
-Consecutive detections form a candidate event if their time separation,
-apparent-range change, IPP and pointing satisfy the configured limits. Tracks
-shorter than the minimum pulse count or longer than the maximum duration are
-discarded. Grouping uses UTC order across all files, not MPI rank. These are
-**candidate meteor events**: persistent clutter, interference and satellites
-still need scientific screening. No calibrated RCS, mass or orbit is inferred
-from monostatic detection alone.
+- `pulses_NNNNNN.h5`: all pulse times, binary offsets, gate-start delays,
+  matched-filter peaks, noise powers and transmitter/receiver pointing.
+- `noise.h5`: all-pulse noise series and averages, including receiver pointing
+  and UTC for sky-noise calibration. `partial_run` flags use of pilot limits.
+- `catalogue.h5`: accepted event times, detection counts and summary values.
+- `event_cuts/event_NNNNNN.h5`: **all available pulses** from 0.1 s before to
+  0.1 s after the event, whether detected or not, across input file boundaries.
+  Raw and complex matched-filter cuts follow the first-order RANSAC track with
+  a default half-width of 20 km. Raw cuts also include the pulse envelope.
+- `event_cuts/plots/event_NNNNNN.png`: range-time matched-filter SNR plots.
+  The default display zooms to the track plus 2 km; the saved cuts retain 20 km.
+
+The range and time padding are configurable. Data outside the recorder's gate
+cannot be recovered: truncated padding and real missing frames are explicitly
+flagged. Weak pulses are retained; missing measurements are not interpolated.
+These remain candidate meteor events, requiring screening for clutter and other
+targets. No RCS, three-dimensional trajectory, mass or orbit is inferred here.
+
+See [FORMAT.md](FORMAT.md) for gate-delay, IQ, units and HDF5 conventions.

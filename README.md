@@ -4,10 +4,11 @@ Processing scripts for the Sanya tri-static LFM meteor head-echo data.
 
 ## Native Monostatic Binary Processing
 
-For the November 2026 Sanya monostatic binary recordings, use
+For SYISR station binary recordings, including the November 2026 Sanya data, use
 [syisr_native](syisr_native/README.md). It provides a Rust-only reader, LFM
-matched filtering, candidate meteor detection and voltage extraction, with
-optional MPI file parallelism, TOML configuration and HDF5 outputs.
+matched filtering, RANSAC detection, continuous padded voltage cuts, all-pulse
+noise products and event plots. Sanya and remote-site configurations use the
+same executable, with MPI file parallelism, TOML configuration and HDF5 outputs.
 The MATLAB-based tri-static workflow below is unchanged.
 
 ## Raw MATLAB Files

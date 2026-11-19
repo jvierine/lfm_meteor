@@ -1,10 +1,11 @@
 [package]
 name = "syisr-native"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["plots"]
+plots = ["dep:rustplotlib"]
 mpi = ["dep:mpi"]
 
 [dependencies]
@@ -19,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 toml = "0.8"
 mpi = { version = "0.8.2", optional = true, default-features = false }
+rustplotlib = { git = "https://github.com/jvierine/rustplotlib", rev = "48a31710901dd0ba5f6e0d0ddffc1abde2030f89", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

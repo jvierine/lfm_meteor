@@ -24,6 +24,8 @@ pub struct Header {
     pub pulse_us: f64,
     pub az_deg: f64,
     pub el_deg: f64,
+    pub rx_az_deg: f64,
+    pub rx_el_deg: f64,
 }
 impl Header {
     pub fn parse(b: &[u8; HEADER_SIZE], offset_hours: i32) -> Result<Self> {
@@ -66,6 +68,8 @@ impl Header {
             pulse_us: 200.0,
             az_deg: u16le(b, 868) as f64 * 360.0 / 65536.0,
             el_deg: u16le(b, 870) as f64 * 360.0 / 65536.0,
+            rx_az_deg: u16le(b, 856) as f64 * 360. / 65536.,
+            rx_el_deg: u16le(b, 858) as f64 * 360. / 65536.,
         })
     }
 }
@@ -94,7 +98,9 @@ impl Reader {
         })
     }
     pub fn seek(&mut self, offset: u64) -> Result<()> {
-        self.file.seek(SeekFrom::Start(offset))?;
+        let current = self.file.stream_position()?;
+        self.file
+            .seek_relative((offset as i128 - current as i128).try_into()?)?;
         Ok(())
     }
     pub fn next(&mut self) -> Result<Option<Frame>> {

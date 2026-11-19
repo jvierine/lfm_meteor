@@ -1,6 +1,9 @@
 # Paths may be absolute; relative paths resolve against this configuration file.
+station = "Sanya"
+range_coordinate = "monostatic"
 input_glob = "/Volumes/LaCie/SYISR_data/20261117/*.dat*"
 output_dir = "output"
+# Optional event_dir = "/another/disk/sanya-event-cuts"; default output/event_cuts.
 
 # Header clock is assumed Beijing time. Confirm with the radar operator.
 clock_utc_offset_hours = 8
@@ -23,8 +26,17 @@ min_event_pulses = 6
 max_range_rate_km_s = 100.0
 range_slack_km = 0.3
 max_event_duration_s = 5.0
-raw_padding_us = 50.0
-matched_filter_half_width_us = 20.0
+raw_padding_us = 0.0
+cut_range_half_width_km = 20.0
+cut_time_padding_s = 0.1
+ransac_iterations = 256
+ransac_min_fraction = 0.5
+# Noise uses the whole recorded gate unless absolute delay bounds are supplied.
+# noise_min_delay_us = 1500.0
+# noise_max_delay_us = 3000.0
+noise_average_pulses = 100
+make_plots = true
+plot_half_width_km = 2.0
 
 # Zero means all. Use CLI overrides for a bounded local pilot.
 max_files = 0
