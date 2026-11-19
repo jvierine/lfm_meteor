@@ -6,6 +6,31 @@ use anyhow::{ensure, Result};
 use num_complex::Complex32;
 use rustplotlib::*;
 
+fn refine(z: &[Complex32], coarse: f64, fd: f64, down: bool) -> (f64, f64) {
+    let mut best = (0., coarse);
+    for step in -32..=32 {
+        let lag = coarse + step as f64 / 32.;
+        let start = lag.ceil().max(0.) as usize;
+        let stop = ((lag + 800.).ceil() as usize).min(z.len());
+        if stop - start != 800 {
+            continue;
+        }
+        let mut sum = num_complex::Complex64::new(0., 0.);
+        for (j, value) in z.iter().enumerate().take(stop).skip(start) {
+            let t = (j as f64 - lag) / filter::FS;
+            let phase = std::f64::consts::TAU
+                * ((if down { 1. } else { -1. }) * (2e6 * t - 1e10 * t * t)
+                    + fd * j as f64 / filter::FS);
+            sum += num_complex::Complex64::new(value.re as f64, value.im as f64)
+                * num_complex::Complex64::from_polar(1., -phase);
+        }
+        if sum.norm_sqr() > best.0 {
+            best = (sum.norm_sqr(), lag);
+        }
+    }
+    best
+}
+
 fn main() -> Result<()> {
     let a: Vec<_> = std::env::args().collect();
     ensure!(a.len() == 3, "usage: replay_cut EVENT.h5 OUTPUT_PREFIX");
@@ -38,6 +63,11 @@ fn main() -> Result<()> {
     let mut original = Vec::new();
     let mut corrected = Vec::new();
     let mut ranges = Vec::new();
+    let mut refined_original = Vec::new();
+    let mut refined_corrected = Vec::new();
+    let mut strongest_voltage = Vec::new();
+    let mut strongest_index = 0;
+    let mut strongest_power = 0.;
     let mut max_relative_error = 0f64;
     for i in 0..times.len() {
         let z: Vec<_> = words[2 * offsets[i] as usize..2 * offsets[i + 1] as usize]
@@ -75,6 +105,13 @@ fn main() -> Result<()> {
         };
         let (p, r) = peak(&y);
         let (pc, rc) = peak(yc);
+        refined_original.push(refine(&z, (r / km - delay[i]) * 4., 0., down).0);
+        refined_corrected.push(refine(&z, (rc / km - delay[i]) * 4., fd, down).0);
+        if p > strongest_power {
+            strongest_power = p;
+            strongest_voltage = z;
+            strongest_index = i;
+        }
         original.push(p);
         corrected.push(pc);
         ranges.push([r, rc]);
@@ -87,6 +124,8 @@ fn main() -> Result<()> {
     for (n, v) in [
         ("zero_doppler_peak_power", &original),
         ("migration_doppler_peak_power", &corrected),
+        ("refined_zero_doppler_peak_power", &refined_original),
+        ("refined_migration_doppler_peak_power", &refined_corrected),
     ] {
         out.new_dataset_builder().with_data(v).create(n)?;
     }
@@ -99,6 +138,105 @@ fn main() -> Result<()> {
     out.new_dataset_builder()
         .with_data(&times)
         .create("utc_ns")?;
+    out.new_dataset_builder()
+        .with_data(&ranges.iter().map(|r| r[0]).collect::<Vec<_>>())
+        .create("zero_doppler_peak_range_km")?;
+    out.new_dataset_builder()
+        .with_data(&ranges.iter().map(|r| r[1]).collect::<Vec<_>>())
+        .create("migration_doppler_peak_range_km")?;
+    // Full delay/Doppler bank for one pulse. This exposes the LFM ambiguity;
+    // the bank maximum alone is not an independent precise Doppler measurement.
+    let i = strongest_index;
+    let mut bank = Vec::new();
+    let mut lag_ranges = Vec::new();
+    let mut frequencies = Vec::new();
+    let mut bf = filter::Filter::new(strongest_voltage.len(), down);
+    for row in 0..=100 {
+        let frequency = -250_000. + row as f64 * 5000.;
+        frequencies.push(frequency);
+        let shifted: Vec<_> = strongest_voltage
+            .iter()
+            .enumerate()
+            .map(|(j, z)| {
+                *z * Complex32::from_polar(
+                    1.,
+                    (-std::f64::consts::TAU * frequency * j as f64 / filter::FS) as f32,
+                )
+            })
+            .collect();
+        let response = bf.apply(&shifted);
+        for (j, v) in response.iter().enumerate() {
+            let r = km * (delay[i] + j as f64 / 4.);
+            if (r - track[i]).abs() < 2. {
+                if row == 0 {
+                    lag_ranges.push(r);
+                }
+                bank.push(v.norm_sqr() as f64);
+            }
+        }
+    }
+    out.new_dataset_builder()
+        .with_data(&frequencies)
+        .create("bank_doppler_hz")?;
+    out.new_dataset_builder()
+        .with_data(&lag_ranges)
+        .create("bank_range_km")?;
+    out.new_dataset::<f64>()
+        .shape([frequencies.len(), lag_ranges.len()])
+        .create("bank_power")?
+        .write_raw(&bank)?;
+    out.new_dataset_builder()
+        .with_data(&[i as u64])
+        .create("bank_pulse_index")?;
+    let mut bankfig = Figure::new(IntendedUse::ArticleWide);
+    bankfig.width_mm = 160.;
+    bankfig.height_mm = 100.;
+    let peak_power = bank.iter().copied().fold(0., f64::max);
+    let scale = bankfig.scale(Scale::new(
+        [-25., 0.],
+        Normalization::Linear,
+        ColorMap::sequential(),
+    )?);
+    let dr = km / 4.;
+    let mut bp = Panel::new(
+        Rect::new(24., 8., 107., 72.),
+        Axes::new(
+            [
+                lag_ranges[0] - dr / 2.,
+                *lag_ranges.last().unwrap() + dr / 2.,
+            ],
+            [-252.5, 252.5],
+            "Trial echo range (km)",
+            "Trial Doppler (kHz)",
+        ),
+    );
+    bp.push(Layer::Pcolormesh(Field::new(
+        (0..=lag_ranges.len())
+            .map(|j| lag_ranges[0] + (j as f64 - 0.5) * dr)
+            .collect(),
+        (0..=101).map(|j| -252.5 + j as f64 * 5.).collect(),
+        bank.iter()
+            .map(|p| 10. * (p / peak_power).max(1e-10).log10())
+            .collect(),
+        scale,
+    )?));
+    let mut guide = Line::new(
+        vec![
+            [lag_ranges[0], fd / 1000.],
+            [*lag_ranges.last().unwrap(), fd / 1000.],
+        ],
+        "#D55E00",
+    );
+    guide.width_pt = 1.;
+    bp.push(Layer::Line(guide));
+    bankfig.panels.push(bp);
+    bankfig.colorbars.push(Colorbar::new(
+        Rect::new(134., 8., 3., 72.),
+        scale,
+        "Power (dB)",
+        vec![-20., -10., 0.],
+    ));
+    bankfig.save(format!("{}_bank.png", a[2]))?;
     let mut fig = Figure::new(IntendedUse::ArticleWide);
     fig.width_mm = 160.;
     fig.height_mm = 85.;
@@ -113,7 +251,10 @@ fn main() -> Result<()> {
             "Peak power (dB, relative)",
         ),
     );
-    for (values, color) in [(&original, "#0072B2"), (&corrected, "#D55E00")] {
+    for (values, color) in [
+        (&refined_original, "#0072B2"),
+        (&refined_corrected, "#D55E00"),
+    ] {
         panel.push(Layer::Line(Line::new(
             ts.iter()
                 .zip(values)
@@ -128,5 +269,37 @@ fn main() -> Result<()> {
         .max_by(|i, j| original[*i].total_cmp(&original[*j]))
         .unwrap();
     println!("range rate={rate:.3} km/s; Doppler={fd:.1} Hz; replay relative RMS={max_relative_error:.3e}; strongest-pulse gain={:.3} dB; range shift={:.1} m",10.*(corrected[k]/original[k]).log10(),1000.*(ranges[k][1]-ranges[k][0]));
+    println!(
+        "fractional-delay refined strongest-pulse gain={:.3} dB",
+        10. * (refined_corrected[k] / refined_original[k]).log10()
+    );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fractional_delay_search_recovers_known_echo() {
+        for down in [true, false] {
+            for fd in [-125000., 125000.] {
+                let lag = 700.375;
+                let z: Vec<_> = (0..2000)
+                    .map(|j| {
+                        let t = (j as f64 - lag) / filter::FS;
+                        if !(0.0..200e-6).contains(&t) {
+                            return Complex32::default();
+                        }
+                        let phase = std::f64::consts::TAU
+                            * ((if down { 1. } else { -1. }) * (2e6 * t - 1e10 * t * t)
+                                + fd * j as f64 / filter::FS);
+                        Complex32::from_polar(1., phase as f32)
+                    })
+                    .collect();
+                let (power, recovered) = refine(&z, 700., fd, down);
+                assert!((recovered - lag).abs() < 1e-9);
+                assert!((power / 640000. - 1.).abs() < 1e-6);
+            }
+        }
+    }
 }

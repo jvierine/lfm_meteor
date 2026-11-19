@@ -150,6 +150,42 @@ mod tests {
         }
     }
     #[test]
+    fn full_delay_doppler_bank_recovers_known_echo() {
+        for down in [true, false] {
+            for truth_fd in [-100000., 100000.] {
+                let mut z = vec![Complex32::default(); 2400];
+                for (j, s) in chirp(down).into_iter().enumerate() {
+                    z[700 + j] = s * Complex32::from_polar(
+                        1.,
+                        (std::f64::consts::TAU * truth_fd * (700 + j) as f64 / FS) as f32,
+                    );
+                }
+                let mut f = Filter::new(z.len(), down);
+                let mut best = (0., 0., 0);
+                for row in 0..=40 {
+                    let fd = -200000. + row as f64 * 10000.;
+                    let shifted: Vec<_> = z
+                        .iter()
+                        .enumerate()
+                        .map(|(j, z)| {
+                            *z * Complex32::from_polar(
+                                1.,
+                                (-std::f64::consts::TAU * fd * j as f64 / FS) as f32,
+                            )
+                        })
+                        .collect();
+                    for (k, y) in f.apply(&shifted).iter().enumerate() {
+                        if y.norm_sqr() > best.0 {
+                            best = (y.norm_sqr(), fd, k);
+                        }
+                    }
+                }
+                assert_eq!(best.1, truth_fd);
+                assert_eq!(best.2, 700);
+            }
+        }
+    }
+    #[test]
     fn complex_gaussian_noise_power_normalization() {
         let mut state = 713u32;
         let mut uniform = || {

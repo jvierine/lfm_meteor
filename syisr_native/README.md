@@ -86,9 +86,18 @@ cargo run --release --locked --example replay_cut -- event_cuts/event_000001.h5 
 
 This writes `replay.h5` and `replay.png` (blue: zero Doppler; orange: migration
 correction), and checks the replay against the cached complex response.
-It searches delay at a fixed migration-derived Doppler, not a free two-dimensional
-delay/Doppler grid. Range acceleration can bias that Doppler estimate through
-LFM coupling; the example is a diagnostic, not a trajectory refit.
+It also saves a full delay/Doppler bank for the strongest pulse as
+`replay_bank.png` and in the HDF5 output. The orange line on that bank is the
+migration-derived Doppler. Peak-power comparisons refine delay to 1/32 sample
+to reduce sampling-grid scalloping; integer-grid powers are retained separately.
+Range acceleration can bias the migration-derived Doppler through LFM coupling;
+the example is a diagnostic, not a trajectory refit.
+
+Run the deterministic noisy moving-echo recovery check with:
+
+```sh
+cargo run --release --locked --example validate_migration -- validation.h5
+```
 
 Every normal run calculates noise for **every processed pulse**, not only meteor
 detections. `noise.h5` includes the per-pulse series and 100-pulse averages for
