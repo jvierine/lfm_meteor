@@ -108,6 +108,17 @@ removal and edge guards. Localized interference and moving-scatter masks are
 saved in minute files. The RTI updates every minute. Power is not calibrated
 temperature or electron density.
 
+Check the spectral noise prediction against held-out late range gates:
+
+```sh
+cargo run --release --locked --example calibrate_ionosphere -- /data/products/ionosphere-whitened
+```
+
+This writes `rti_noise_calibrated.h5` and `.png`, preserving the original RTI.
+Alternating tail gates calibrate the noise scale; the remaining gates check it.
+No ionospheric layer is used to set the scale. This corrects noise-normalization
+errors, not range-dependent RFI or absolute receiver calibration.
+
 To independently replay a raw-voltage cut and compare zero-Doppler filtering
 with Doppler predicted from its fitted range migration:
 
