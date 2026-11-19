@@ -625,6 +625,7 @@ fn write_event(
             .collect::<Vec<_>>(),
     )?;
     dataset(&g, "frame_headers_u8", &headers)?;
+    drop(g);
     let g = f.create_group("matched_filter")?;
     dataset(&g, "real", &mf_real)?;
     dataset(&g, "imag", &mf_imag)?;
@@ -638,6 +639,7 @@ fn write_event(
             .map(|(p, s)| p.gate_front + c.delay_correction_us + *s as f64 / FS * 1e6)
             .collect::<Vec<_>>(),
     )?;
+    drop(g);
     dataset(&f, "range_padding_truncated", &clipped)?;
     dataset(
         &f,
@@ -654,11 +656,12 @@ fn write_event(
             .join("\n"),
     )?;
     f.flush()?;
-    drop(f);
+    f.close()?;
     std::fs::rename(tmp, dest)?;
     if c.make_plots {
         #[cfg(feature = "plots")]
-        plots::render(&c.event_dir().join(format!("event_{index:06}.h5")))?;
+        plots::render(&c.event_dir().join(format!("event_{index:06}.h5")))
+            .with_context(|| format!("rendering event {index:06}"))?;
     }
     Ok(())
 }
@@ -989,6 +992,10 @@ mod tests {
         c.input_glob = dir.path().join("*.dat").to_string_lossy().into_owned();
         c.output_dir = dir.path().join("products");
         c.make_plots = false;
+        #[cfg(feature = "plots")]
+        {
+            c.make_plots = plots::check_tools().is_ok();
+        }
         let s = filter::chirp(true);
         for file in 0..2 {
             let mut f = std::fs::File::create(dir.path().join(format!("raw-{file}.dat"))).unwrap();
@@ -1020,7 +1027,7 @@ mod tests {
                 max_frames: None,
                 output: None,
                 event_output: None,
-                no_plots: true,
+                no_plots: false,
                 noise_only: false,
                 resume: false,
                 allow_build_change: false,
@@ -1075,6 +1082,9 @@ mod tests {
             .zip(&delay)
             .all(|(s, d)| (*d - (466. + *s as f64 / 4.)).abs() < 1e-10));
         let n = File::open(c.output_dir.join("noise.h5")).unwrap();
+        if c.make_plots {
+            assert!(c.event_dir().join("plots/event_000000.png").exists());
+        }
         assert_eq!(n.dataset("pulses/utc_ns").unwrap().size(), 16);
         let inputs = c.files().unwrap();
         assert!(reusable(&c, &inputs[0], 0, false).unwrap());

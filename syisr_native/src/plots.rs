@@ -38,7 +38,7 @@ pub fn directory(dir: &Path) -> Result<()> {
     Ok(())
 }
 pub fn render(path: &Path) -> Result<()> {
-    let h = hdf5::File::open(path)?;
+    let h = hdf5::File::open(path).with_context(|| format!("opening event {}", path.display()))?;
     let c: Config = toml::from_str(&String::from_utf8(
         h.dataset("config_toml_utf8")?.read_raw::<u8>()?,
     )?)?;

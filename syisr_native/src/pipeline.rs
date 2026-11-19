@@ -2,7 +2,7 @@ use crate::{
     config::Config, finalize, group_events, noise, part_path, pulses_read, track, write_event,
     Pulse,
 };
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use hdf5::File;
 use std::{collections::VecDeque, path::PathBuf};
 
@@ -39,8 +39,11 @@ impl<'a> Live<'a> {
     }
     pub fn poll(&mut self) -> Result<bool> {
         while self.loaded < self.files.len() && part_path(self.c, self.loaded).exists() {
-            let f = File::open(part_path(self.c, self.loaded))?;
+            let f = File::open(part_path(self.c, self.loaded)).with_context(|| {
+                format!("reading index {}", part_path(self.c, self.loaded).display())
+            })?;
             let mut rows = pulses_read(&f.group("pulses")?)?;
+            f.close()?;
             self.counts.push(rows.len() as u64);
             self.noise.extend(rows.iter().map(noise::NoiseRow::from));
             rows.retain(|p| p.timing_valid == 1);
