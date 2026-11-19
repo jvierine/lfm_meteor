@@ -34,11 +34,15 @@ fn main() -> Result<()> {
         args.len() == 3,
         "usage: ionosphere PRODUCT_DIRECTORY OUTPUT_PREFIX"
     );
-    let root = Path::new(&args[1]);
+    process(Path::new(&args[1]),&args[2],0,0)?;
+    Ok(())
+}
+pub fn process(root:&Path,prefix:&str,start_ns:i64,start_file:usize)->Result<(i64,usize,u64)> {
     let cat = hdf5::File::open(root.join("catalogue.h5"))?;
     let starts = cat.dataset("event_start_utc_ns")?.read_raw::<i64>()?;
     let stops = cat.dataset("event_stop_utc_ns")?.read_raw::<i64>()?;
-    let mut epoch = 0i64;
+    let mut epoch = start_ns;
+    let mut last_file=start_file;
     let mut grid = vec![Cell::default(); 60 * 400];
     let mut late_power = vec![0.; 60];
     let mut late_count = vec![0u64; 60];
@@ -49,7 +53,8 @@ fn main() -> Result<()> {
     let mut excluded = 0u64;
     let mut az = 0.;
     let mut el = 0.;
-    'files: for file_index in 0..4 {
+    'files: for file_index in start_file..854 {
+        last_file=file_index;
         let index = hdf5::File::open(root.join(format!("work/pulses_{file_index:06}.h5")))?;
         let t = index.dataset("pulses/utc_ns")?.read_raw::<i64>()?;
         let offsets = index
@@ -180,7 +185,8 @@ fn main() -> Result<()> {
             r.variance += c.variance;
         }
     }
-    let out = hdf5::File::create(format!("{}.h5", args[2]))?;
+    if used==0 {return Ok((epoch,last_file,0));}
+    let out = hdf5::File::create(format!("{prefix}.h5"))?;
     let mut snr = Vec::new();
     let mut phase = Vec::new();
     let mut freq = Vec::new();
@@ -461,13 +467,13 @@ fn main() -> Result<()> {
         )));
         fig.panels.push(p);
     }
-    fig.save(format!("{}.png", args[2]))?;
+    fig.save(format!("{prefix}.png"))?;
     println!("used={used}, meteor-excluded={excluded}, coherent candidate blocks={}, significant phase bins={}",rejected.iter().sum::<u64>(),freq.iter().filter(|v|v.is_finite()).count());
     println!(
         "off-echo-subtracted bins above diagnostic threshold: {}",
         residual_frequency.iter().filter(|f| f.is_finite()).count()
     );
-    Ok(())
+    Ok((epoch,last_file,used))
 }
 
 #[cfg(test)]
