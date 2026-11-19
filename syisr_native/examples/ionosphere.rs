@@ -40,6 +40,10 @@ fn main() -> Result<()> {
     let stops = cat.dataset("event_stop_utc_ns")?.read_raw::<i64>()?;
     let mut epoch = 0i64;
     let mut grid = vec![Cell::default(); 60 * 400];
+    let mut late_power = vec![0.; 60];
+    let mut late_count = vec![0u64; 60];
+    let mut late_delay_min = f64::INFINITY;
+    let mut late_delay_max = 0f64;
     let mut previous: Option<(i64, f64, Vec<Complex32>, Vec<bool>)> = None;
     let mut used = 0u64;
     let mut excluded = 0u64;
@@ -116,9 +120,20 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|z| (z.norm_sqr() as f64) < 100. * noise)
                 .collect();
+            // Last 200 us of valid full-pulse matched-filter lags. The recorder
+            // does not extend to the literal end of the 5 ms IPP.
+            for j in y.len().saturating_sub(800)..y.len() {
+                if mask[j] {
+                    late_power[second] += y[j].norm_sqr() as f64;
+                    late_count[second] += 1;
+                    let delay = fr.header.gate_front_us + j as f64 / 4.;
+                    late_delay_min = late_delay_min.min(delay);
+                    late_delay_max = late_delay_max.max(delay);
+                }
+            }
             for (j, z) in y.iter().enumerate() {
                 let r = filter::C / 2e9 * (fr.header.gate_front_us + j as f64 / 4.);
-                let bin = (r / 1.5).floor() as usize;
+                let bin = (r / 2.).floor() as usize;
                 if bin >= 400 || r < 80. || !mask[j] {
                     continue;
                 }
@@ -198,7 +213,7 @@ fn main() -> Result<()> {
             f64::NAN
         });
     }
-    let ranges: Vec<_> = (0..400).map(|i| (i as f64 + 0.5) * 1.5).collect();
+    let ranges: Vec<_> = (0..400).map(|i| (i as f64 + 0.5) * 2.).collect();
     let background_bins: Vec<_> = (0..400)
         .filter(|b| (120.0..180.).contains(&ranges[*b]) || (550.0..600.).contains(&ranges[*b]))
         .collect();
@@ -361,6 +376,21 @@ fn main() -> Result<()> {
     out.new_dataset_builder()
         .with_data(&background_power)
         .create("off_echo_power_by_second")?;
+    let late_noise: Vec<_> = late_power
+        .iter()
+        .zip(&late_count)
+        .map(|(p, n)| if *n > 0 { p / *n as f64 } else { f64::NAN })
+        .collect();
+    out.new_dataset_builder()
+        .with_data(&late_noise)
+        .create("late_gate_noise_power_by_second")?;
+    out.new_dataset_builder()
+        .with_data(&late_count)
+        .create("late_gate_noise_sample_count")?;
+    out.new_dataset_builder()
+        .with_data(&[late_delay_min, late_delay_max])
+        .create("late_gate_noise_delay_bounds_us")?;
+    out.new_dataset_builder().with_data(b"Last 800 valid matched-filter lags per pulse (200 us); arithmetic mean after meteor pulse exclusion and instantaneous 20 dB mask. This is the latest full-pulse reference window available in the recording, not the final 200 us of the physical 5 ms IPP.").create("late_gate_noise_method_utf8")?;
     for (name, v) in [
         (
             "block_power_sum",

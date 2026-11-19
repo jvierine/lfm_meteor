@@ -77,6 +77,22 @@ only after processing and extraction finish. Failed jobs exit nonzero.
 
 ## Noise and Plots
 
+Experimental ionospheric pilot (first 60 seconds only, one-second display bins):
+
+```sh
+cargo run --release --locked --example ionosphere -- /data/products/sanya-20261117 ionosphere
+cargo run --release --locked --example plot_ionosphere_rti -- ionosphere.h5 ionosphere_rti.png
+```
+
+The RTI uses Storm colours and total matched-filter power divided by noise,
+without background subtraction. Noise comes from the last 200 us of valid
+full-pulse matched-filter lags available in each recording, near the end of the
+IPP. Meteor intervals and heuristic coherent-scatter candidate blocks are
+excluded. Range bins are 2 km; plotted altitude uses recorded elevation and a
+6371 km spherical Earth, with site height zero and no refraction. The HDF5
+retains the power, counts, rejection masks, noise-window delays and pulse-pair
+diagnostics. The pilot does not establish a de-aliased ionospheric velocity.
+
 To independently replay a raw-voltage cut and compare zero-Doppler filtering
 with Doppler predicted from its fitted range migration:
 
