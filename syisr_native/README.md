@@ -6,6 +6,11 @@ plots. Use the same program at Sanya, Danzhou and Wenchang. Python and MATLAB ar
 not required. The older tri-static analysis elsewhere in this repository is
 unchanged.
 
+Cuts and plots are published **during processing**, once enough neighbouring
+data are ready to cover an event and its padding. MPI rank zero coordinates
+extraction/plotting while the other ranks scan files. A serial run publishes
+events between files. Neither waits for the full dataset before plotting.
+
 ## Build
 
 Install current stable Rust, a C compiler, `pkg-config` and HDF5 development
@@ -88,7 +93,7 @@ than reporting zero power. A build without plot dependencies is also possible:
 
 ## What Is Saved
 
-- `pulses_NNNNNN.h5`: all pulse times, binary offsets, gate-start delays,
+- `work/pulses_NNNNNN.h5`: internal resumable indexes containing pulse times, binary offsets, gate-start delays,
   matched-filter peaks, noise powers and transmitter/receiver pointing.
 - `noise.h5`: all-pulse noise series and averages, including receiver pointing
   and UTC for sky-noise calibration. `partial_run` flags use of pilot limits.

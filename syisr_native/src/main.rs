@@ -1,6 +1,7 @@
 mod config;
 mod filter;
 mod noise;
+mod pipeline;
 #[cfg(feature = "plots")]
 mod plots;
 mod raw;
@@ -222,7 +223,14 @@ fn pulses_read(g: &Group) -> Result<Vec<Pulse>> {
         .collect())
 }
 fn part_path(c: &Config, i: usize) -> PathBuf {
-    c.output_dir.join(format!("pulses_{i:06}.h5"))
+    let name = format!("pulses_{i:06}.h5");
+    let path = c.output_dir.join("work").join(&name);
+    let legacy = c.output_dir.join(name);
+    if path.exists() || !legacy.exists() {
+        path
+    } else {
+        legacy
+    }
 }
 fn modified_ns(path: &Path) -> Result<u64> {
     Ok(path
@@ -272,6 +280,7 @@ fn reusable(c: &Config, path: &Path, index: usize, allow_build_change: bool) -> 
 }
 
 fn process_file(c: &Config, path: &Path, index: usize) -> Result<usize> {
+    std::fs::create_dir_all(c.output_dir.join("work"))?;
     let started = Instant::now();
     let mut r = raw::Reader::open(path, c.clock_utc_offset_hours, c.trailer_bytes)?;
     r.max_resync_bytes = c.max_resync_bytes;
@@ -444,7 +453,7 @@ fn group_events(c: &Config, pulses: Vec<Pulse>) -> (Vec<Vec<Pulse>>, usize) {
     let mut current: Vec<Pulse> = Vec::new();
     let mut long = 0;
     for p in pulses {
-        if p.snr < c.snr_threshold_db {
+        if !p.snr.is_finite() || p.snr < c.snr_threshold_db {
             continue;
         }
         if let Some(last) = current.last() {
@@ -653,66 +662,14 @@ fn write_event(
     }
     Ok(())
 }
-fn merge(c: &Config, files: &[PathBuf]) -> Result<()> {
-    let mut pulses = Vec::new();
-    let mut counts = Vec::new();
-    let mut spans = Vec::new();
-    let mut noise_rows = Vec::new();
-    for i in 0..files.len() {
-        let f = File::open(part_path(c, i))?;
-        let rows = pulses_read(&f.group("pulses")?)?;
-        counts.push(rows.len() as u64);
-        spans.push(
-            rows.iter()
-                .filter(|p| p.timing_valid == 1)
-                .map(|p| p.utc)
-                .min()
-                .zip(
-                    rows.iter()
-                        .filter(|p| p.timing_valid == 1)
-                        .map(|p| p.utc)
-                        .max(),
-                ),
-        );
-        noise_rows.extend(rows.iter().map(noise::NoiseRow::from));
-        pulses.extend(
-            rows.into_iter()
-                .filter(|p| p.timing_valid == 1 && p.snr >= c.snr_threshold_db),
-        );
-    }
-    pulses.sort_by_key(|p| (p.utc, p.file, p.offset));
-    ensure!(
-        pulses.windows(2).all(|p| p[0].utc != p[1].utc),
-        "overlapping input timestamps in detections; remove overlapping recordings"
-    );
-    let detections = pulses.len();
-    let (groups, long) = group_events(c, pulses);
-    let events: Vec<_> = groups
-        .into_iter()
-        .filter_map(|p| track::fit(c, p))
-        .collect();
-    noise::write(c, &mut noise_rows)?;
-    for (i, t) in events.iter().enumerate() {
-        let t0 = t.pulses[0].utc - (c.cut_time_padding_s * 1e9).round() as i64;
-        let t1 = t.pulses.last().unwrap().utc + (c.cut_time_padding_s * 1e9).round() as i64;
-        let mut cuts = Vec::new();
-        for (j, span) in spans.iter().enumerate() {
-            if span.is_some_and(|(a, b)| b >= t0 && a <= t1) {
-                let f = File::open(part_path(c, j))?;
-                cuts.extend(
-                    pulses_read(&f.group("pulses")?)?
-                        .into_iter()
-                        .filter(|p| p.timing_valid == 1 && p.utc >= t0 && p.utc <= t1),
-                );
-            }
-        }
-        cuts.sort_by_key(|p| p.utc);
-        ensure!(
-            cuts.windows(2).all(|p| p[0].utc != p[1].utc),
-            "overlapping recording timestamps in event cut"
-        );
-        write_event(c, files, i, &cuts, t)?;
-    }
+fn finalize(
+    c: &Config,
+    files: &[PathBuf],
+    counts: &[u64],
+    detections: usize,
+    events: &[track::Track],
+    long: usize,
+) -> Result<()> {
     let tmp = c.output_dir.join("catalogue.h5.partial");
     let f = File::create(&tmp)?;
     metadata(&f, c)?;
@@ -725,9 +682,9 @@ fn merge(c: &Config, files: &[PathBuf]) -> Result<()> {
             .collect::<Vec<_>>()
             .join("\n"),
     )?;
-    dataset(&f, "processed_pulses_per_file", &counts)?;
+    dataset(&f, "processed_pulses_per_file", counts)?;
     dataset(&f, "threshold_crossings", &[detections as u64])?;
-    dataset(&f, "rejected_overlong_tracks", &[long as u64])?;
+    dataset(&f, "overlong_window_rejections", &[long as u64])?;
     dataset(
         &f,
         "event_pulse_counts",
@@ -780,7 +737,7 @@ fn merge(c: &Config, files: &[PathBuf]) -> Result<()> {
     f.flush()?;
     drop(f);
     std::fs::rename(tmp, c.output_dir.join("catalogue.h5"))?;
-    eprintln!("COMPLETE: {} pulses, {detections} threshold crossings, {} candidate meteor events; {long} overlong tracks rejected",counts.iter().sum::<u64>(),events.len());
+    eprintln!("COMPLETE: {} pulses, {detections} threshold crossings, {} candidate meteor events; {long} overlong event windows rejected",counts.iter().sum::<u64>(),events.len());
     Ok(())
 }
 fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
@@ -888,6 +845,7 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
                     );
                 }
                 std::fs::create_dir_all(&c.output_dir)?;
+                std::fs::create_dir_all(c.output_dir.join("work"))?;
                 std::fs::create_dir_all(c.event_dir())?;
                 if !c.output_dir.join("run.h5").exists() {
                     let f = File::create(c.output_dir.join("run.h5"))?;
@@ -901,15 +859,32 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
                 );
             }
             barrier();
-            for (i, p) in files.iter().enumerate().filter(|(i, _)| i % size == rank) {
-                if resume && reusable(&c, p, i, allow_build_change)? {
-                    continue;
+            if size == 1 {
+                let mut live = pipeline::Live::new(&c, &files);
+                for (i, p) in files.iter().enumerate() {
+                    if !(resume && reusable(&c, p, i, allow_build_change)?) {
+                        process_file(&c, p, i)?;
+                    }
+                    live.poll()?;
                 }
-                process_file(&c, p, i).with_context(|| format!("{}", p.display()))?;
-            }
-            barrier();
-            if rank == 0 {
-                merge(&c, &files)?;
+                live.finish()?;
+            } else if rank == 0 {
+                let mut live = pipeline::Live::new(&c, &files);
+                while !live.poll()? {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                live.finish()?;
+            } else {
+                for (i, p) in files
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i % (size - 1) == rank - 1)
+                {
+                    if resume && reusable(&c, p, i, allow_build_change)? {
+                        continue;
+                    }
+                    process_file(&c, p, i).with_context(|| format!("{}", p.display()))?;
+                }
             }
             barrier();
         }
@@ -1138,5 +1113,49 @@ mod tests {
         let path = tau * c.km_per_us();
         assert!((path - 199.661777028).abs() < 1e-9);
         assert!(((path / c.km_per_us() - 466.) * 4. - 800.).abs() < 1e-9);
+    }
+    #[test]
+    fn publishes_raw_event_before_last_input_is_processed() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = Config::load(Path::new("config.toml")).unwrap();
+        c.input_glob = dir.path().join("*.dat").to_string_lossy().into_owned();
+        c.output_dir = dir.path().join("out");
+        c.make_plots = false;
+        c.max_event_duration_s = 0.1;
+        c.cut_time_padding_s = 0.01;
+        std::fs::create_dir_all(c.event_dir()).unwrap();
+        let code = filter::chirp(true);
+        for file in 0..3 {
+            let mut f = std::fs::File::create(dir.path().join(format!("raw-{file}.dat"))).unwrap();
+            for k in 0..50 {
+                f.write_all(&raw::fixture_header(4000, (file * 50 + k) * 200))
+                    .unwrap();
+                for j in 0..4000 {
+                    let z = if file == 0 && (20..31).contains(&k) && (800..1600).contains(&j) {
+                        code[j - 800] * 1000.
+                    } else {
+                        num_complex::Complex32::default()
+                    };
+                    let a = z.im as i32 + ((j * 37 + k as usize * 17) % 19) as i32 - 9;
+                    let b = z.re as i32 + ((j * 71 + k as usize * 13) % 23) as i32 - 11;
+                    f.write_all(&a.to_le_bytes()).unwrap();
+                    f.write_all(&b.to_le_bytes()).unwrap();
+                }
+                f.write_all(&[0; 8]).unwrap();
+            }
+        }
+        let files = c.files().unwrap();
+        let mut live = pipeline::Live::new(&c, &files);
+        process_file(&c, &files[0], 0).unwrap();
+        assert!(!live.poll().unwrap());
+        process_file(&c, &files[1], 1).unwrap();
+        assert!(!live.poll().unwrap());
+        assert!(c.event_dir().join("event_000000.h5").exists());
+        assert!(!part_path(&c, 2).exists());
+        assert!(!c.output_dir.join("catalogue.h5").exists());
+        process_file(&c, &files[2], 2).unwrap();
+        assert!(live.poll().unwrap());
+        live.finish().unwrap();
     }
 }
