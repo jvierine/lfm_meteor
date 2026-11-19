@@ -9,6 +9,12 @@ Frames require both synchronization words, one DBF output beam, 430 MHz carrier,
 layouts are rejected. Configured bounded resynchronization records skipped byte
 ranges; it does not silently treat payload synchronization-like words as frames.
 
+With `allow_orphaned_tail=true`, an unheadered or incomplete EOF block is
+reported with byte offset/count and left in the original recording, not
+assigned a guessed pulse time. A complete declared IQ payload is retained even
+if only the unused trailing bytes are missing. Set the policy to false for
+strict EOF errors. Unsupported valid-header experiment layouts still fail.
+
 **Header bytes 766-767 contain the unsigned gate-start delay in microseconds.**
 This is 466 microseconds in the first supplied files. The first received sample
 therefore starts at this delay, not zero. For original sample or correlation lag

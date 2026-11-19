@@ -13,6 +13,8 @@ pub struct Config {
     pub clock_utc_offset_hours: i32,
     pub trailer_bytes: usize,
     pub max_resync_bytes: usize,
+    #[serde(default = "default_true")]
+    pub allow_orphaned_tail: bool,
     pub chirp_direction: String,
     pub delay_correction_us: f64,
     pub delay_calibration: String,
@@ -38,6 +40,9 @@ pub struct Config {
     pub plot_half_width_km: f64,
     pub max_files: usize,
     pub max_frames_per_file: usize,
+}
+fn default_true() -> bool {
+    true
 }
 
 impl Config {

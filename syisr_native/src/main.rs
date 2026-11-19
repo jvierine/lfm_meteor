@@ -275,6 +275,7 @@ fn process_file(c: &Config, path: &Path, index: usize) -> Result<usize> {
     let started = Instant::now();
     let mut r = raw::Reader::open(path, c.clock_utc_offset_hours, c.trailer_bytes)?;
     r.max_resync_bytes = c.max_resync_bytes;
+    r.allow_orphaned_tail = c.allow_orphaned_tail;
     let mut mf = None;
     let mut nprev = 0;
     let mut prev_time = None;
@@ -409,6 +410,21 @@ fn process_file(c: &Config, path: &Path, index: usize) -> Result<usize> {
     )?;
     dataset(&f, "timing_gap_before_frame_byte", &gap_offsets)?;
     dataset(&f, "timing_gap_ns", &gap_ns)?;
+    dataset(
+        &f,
+        "orphaned_tail_byte_offset",
+        &r.orphaned_tail.map(|v| vec![v.0]).unwrap_or_default(),
+    )?;
+    dataset(
+        &f,
+        "orphaned_tail_byte_count",
+        &r.orphaned_tail.map(|v| vec![v.1]).unwrap_or_default(),
+    )?;
+    dataset(
+        &f,
+        "truncated_trailer_missing_bytes",
+        &[r.truncated_trailer_missing_bytes],
+    )?;
     dataset(&f, "timing_rejected_frame_byte_offsets", &rejected)?;
     pulses_write(&f.create_group("pulses")?, &pulses)?;
     f.flush()?;
@@ -537,6 +553,7 @@ fn write_event(
                 c.clock_utc_offset_hours,
                 c.trailer_bytes,
             )?);
+            reader.as_mut().unwrap().allow_orphaned_tail = c.allow_orphaned_tail;
             active_file = pulse.file;
         }
         let r = reader.as_mut().unwrap();

@@ -11,6 +11,8 @@ clock_utc_offset_hours = 8
 trailer_bytes = 8
 # Zero makes malformed boundaries fatal. Recovery is bounded and recorded.
 max_resync_bytes = 4000000
+# Log incomplete or unheadered EOF blocks; never invent their pulse timestamps.
+allow_orphaned_tail = true
 chirp_direction = "down"
 # Do not transplant the April 2024 satellite calibration to this recording.
 delay_correction_us = 0.0

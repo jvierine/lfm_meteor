@@ -86,6 +86,9 @@ pub struct Reader {
     trailer: usize,
     pub max_resync_bytes: usize,
     pub recoveries: Vec<(u64, u64)>,
+    pub allow_orphaned_tail: bool,
+    pub orphaned_tail: Option<(u64, u64)>,
+    pub truncated_trailer_missing_bytes: u64,
 }
 impl Reader {
     pub fn open(path: &Path, offset_hours: i32, trailer: usize) -> Result<Self> {
@@ -95,6 +98,9 @@ impl Reader {
             trailer,
             max_resync_bytes: 0,
             recoveries: Vec::new(),
+            allow_orphaned_tail: false,
+            orphaned_tail: None,
+            truncated_trailer_missing_bytes: 0,
         })
     }
     pub fn seek(&mut self, offset: u64) -> Result<()> {
@@ -110,9 +116,12 @@ impl Reader {
         if self.file.read(&mut b[..1])? == 0 {
             return Ok(None);
         }
-        self.file
-            .read_exact(&mut b[1..])
-            .with_context(|| format!("truncated header at byte {offset}"))?;
+        if let Err(e) = self.file.read_exact(&mut b[1..]) {
+            if self.allow_orphaned_tail && e.kind() == std::io::ErrorKind::UnexpectedEof {
+                return self.finish_tail(offset);
+            }
+            return Err(e).with_context(|| format!("truncated header at byte {offset}"));
+        }
         if (u32le(&b, 0) != 0xAAAA5555 || u32le(&b, 1020) != 0xAA5555AA)
             && self.max_resync_bytes > 0
         {
@@ -129,7 +138,17 @@ impl Reader {
             let found = (0..used.saturating_sub(1023)).step_by(4).find(|&i| {
                 u32le(&window, i) == 0xAAAA5555 && u32le(&window, i + 1020) == 0xAA5555AA
             });
-            let i = found.context("no validated header within configured resync window")?;
+            let i = match found {
+                Some(i) => i,
+                None if self.allow_orphaned_tail
+                    && self.file.stream_position()? == self.file.get_ref().metadata()?.len() =>
+                {
+                    return self.finish_tail(offset)
+                }
+                None => anyhow::bail!(
+                    "no validated header within configured resync window at byte {offset}"
+                ),
+            };
             let next = offset + 4 + i as u64;
             ensure!(
                 next - offset <= self.max_resync_bytes as u64,
@@ -148,13 +167,24 @@ impl Reader {
         let header = Header::parse(&b, self.offset_hours)
             .with_context(|| format!("frame at byte {offset}"))?;
         let mut payload = vec![0u8; header.n * 8];
-        self.file
-            .read_exact(&mut payload)
-            .with_context(|| format!("truncated IQ at byte {offset}"))?;
+        if let Err(e) = self.file.read_exact(&mut payload) {
+            if self.allow_orphaned_tail && e.kind() == std::io::ErrorKind::UnexpectedEof {
+                return self.finish_tail(offset);
+            }
+            return Err(e).with_context(|| format!("truncated IQ at byte {offset}"));
+        }
         let mut trailing = vec![0u8; self.trailer];
-        self.file
-            .read_exact(&mut trailing)
-            .with_context(|| format!("truncated trailer at byte {offset}"))?;
+        if let Err(e) = self.file.read_exact(&mut trailing) {
+            if self.allow_orphaned_tail && e.kind() == std::io::ErrorKind::UnexpectedEof {
+                let got = self.file.stream_position()? - (offset + 1024 + header.n as u64 * 8);
+                self.truncated_trailer_missing_bytes += self.trailer as u64 - got;
+                eprintln!(
+                    "WARNING: incomplete unused trailer at byte {offset}; declared IQ retained"
+                );
+            } else {
+                return Err(e).with_context(|| format!("truncated trailer at byte {offset}"));
+            }
+        }
         let words: Vec<i32> = payload
             .as_chunks::<4>()
             .0
@@ -175,6 +205,12 @@ impl Reader {
             iq,
             words,
         }))
+    }
+    fn finish_tail(&mut self, offset: u64) -> Result<Option<Frame>> {
+        let end = self.file.seek(SeekFrom::End(0))?;
+        self.orphaned_tail = Some((offset, end - offset));
+        eprintln!("WARNING: {} bytes of unheadered/incomplete EOF data at byte {offset}; source retained, no timestamp assigned",end-offset);
+        Ok(None)
     }
 }
 
@@ -245,5 +281,29 @@ mod tests {
         let mut r = Reader::open(f.path(), 8, 8).unwrap();
         r.max_resync_bytes = 4092;
         assert!(r.next().is_err());
+    }
+    #[test]
+    fn orphan_tail_policy_is_explicit() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(&vec![0; 6408]).unwrap();
+        let mut r = Reader::open(f.path(), 8, 8).unwrap();
+        r.max_resync_bytes = 10000;
+        assert!(r.next().is_err());
+        let mut r = Reader::open(f.path(), 8, 8).unwrap();
+        r.max_resync_bytes = 10000;
+        r.allow_orphaned_tail = true;
+        assert!(r.next().unwrap().is_none());
+        assert_eq!(r.orphaned_tail, Some((0, 6408)));
+    }
+    #[test]
+    fn retains_full_iq_when_only_unused_trailer_is_truncated() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(&fixture_header(800, 0)).unwrap();
+        f.write_all(&vec![0; 6400]).unwrap();
+        let mut r = Reader::open(f.path(), 8, 8).unwrap();
+        r.allow_orphaned_tail = true;
+        assert_eq!(r.next().unwrap().unwrap().iq.len(), 800);
+        assert_eq!(r.truncated_trailer_missing_bytes, 8);
+        assert!(r.next().unwrap().is_none());
     }
 }

@@ -58,11 +58,10 @@ the summaries and noise series. Output directories must be new; nothing is
 overwritten in a fresh run. To resume an interrupted job, repeat the same command
 with `--resume`, using the same executable: completed file products are verified
 against the configuration and source file size/mtime before reuse. Do not change
-processing settings during a resume. `cluster.slurm` is a launcher example. All workers need the same
-input paths. `--allow-build-change` is an explicit compatibility override for a
+processing settings during a resume. `--allow-build-change` is an explicit compatibility override for a
 verified non-numerical fix; do not use it to mix different processing methods.
-Workers also need the same
-input paths and shared output directories. The final `catalogue.h5` is written
+`cluster.slurm` is a launcher example. Workers need the same input paths and
+shared output directories. The final `catalogue.h5` is written
 only after processing and extraction finish. Failed jobs exit nonzero.
 
 ## Noise and Plots
