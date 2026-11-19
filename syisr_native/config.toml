@@ -10,7 +10,7 @@ clock_utc_offset_hours = 8
 # Extra IQ-sized word after the declared payload, observed in November 2026 files.
 trailer_bytes = 8
 # Zero makes malformed boundaries fatal. Recovery is bounded and recorded.
-max_resync_bytes = 300000
+max_resync_bytes = 4000000
 chirp_direction = "down"
 # Do not transplant the April 2024 satellite calibration to this recording.
 delay_correction_us = 0.0
