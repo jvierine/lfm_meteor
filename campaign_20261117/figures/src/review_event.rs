@@ -18,7 +18,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let observed=array(h,"seed_apparent_path_m")?;let model=array(h,"modeled_path_m")?;
     let lower=array(h,"path_lower95_m")?;let upper=array(h,"path_upper95_m")?;
     let ml=array(h,"path_measurement_lower95_m")?;let mh=array(h,"path_measurement_upper95_m")?;
-    let beat=array(h,"residual_beat_hz")?;let bs=array(h,"conditional_beat_std_hz")?;
+    let beat:Vec<_>=array(h,"residual_beat_hz")?.iter().map(|v|v/1000.).collect();let bs:Vec<_>=array(h,"conditional_beat_std_hz")?.iter().map(|v|v/1000.).collect();
     let tx=limits(&t,0.05);
     for j in 0..4 {
         let rect=Rect::new(if j%2==0{23.}else{126.},if compact {15.+(j/2) as f64*50.} else {12.+(j/2) as f64*77.},73.,if compact {36.} else {54.});
@@ -28,7 +28,9 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         for i in 0..t.len() {match j {0=>ys.extend([(ml[i]-offset(i))/1000.,(mh[i]-offset(i))/1000.]),2=>ys.extend([model[i]-mh[i],model[i]-ml[i]]),3=>ys.extend([beat[i]-1.96*bs[i],beat[i]+1.96*bs[i]]),_=>()}}
         let mut yl=if j==1{let mut a=array(h,"speed_lower95_km_s")?;a.extend(array(h,"speed_upper95_km_s")?);limits(&a,0.1)}else{limits(&ys,0.12)};
         if j==1 {let mid=(yl[0]+yl[1])/2.;let half=((yl[1]-yl[0])/2.).max(0.025);yl=[mid-half,mid+1.5*half];}
-        let mut p=Panel::new(rect,Axes::new(tx,yl,if compact && j>=2 {""} else {"Time (s)"},["Path offset (km)","Speed (km s$^{-1}$)","Path residual (m)","Residual beat (Hz)"][j]));
+        let mut p=Panel::new(rect,Axes::new(tx,yl,if compact && j>=2 {""} else {"Time (s)"},""));
+        let mut ylabel=Label::new(["Path offset (km)","Speed (km s$^{-1}$)","Path residual (m)","Residual beat (kHz)"][j],rect.x-21.,rect.y+rect.height/2.);
+        ylabel.rotation=-90.;f.labels.push(ylabel);
         if j==1 {
             let st=array(h,"speed_time_s")?;
             if uncertainty {p.uncertainty_band(&st,&array(h,"speed_lower95_km_s")?,&array(h,"speed_upper95_km_s")?,"#777777",0.5)?;}
@@ -59,7 +61,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let mut gy=limits(&gain,0.08);gy[0]-=0.25*(gy[1]-gy[0]);let rl=limits(&ry,0.1);
     let to_gain=|r:f64|gy[0]+(r-rl[0])/(rl[1]-rl[0])*(gy[1]-gy[0]);
     let mut a=Axes::new(limits(&bt,0.05),gy,"Time (s)","Gain (dB)");
-    let ticks=(rl[0].ceil() as i32..=rl[1].floor() as i32).filter(|v|if compact {v.rem_euclid(5)==0} else {(v-rl[0].ceil() as i32).rem_euclid(2)==0}).map(|v|v as f64).collect();
+    let step=((rl[1]-rl[0])/3./5.).ceil().max(1.)*5.;
+    let ticks=((rl[0]/step).ceil() as i32..=(rl[1]/step).floor() as i32).map(|v|v as f64*step).collect();
     a.secondary_y=Some(SecondaryAxis::new(quantity.clone(),ticks,to_gain)?);
     let bottom = if compact {130.} else {166.};
     let panel_height = if compact {36.} else {54.};
