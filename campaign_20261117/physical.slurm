@@ -18,3 +18,6 @@ environment=/opt/soft/anaconda3/envs/py311
 "$conda" run -p "$environment" python -m pip install --target "$HOME/.local/syisr-campaign-python" --no-deps pymsis rebound
 "$conda" run -p "$environment" python -u campaign_20261117/physical.py \
     --workers "$SLURM_CPUS_PER_TASK" --library "$PWD/tristatic_native/target/release/libtristatic_native.so" "$@"
+"$conda" run -p "$environment" python -u campaign_20261117/derived.py \
+    --workers "$SLURM_CPUS_PER_TASK" \
+    --lookup /gpfs/pub/data_other/juha/20261117_tristatic/calibration/lookup.h5 "$@"

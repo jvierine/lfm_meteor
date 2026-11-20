@@ -108,7 +108,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         LegendEntry::line(format!("Dynamic initial mass, $n={}$", m.len()), "#2f7f6f"),
         LegendEntry {
             label: "Mass estimates; 95\\% intervals".into(),
-            symbol: LegendSymbol::AsymmetricInterval { color: "#17463d".into(), size_pt: 3.7 },
+            symbol: LegendSymbol::Circle { color: "#17463d".into(), radius_pt: 1.85 },
         },
     ]);
     if !rx.is_empty() {
