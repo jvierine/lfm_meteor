@@ -31,10 +31,10 @@ grep -q -- --workers <<< "$help" || {
 }
 case "$mode" in
     process)
-        resume=()
-        if [[ -f "$output/run.h5" ]]; then resume=(--resume); fi
+        set --
+        if [[ -f "$output/run.h5" ]]; then set -- --resume; fi
         exec "$binary" process --config sanya.toml \
-            --output "$output" --workers "$workers" "${resume[@]}"
+            --output "$output" --workers "$workers" "$@"
         ;;
     plot)
         # Optional second argument selects an existing event-cut directory.
