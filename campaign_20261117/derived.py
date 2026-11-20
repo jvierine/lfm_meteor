@@ -44,6 +44,8 @@ def orbit_product(folder, state, covariance, epoch_ns):
     from astropy.coordinates import get_body_barycentric_posvel
     from astropy.time import Time
     from astropy import units as u
+    if np.dot(state[3:],state[3:])/2 - 3.986004418e14/np.linalg.norm(state[:3]) <= 0:
+        raise ValueError("fitted geocentric state is not an incoming escaping meteoroid orbit")
     time = Time(np.longdouble(epoch_ns)/1e9, format="unix", scale="utc")
     obliquity = np.deg2rad(23.4392911)
     rotation = np.array([[1, 0, 0], [0, np.cos(obliquity), np.sin(obliquity)],

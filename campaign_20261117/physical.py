@@ -45,6 +45,8 @@ def one(task):
                               max_nfev=160, ftol=1e-8, xtol=1e-8, gtol=1e-6)
             candidates.append(f)
         fit = min(candidates, key=lambda f: f.cost)
+        if not np.isfinite(fit.fun).all() or np.max(np.abs(fit.fun)) >= 1e9:
+            raise ValueError("no valid physical trajectory among radius starts")
         q = fit.x
         covariance = np.linalg.pinv(fit.jac.T @ fit.jac, rcond=1e-13)
         radius = 10**q[6]
