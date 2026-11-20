@@ -127,7 +127,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         format!("Trajectories / ({bin_width:.2} dex)"),
     );
     count_axes.show_x_axis = false;
-    count_axes.yticks = (0..=(count_max / 10.) as usize).map(|i| i as f64 * 10.).collect();
+    let count_step = (count_max / 4. / 10.).ceil().max(1.) * 10.;
+    count_axes.yticks = (0..=(count_max / count_step) as usize).map(|i| i as f64 * count_step).collect();
     f.panels.push(Panel::new(Rect::new(24., 66.2, 129., 28.8), count_axes));
     let mut speed_axes = Axes::new(xlim, [0., 72.], "", "");
     speed_axes.show_x_axis = false;
