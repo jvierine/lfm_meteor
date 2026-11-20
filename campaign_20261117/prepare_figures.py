@@ -168,7 +168,7 @@ def catalogue(root, out, workers):
         caption="Event %s, %s UTC. Apparent paths, speed, residuals, echo evolution and beam-plane trajectory." % (name.replace("_",r"\_"),when)
         if e["physical"].get("resolved",False):
             caption+=" The reference-atmosphere dynamic mass is $%.3g$ kg (local-curvature selection)." % e["physical"]["initial_mass_kg"]
-        atlas.append(r"\begin{figure}[p]\centering\includegraphics{memos/november2026/events/%s/event.pdf}\caption{%s}\end{figure}"%(name,caption))
+        atlas.append(r"\begin{minipage}{\linewidth}\centering\includegraphics{memos/november2026/events/%s/event.pdf}\captionof{figure}{%s}\end{minipage}\par\clearpage"%(name,caption))
     (out.parent/"event_atlas.tex").write_text("\n".join(atlas)+"\n")
     (out.parent/"event_examples.tex").write_text("\n".join(atlas[:6])+"\n")
 
