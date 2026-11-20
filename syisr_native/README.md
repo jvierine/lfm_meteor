@@ -123,11 +123,17 @@ Display the full RTI with a weaker dB colour scale, or explicitly select an
 altitude interval while retaining the full observing time:
 
 ```sh
-cargo run --release --locked --example plot_power_db -- rti_noise_calibrated.h5 full_db.png 0 0.5
+cargo run --release --locked --example plot_power_db -- rti_noise_calibrated.h5 full_db.png -0.2 2
 cargo run --release --locked --example plot_power_db -- rti_noise_calibrated.h5 e_region.png -0.05 0.15 80 150
 ```
 
 Colour limits affect the display only; the output HDF5 retains all dB values.
+
+Compare monotonic-lightness palettes using the same linear power/noise limits:
+
+```sh
+cargo run --release --locked --example plot_linear_colormaps -- rti_noise_calibrated.h5 /data/products/ionosphere-whitened
+```
 
 To independently replay a raw-voltage cut and compare zero-Doppler filtering
 with Doppler predicted from its fitted range migration:
