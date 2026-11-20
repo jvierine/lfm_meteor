@@ -10,12 +10,23 @@ elif [[ $# -ne 0 ]]; then
     echo "Usage: ./build.sh [--mpi]" >&2; exit 1
 fi
 command -v cargo >/dev/null || { echo "Install Rust with rustup or load the cluster Rust module" >&2; exit 1; }
+if [[ -d "$HOME/.local/lib/pkgconfig" ]]; then
+    export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+fi
 pkg-config --exists hdf5 || { echo "Load HDF5 development libraries; set PKG_CONFIG_PATH if needed" >&2; exit 1; }
 export SYISR_GIT_REVISION="$(git rev-parse HEAD)$(test -z "$(git status --porcelain)" || printf '+dirty')"
 if [[ "$with_mpi" == 1 ]]; then
     cargo build --release --locked --features mpi
 else
     cargo build --release --locked
+fi
+if [[ -f target/centos7-link/libc.so ]]; then
+    # Link only the delivered binary against the compute-node C libraries;
+    # build scripts and proc macros must still run against the login-node ABI.
+    args=()
+    if [[ "$with_mpi" == 1 ]]; then args=(--features mpi); fi
+    cargo rustc --release --locked --bin syisr-native "${args[@]}" -- \
+        -L "native=$(pwd)/target/centos7-link"
 fi
 if [[ "$(uname -s)" == Linux ]]; then
     # Compute nodes may lack the login node's HDF5 installation. Bundle resolved
