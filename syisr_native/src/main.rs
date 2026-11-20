@@ -55,6 +55,9 @@ enum Command {
     },
     /// MPI builds distribute input files; rank zero merges events across files.
     Process {
+        /// Local file-processing workers; no MPI required.
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long)]
@@ -843,6 +846,7 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
             }
         }
         Command::Process {
+            workers,
             config,
             max_files,
             max_frames,
@@ -853,6 +857,11 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
             resume,
             allow_build_change,
         } => {
+            ensure!(workers > 0, "--workers must be at least 1");
+            ensure!(
+                size == 1 || workers == 1,
+                "do not combine --workers with multiple MPI ranks"
+            );
             let mut c = Config::load(&config)?;
             if let Some(n) = max_files {
                 c.max_files = n;
@@ -913,7 +922,56 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
                 );
             }
             barrier();
-            if size == 1 {
+            if size == 1 && workers > 1 {
+                use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+                let next = AtomicUsize::new(0);
+                let stop = AtomicBool::new(false);
+                std::thread::scope(|scope| -> Result<()> {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let nworkers = workers.min(files.len());
+                    eprintln!("Processing with {nworkers} local workers (no MPI)");
+                    let mut live = pipeline::Live::new(&c, &files);
+                    // Each worker owns its reader and FFT; completed files are
+                    // consumed in recording order by the existing live pipeline.
+                    for _ in 0..nworkers {
+                        let (tx, c, files, next, stop) = (tx.clone(), &c, &files, &next, &stop);
+                        scope.spawn(move || {
+                            while !stop.load(Ordering::Relaxed) {
+                                let i = next.fetch_add(1, Ordering::Relaxed);
+                                if i >= files.len() {
+                                    break;
+                                }
+                                let result = (|| -> Result<()> {
+                                    if !(resume && reusable(c, &files[i], i, allow_build_change)?) {
+                                        process_file(c, &files[i], i)?;
+                                    }
+                                    Ok(())
+                                })()
+                                .with_context(|| format!("{}", files[i].display()));
+                                if result.is_err() {
+                                    stop.store(true, Ordering::Relaxed);
+                                }
+                                if tx.send(result).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                    drop(tx);
+                    for result in rx {
+                        if let Err(error) = result {
+                            stop.store(true, Ordering::Relaxed);
+                            return Err(error);
+                        }
+                        if let Err(error) = live.poll() {
+                            stop.store(true, Ordering::Relaxed);
+                            return Err(error);
+                        }
+                    }
+                    live.finish()?;
+                    Ok(())
+                })?;
+            } else if size == 1 {
                 let mut live = pipeline::Live::new(&c, &files);
                 for (i, p) in files.iter().enumerate() {
                     if !(resume && reusable(&c, p, i, allow_build_change)?) {
@@ -1037,6 +1095,15 @@ mod tests {
     }
     #[test]
     fn real_format_end_to_end_with_cross_file_event() {
+        cross_file_recovery(1);
+    }
+
+    #[test]
+    fn local_workers_recover_cross_file_event() {
+        cross_file_recovery(3);
+    }
+
+    fn cross_file_recovery(workers: usize) {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let mut c = Config::load(Path::new("config.toml")).unwrap();
@@ -1073,6 +1140,7 @@ mod tests {
         std::fs::write(&config, toml::to_string(&c).unwrap()).unwrap();
         let cli = Cli {
             command: Command::Process {
+                workers,
                 config,
                 max_files: None,
                 max_frames: None,

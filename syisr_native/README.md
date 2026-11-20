@@ -41,6 +41,16 @@ target/release/syisr-native init --station sanya \
 target/release/syisr-native process --config sanya.toml
 ```
 
+To use 64 local workers without MPI:
+
+```bash
+target/release/syisr-native process --config sanya.toml --workers 64
+```
+
+The default is `--workers 1`. Workers process different input files while event
+cuts and plots are published during processing. Do not combine local workers
+with a multi-rank MPI launch.
+
 Before running, check the generated configuration's clock assumption (UTC+8),
 search interval and hardware-delay correction (zero until calibrated).
 For remote receivers, replace `sanya` with `danzhou` or `wenchang`.
