@@ -18,3 +18,4 @@ conda=/opt/soft/anaconda3/bin/conda
 cargo build --release --locked --manifest-path tristatic_native/Cargo.toml --lib -j "$workers"
 "$conda" run -n base python -u campaign_20261117/analyze.py associate
 "$conda" run -n base python -u campaign_20261117/analyze.py fit --workers "$workers" "$@"
+"$conda" run -n base python -u campaign_20261117/overlap.py --workers "$workers"

@@ -1,10 +1,21 @@
 """Prepare scientific HDF5 inputs for the November Rustplotlib memo figures."""
 import argparse
+import hashlib
 from pathlib import Path
 import h5py
 import numpy as np
 from analyze import SITES, STATIONS, ENU, C, save
 from derived import beam, beam_frame, beam_power, angular_offsets, directions_from_offsets
+
+
+def retained_ids(root):
+    path=root/"association_selection.h5"
+    if not path.exists(): return None
+    with h5py.File(path) as h:
+        if h.attrs["associations_sha256"] != hashlib.sha256((root/"associations.h5").read_bytes()).hexdigest():
+            raise ValueError("association selection is stale; rerun overlap.py before preparing figures")
+        return {name.decode() if isinstance(name,bytes) else str(name)
+                for name,keep in zip(h["event_id"][:],h["accepted"][:]) if keep}
 
 
 def overview(root, out):
@@ -27,6 +38,9 @@ def overview(root, out):
         associations = h5py.File(out.parent / "associations.h5")
         indices = associations["station_event_indices"][:]
         associations.close()
+        accepted=retained_ids(out.parent)
+        if accepted is not None:
+            indices=indices[["tri_%06d"%i in accepted for i in range(len(indices))]]
         with h5py.File(root / "20261117_sanya/catalogue.h5") as source:
             tri = source["event_start_utc_ns"][:][indices[:, 0]]
         for site, count in zip(SITES + ("tristatic",), counts + [np.histogram((tri-day)/3.6e12, np.arange(11, 26))[0]]):
@@ -137,6 +151,8 @@ def create_event_input(event):
 def catalogue(root, out, workers):
     import concurrent.futures
     folders = sorted(x.parent for x in (out.parent/"events").glob("tri_*/fit.h5"))
+    accepted=retained_ids(out.parent)
+    if accepted is not None: folders=[f for f in folders if f.name in accepted]
     if not folders: return
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
         events = [e for e in pool.map(event_data, folders, chunksize=1) if e is not None]

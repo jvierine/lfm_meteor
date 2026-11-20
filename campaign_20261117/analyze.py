@@ -85,13 +85,23 @@ def associate(root, out):
     for j in (1, 2):
         values, count = np.unique(matches[:, j], return_counts=True)
         keep &= ~np.isin(matches[:, j], values[count > 1])
-    save(out / "associations.h5", {"station_event_indices": matches[keep],
+    from overlap import measure_overlap
+    sufficient = np.zeros(len(matches),bool)
+    for n in np.flatnonzero(keep):
+        times=[]
+        for site,index in zip(SITES,matches[n]):
+            with h5py.File(root/("20261117_"+site)/"event_cuts"/("event_%06d.h5"%index)) as h:
+                valid=(h["ransac_inlier"][:]==1)&(h["pulses/peak_snr_db"][:]>=14)
+                times.append(h["pulses/utc_ns"][:][valid])
+        sufficient[n]=measure_overlap(times)[0]
+    save(out / "associations.h5", {"station_event_indices": matches[keep & sufficient],
+         "insufficient_overlap_station_event_indices": matches[keep & ~sufficient],
          "nonunique_station_event_indices": matches[~keep],
          "ambiguous_sanya_indices": np.asarray(ambiguous, dtype=np.int64),
          "station_counts": np.array([len(x["event_start_utc_ns"]) for x in catalogues])},
-         {"method": "unique event interval overlap within 50 ms; geometry not yet validated",
+         {"method": "unique candidates; >=6 shared pulses, >=25 ms, >=50 percent of every station; 100 us matching tolerance",
           "hardware_delay_status": "recorded gate timing; independent calibration not yet established"})
-    print("ASSOCIATIONS", len(matches[keep]), "ambiguous", len(ambiguous) + np.sum(~keep), flush=True)
+    print("ASSOCIATIONS", np.sum(keep & sufficient), "insufficient overlap",np.sum(keep & ~sufficient), "ambiguous", len(ambiguous) + np.sum(~keep), flush=True)
 
 
 def frames_at(ns):

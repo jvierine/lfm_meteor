@@ -2,6 +2,7 @@
 import argparse
 from html import escape
 from pathlib import Path
+import re
 
 
 def main():
@@ -21,6 +22,10 @@ def main():
                             '<a href="figure%d.pdf"><img src="%s" loading="lazy" alt="%s"></a></section>'
                             % (number, number, escape(name), number, png.name, escape(name)))
     events = sorted((root / "events").glob("tri_*/event.png"))
+    atlas=root/"event_atlas.tex"
+    if atlas.exists():
+        retained=set(re.findall(r"events/(tri_\d+)/event.pdf",atlas.read_text()))
+        events=[p for p in events if p.parent.name in retained]
     sections.append('<h2 id="events">Individual events (%d rendered)</h2><div class="events">' % len(events))
     for png in events:
         path = png.relative_to(root).as_posix()

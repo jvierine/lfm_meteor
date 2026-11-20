@@ -5,9 +5,24 @@ import h5py
 import numpy as np
 from analyze import load_measurements, SITES, ENU, STATIONS
 from derived import source_root, beam, beam_frame, beam_power, directions_from_offsets, angular_offsets
+from overlap import measure_overlap
 
 
 class CampaignTests(unittest.TestCase):
+    def test_disjoint_station_arcs_cannot_form_tristatic_event(self):
+        t=np.arange(20,dtype=np.int64)*5000000
+        self.assertFalse(measure_overlap([t,t+125000000,t+125000000])[0])
+
+    def test_shared_pulses_allow_small_clock_offsets_not_neighbouring_ipps(self):
+        t=np.arange(12,dtype=np.int64)*5000000
+        self.assertTrue(measure_overlap([t,t+25000,t-25000])[0])
+        self.assertFalse(measure_overlap([t,t+1000000,t])[0])
+        self.assertFalse(measure_overlap([t,t[:5],t[:5]])[0])
+
+    def test_shared_arc_must_cover_half_of_each_station(self):
+        t=np.arange(40,dtype=np.int64)*5000000
+        self.assertFalse(measure_overlap([t,t[:8],t[:8]])[0])
+        self.assertTrue(measure_overlap([t,t[:20],t[:20]])[0])
     def test_raw_cut_replays_q_plus_i_i_not_conjugated_waveform(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
