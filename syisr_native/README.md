@@ -55,6 +55,12 @@ Before running, check the generated configuration's clock assumption (UTC+8),
 search interval and hardware-delay correction (zero until calibrated).
 For remote receivers, replace `sanya` with `danzhou` or `wenchang`.
 
+Inputs are checked before processing and ordered by recorded UTC, not filename.
+Files with the same start time are excluded only after a complete byte-for-byte
+comparison confirms duplication; the mapping is saved in `run.h5`. Conflicting
+recordings fail explicitly. If raw files were replaced after a run began, keep
+the previous output and start a new output directory rather than forcing resume.
+
 Outputs in the selected directory:
 
 - `event_cuts/`: raw-voltage HDF5 cuts, including available pulses between

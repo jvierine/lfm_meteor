@@ -160,10 +160,17 @@ impl Config {
         }
     }
     pub fn files(&self) -> Result<Vec<PathBuf>> {
+        Ok(self.files_with_duplicates()?.0)
+    }
+
+    pub fn files_with_duplicates(
+        &self,
+    ) -> Result<(Vec<PathBuf>, std::collections::BTreeMap<String, String>)> {
+        use std::io::{Read, Seek};
         let mut files =
             glob::glob(&self.input_glob)?.collect::<std::result::Result<Vec<_>, _>>()?;
         files.retain(|p| p.is_file());
-        // Numeric suffix order within each acquisition prefix (not 1, 10, 100, 2).
+        // Stable tie-break before inspecting actual recording times.
         files.sort_by_key(|p| {
             let s = p.to_string_lossy();
             match s.rsplit_once('-') {
@@ -171,16 +178,154 @@ impl Config {
                 None => (s.into_owned(), 0),
             }
         });
-        if self.max_files > 0 {
-            files.truncate(self.max_files);
-        }
         if files.is_empty() {
             bail!("no inputs match {}", self.input_glob);
         }
-        for p in &files {
-            p.metadata()
-                .with_context(|| format!("input {}", p.display()))?;
+        let mut entries = Vec::new();
+        for p in files {
+            let mut reader =
+                crate::raw::Reader::open(&p, self.clock_utc_offset_hours, self.trailer_bytes)
+                    .with_context(|| format!("input {}", p.display()))?;
+            reader.max_resync_bytes = self.max_resync_bytes;
+            reader.allow_orphaned_tail = self.allow_orphaned_tail;
+            let mut times = Vec::new();
+            for _ in 0..8 {
+                match reader
+                    .next()
+                    .with_context(|| format!("preflight {}", p.display()))?
+                {
+                    Some(frame) => times.push(frame.header.utc_ns),
+                    None => break,
+                }
+            }
+            ensure!(!times.is_empty(), "no valid frames in {}", p.display());
+            let flags = crate::timing::valid_sequence(&times);
+            let start = times
+                .iter()
+                .zip(flags)
+                .find(|(_, flag)| *flag == 1)
+                .unwrap()
+                .0;
+            entries.push((*start, p.metadata()?.len(), p));
         }
-        Ok(files)
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
+        let mut duplicates = std::collections::BTreeMap::new();
+        let mut unique: Vec<(i64, u64, PathBuf)> = Vec::new();
+        for entry in entries {
+            if let Some(previous) = unique.last().filter(|p| p.0 == entry.0) {
+                ensure!(
+                    previous.1 == entry.1,
+                    "conflicting recordings at the same UTC: {} and {} (different sizes)",
+                    previous.2.display(),
+                    entry.2.display()
+                );
+                let mut a = std::io::BufReader::new(std::fs::File::open(&previous.2)?);
+                let mut b = std::io::BufReader::new(std::fs::File::open(&entry.2)?);
+                let (mut x, mut y) = (vec![0u8; 1024 * 1024], vec![0u8; 1024 * 1024]);
+                loop {
+                    // read_exact avoids differences in partial-read boundaries.
+                    let remaining = previous.1 - a.stream_position()?;
+                    if remaining == 0 {
+                        break;
+                    }
+                    let n = remaining.min(x.len() as u64) as usize;
+                    a.read_exact(&mut x[..n])?;
+                    b.read_exact(&mut y[..n])?;
+                    ensure!(
+                        x[..n] == y[..n],
+                        "conflicting recordings at the same UTC: {} and {} (different contents)",
+                        previous.2.display(),
+                        entry.2.display()
+                    );
+                }
+                eprintln!(
+                    "DUPLICATE verified: {} matches {}; processing once",
+                    entry.2.display(),
+                    previous.2.display()
+                );
+                duplicates.insert(
+                    entry.2.to_string_lossy().into_owned(),
+                    previous.2.to_string_lossy().into_owned(),
+                );
+            } else {
+                unique.push(entry);
+            }
+        }
+        let mut files: Vec<_> = unique.into_iter().map(|entry| entry.2).collect();
+        if self.max_files > 0 {
+            files.truncate(self.max_files);
+        }
+        Ok((files, duplicates))
+    }
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn recording(path: &Path, start: u16, corrupt_first_time: bool) {
+        let mut file = std::fs::File::create(path).unwrap();
+        for i in 0..8 {
+            let time = if corrupt_first_time && i == 0 {
+                30000
+            } else {
+                start + i * 200
+            };
+            file.write_all(&crate::raw::fixture_header(800, time))
+                .unwrap();
+            file.write_all(&vec![0u8; 800 * 8 + 8]).unwrap();
+        }
+    }
+
+    #[test]
+    fn orders_by_recorded_time_and_verifies_whole_file_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let early = dir.path().join("renamed-97.dat");
+        let later = dir.path().join("renamed-1.dat");
+        recording(&early, 0, true);
+        recording(&later, 2000, false);
+        let duplicate = dir.path().join("copy-98.dat");
+        std::fs::copy(&early, &duplicate).unwrap();
+        let mut c = Config::load(Path::new("config.toml")).unwrap();
+        c.input_glob = format!("{}/*.dat", dir.path().display());
+        let (files, duplicates) = c.files_with_duplicates().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1], later);
+        assert_eq!(duplicates.len(), 1);
+
+        // Identical leading frames do not justify discarding different data.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&duplicate)
+            .unwrap();
+        file.write_all(&[7]).unwrap();
+        assert!(c
+            .files_with_duplicates()
+            .unwrap_err()
+            .to_string()
+            .contains("different sizes"));
+        file.set_len(std::fs::metadata(&early).unwrap().len())
+            .unwrap();
+        drop(file);
+        use std::io::{Seek, SeekFrom};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&duplicate)
+            .unwrap();
+        file.seek(SeekFrom::End(-9)).unwrap();
+        file.write_all(&[7]).unwrap();
+        assert!(c
+            .files_with_duplicates()
+            .unwrap_err()
+            .to_string()
+            .contains("different contents"));
+    }
+
+    #[test]
+    fn missing_source_is_reported_before_processing() {
+        let mut c = Config::load(Path::new("config.toml")).unwrap();
+        c.input_glob = "/definitely-missing-syisr-input/*.dat".into();
+        assert!(c.files().unwrap_err().to_string().contains("no inputs"));
     }
 }

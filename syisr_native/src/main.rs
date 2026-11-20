@@ -897,7 +897,7 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
                 #[cfg(not(feature = "plots"))]
                 anyhow::bail!("plot support not compiled; rebuild normally or use --no-plots");
             }
-            let files = c.files()?;
+            let (files, duplicate_sources) = c.files_with_duplicates()?;
             if rank == 0 {
                 if c.output_dir.exists() {
                     ensure!(resume,"output already exists: {}; use --resume with the same configuration and executable",c.output_dir.display());
@@ -919,6 +919,21 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
                 if !c.output_dir.join("run.h5").exists() {
                     let f = File::create(c.output_dir.join("run.h5"))?;
                     metadata(&f, &c)?;
+                    dataset(
+                        &f,
+                        "duplicate_sources_toml_utf8",
+                        toml::to_string(&duplicate_sources)?.as_bytes(),
+                    )?;
+                    let paths: Vec<_> = files
+                        .iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect();
+                    let inventory = std::collections::BTreeMap::from([("files", paths)]);
+                    dataset(
+                        &f,
+                        "input_inventory_toml_utf8",
+                        toml::to_string(&inventory)?.as_bytes(),
+                    )?;
                     f.flush()?;
                 }
                 eprintln!(
