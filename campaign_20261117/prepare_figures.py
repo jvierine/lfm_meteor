@@ -140,6 +140,16 @@ def catalogue(root, out, workers):
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
         event_inputs = list(pool.map(create_event_input, events, chunksize=1))
     save(out.parent/"event_plot_manifest.h5", {"paths": np.array(event_inputs, dtype="S512")})
+    atlas=[]
+    for e in events:
+        name=e["folder"].name
+        when=str(np.datetime64(int(e["fit"]["time_ns"].min()),"ns"))[:23].replace("T"," ")
+        caption="Event %s, %s UTC. Apparent paths, speed, residuals, echo evolution and beam-plane trajectory." % (name.replace("_",r"\_"),when)
+        if e["physical"].get("resolved",False):
+            caption+=" The reference-atmosphere dynamic mass is $%.3g$ kg (local-curvature selection)." % e["physical"]["initial_mass_kg"]
+        atlas.append(r"\begin{figure}[p]\centering\includegraphics{memos/november2026/events/%s/event.pdf}\caption{%s}\end{figure}"%(name,caption))
+    (out.parent/"event_atlas.tex").write_text("\n".join(atlas)+"\n")
+    (out.parent/"event_examples.tex").write_text("\n".join(atlas[:6])+"\n")
 
     # Height and pointing offsets use geodetic positions, not slant range.
     with h5py.File(root/"20261117_sanya/catalogue.h5") as h:
