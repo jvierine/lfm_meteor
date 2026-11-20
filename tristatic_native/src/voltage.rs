@@ -55,6 +55,10 @@ impl Voltage {
         Ok(v)
     }
     fn prepare_fft(&mut self) {
+        if self.filter_len==1 && self.whiten_real.iter().all(|x|*x==1.) && self.whiten_imag.iter().all(|x|*x==0.) {
+            self.fft=None;
+            return;
+        }
         let nfft=(self.n+self.filter_len-1).next_power_of_two();
         let mut planner=FftPlanner::new();let forward=planner.plan_fft_forward(nfft);let inverse=planner.plan_fft_inverse(nfft);
         let mut filters=Vec::new();

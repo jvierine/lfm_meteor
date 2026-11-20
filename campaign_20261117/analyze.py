@@ -139,7 +139,7 @@ def load_measurements(root, indices):
             p = h["pulses"]
             offsets = h["raw/pulse_offsets"][:]
             words = h["raw/iq_words_iq"][:].reshape(-1, 2)
-            keep = (h["ransac_inlier"][:] == 1) & (p["peak_snr_db"][:] >= 15)
+            keep = (h["ransac_inlier"][:] == 1) & (p["peak_snr_db"][:] >= 14)
             for k in np.flatnonzero(keep):
                 lag = int(p["echo_start_sample"][k]) - int(h["raw/first_sample"][k])
                 first = lag - 240
@@ -147,7 +147,8 @@ def load_measurements(root, indices):
                 if first < 0 or first + 1280 > count:
                     continue
                 iq = words[int(offsets[k])+first:int(offsets[k])+first+1280]
-                raw = iq[:, 0].astype(float) + 1j*iq[:, 1]
+                # Preserve the station reader's Q + i I convention, not I + i Q.
+                raw = iq[:, 1].astype(float) + 1j*iq[:, 0]
                 sample = h["raw/first_delay_us"][k]*1e-6 + (first + np.arange(1280))/FS
                 noise = float(p["raw_noise_power_adc2"][k])
                 if not np.isfinite(noise) or noise <= 0:
@@ -158,8 +159,8 @@ def load_measurements(root, indices):
                     az=float(p["tx_azimuth_deg"][k]), el=float(p["tx_elevation_deg"][k]),
                     rxaz=float(p["rx_azimuth_deg"][k]), rxel=float(p["rx_elevation_deg"][k])))
     rows.sort(key=lambda r: (r["ns"], r["station"]))
-    if any(sum(r["station"] == s for r in rows) < 6 for s in range(3)):
-        raise ValueError("fewer than six usable voltage pulses at one receiver")
+    if any(sum(r["station"] == s for r in rows) < 3 for s in range(3)):
+        raise ValueError("fewer than three usable voltage pulses at one receiver")
     if len({(r["station"], r["ns"]) for r in rows}) != len(rows):
         raise ValueError("duplicate station/pulse measurement")
     return rows
@@ -233,7 +234,13 @@ def fit_one(task):
     root, out, library, event, indices = task
     folder = out / ("tri_%06d" % event)
     if (folder / "fit.h5").exists():
-        return event, "cached"
+        with h5py.File(folder / "fit.h5") as h:
+            compatible = h.attrs.get("script_sha256") == hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        if compatible:
+            return event, "cached"
+        archive = out / "superseded" / (folder.name + "_" + str(time.time_ns()))
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(folder, archive)
     try:
         rows = load_measurements(root, indices)
         center, ns, dt, station, apparent, seed_rms = initial_trajectory(rows)
