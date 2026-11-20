@@ -37,7 +37,7 @@ fn main() -> Result<()> {
         let mut fig = Figure::new(IntendedUse::ArticleWide);
         fig.width_mm = 170.;
         fig.height_mm = 100.;
-        let scale = fig.scale(Scale::new([0.95, 1.05], Normalization::Linear, colors)?);
+        let scale = fig.scale(Scale::new([0.967, 1.03], Normalization::Linear, colors)?);
         let mut panel = Panel::new(
             Rect::new(23., 8., 116., 72.),
             Axes::new(
@@ -58,7 +58,7 @@ fn main() -> Result<()> {
             Rect::new(142., 8., 3., 72.),
             scale,
             "Power / noise",
-            vec![0.95, 1., 1.05],
+            vec![0.97, 1., 1.03],
         ));
         fig.save(Path::new(&a[2]).join(format!("full_linear_{name}.png")))?;
     }
@@ -68,7 +68,7 @@ fn main() -> Result<()> {
         .create("power_over_noise")?
         .write_raw(&p)?;
     out.new_dataset_builder()
-        .with_data(&[0.95, 1.05])
+        .with_data(&[0.967, 1.03])
         .create("display_limits")?;
     out.new_dataset_builder()
         .with_data(&t)
@@ -79,6 +79,6 @@ fn main() -> Result<()> {
     out.new_dataset_builder()
         .with_data(&[el])
         .create("elevation_deg")?;
-    out.new_dataset_builder().with_data(b"Identical original calibrated total-power/noise arrays and linear normalization [0.95,1.05] for Inferno, Plasma and grayscale. Full observing time, 80-600 km, no smoothing, clipping of stored values or interpolation. Colour limits affect display only.").create("methods_utf8")?;
+    out.new_dataset_builder().with_data(b"Identical original calibrated total-power/noise arrays and linear normalization [0.967,1.03] for Inferno, Plasma and grayscale. Full observing time, 80-600 km, no smoothing, clipping of stored values or interpolation. Colour limits affect display only.").create("methods_utf8")?;
     Ok(())
 }
