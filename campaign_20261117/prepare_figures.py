@@ -4,7 +4,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 from analyze import SITES, STATIONS, ENU, C, save
-from derived import beam
+from derived import beam, beam_frame, beam_power, angular_offsets, directions_from_offsets
 
 
 def overview(root, out):
@@ -126,8 +126,11 @@ def create_event_input(event):
         # -3 dB square-aperture main-beam contour at the fitted mean range.
         contour = g.create_group("contours/main")
         angle = np.linspace(0, 2*np.pi, 181)
-        radius = np.median(distance)*np.deg2rad(.45)
-        contour["half_power"] = np.c_[radius*np.cos(angle), radius*np.sin(angle)]
+        from scipy.optimize import brentq
+        axis, _, _ = beam_frame()
+        radius = np.array([brentq(lambda r: beam_power(directions_from_offsets(
+            r*np.cos(a), r*np.sin(a)), axis)-10**(-3/10), 0., .9) for a in angle])
+        contour["half_power"] = np.median(distance)*np.sin(np.deg2rad(radius))[:,None]*np.c_[np.cos(angle),np.sin(angle)]
     return str(folder/"event_plot.h5")
 
 
@@ -162,14 +165,14 @@ def catalogue(root, out, workers):
     for e in events:
         p = e["physical"].get("position_ecef_m", e["fit"]["position_ecef_m"])
         local = (p-STATIONS[0]) @ ENU.T
-        az = np.rad2deg(np.arctan2(local[:, 0], local[:, 1]))
-        el = np.rad2deg(np.arcsin(local[:, 2]/np.linalg.norm(local, axis=1)))
-        east.extend((az-15)*np.cos(np.deg2rad(75)))
-        north.extend(el-75)
+        dx, dy = angular_offsets(local/np.linalg.norm(local,axis=1)[:,None])
+        east.extend(dx)
+        north.extend(dy)
     grid = np.linspace(-2.6, 2.6, 105)
     counts, xe, ye = np.histogram2d(east, north, bins=(grid, grid))
     xx, yy = np.meshgrid(grid, grid)
-    gain_grid = 20*np.log10(np.maximum(np.abs(np.sinc(40/(C/430e6)*np.deg2rad(xx))*np.sinc(40/(C/430e6)*np.deg2rad(yy))), 1e-15))
+    axis, sky_east, sky_north = beam_frame()
+    gain_grid = 10*np.log10(np.maximum(beam_power(directions_from_offsets(xx,yy),axis),1e-30))
     gh = np.linspace(80, 120, 401)
     # Relative coverage from actual beam geometry; no absolute remote-gain claim.
     a, el = np.deg2rad([15,75])
@@ -195,7 +198,9 @@ def catalogue(root, out, workers):
     save(out/"figure3.h5", dict(tristatic_height_km=tri_event_height, monostatic_height_km=mono,
         gain_height_km=gh, gain_Danzhou=remote[0], gain_Wenchang=remote[1],
         counts=counts.T, east_edges=xe, north_edges=ye, gain_grid_deg=grid,gain_db=gain_grid),
-        {"containment_level_db": -3., "remote_gain_model": "rectangular aperture; header pointing"})
+        {"containment_level_db": -3., "remote_gain_model": "rectangular aperture; header pointing",
+         "beam_coordinates": "orthonormal east/north sky tangent plane; gnomonic angles",
+         "beam_axis_enu": axis, "beam_east_enu": sky_east, "beam_north_enu": sky_north})
     event_height = np.array([np.median(e["height"]) for e in events])
     common=np.logical_and.reduce([g>=np.max(g)-3 for g in remote])
     if not common.any(): raise ValueError("recorded remote beams have no shared half-power altitude interval")

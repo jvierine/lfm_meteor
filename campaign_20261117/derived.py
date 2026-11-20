@@ -13,19 +13,49 @@ from scipy.interpolate import RegularGridInterpolator
 from analyze import C, FS, WAVELENGTH, STATIONS, ENU, save
 
 RATE_FACTOR = 4*np.sqrt(2*np.pi)*951.*3.8e-26
+SANYA_AZ_EL = (14.996337890625, 74.9981689453125)
 
 
-def beam(points, az=14.996337890625, el=74.9981689453125):
+def beam_frame(az=SANYA_AZ_EL[0], el=SANYA_AZ_EL[1]):
     a, e = np.deg2rad([az, el])
     axis = np.array([np.sin(a)*np.cos(e), np.cos(a)*np.cos(e), np.sin(e)])
+    east = np.array([1., 0., 0.])-axis[0]*axis
+    east /= np.linalg.norm(east)
+    north = np.cross(axis, east)
+    return axis, east, north
+
+
+def beam_power(direction, axis):
+    """Horizontal east/north aperture, evaluated in ENU direction cosines."""
+    delta = np.asarray(direction)-axis
+    return np.sinc(40/WAVELENGTH*delta[..., 0])**2 * np.sinc(40/WAVELENGTH*delta[..., 1])**2
+
+
+def directions_from_offsets(east_deg, north_deg, az=SANYA_AZ_EL[0], el=SANYA_AZ_EL[1]):
+    axis, east, north = beam_frame(az, el)
+    direction = axis + np.tan(np.deg2rad(east_deg))[..., None]*east + np.tan(np.deg2rad(north_deg))[..., None]*north
+    return direction/np.linalg.norm(direction, axis=-1, keepdims=True)
+
+
+def angular_offsets(direction, az=SANYA_AZ_EL[0], el=SANYA_AZ_EL[1]):
+    axis, east, north = beam_frame(az, el)
+    denominator = np.asarray(direction) @ axis
+    if np.any(denominator <= 0):
+        raise ValueError("beam offsets require directions in the forward hemisphere")
+    return (np.rad2deg(np.arctan2(np.asarray(direction) @ east, denominator)),
+            np.rad2deg(np.arctan2(np.asarray(direction) @ north, denominator)))
+
+
+def beam(points, az=SANYA_AZ_EL[0], el=SANYA_AZ_EL[1]):
+    axis, east, north = beam_frame(az, el)
+    e = np.deg2rad(el)
     relative = (points-STATIONS[0]) @ ENU.T
     distance = np.linalg.norm(relative, axis=1)
     direction = relative/distance[:, None]
-    power = np.sinc(40/WAVELENGTH*(direction[:, 0]-axis[0]))**2 * np.sinc(40/WAVELENGTH*(direction[:, 1]-axis[1]))**2
+    power = beam_power(direction, axis)
     gain_db = 10*np.log10(np.maximum(power, 1e-30))
     gain = 10**((46 + 25*np.log10(np.sin(e)) + gain_db)/10)
-    offset = relative - distance[:, None]*axis
-    return gain_db, gain, distance, offset[:, 0], offset[:, 1]
+    return gain_db, gain, distance, relative @ east, relative @ north
 
 
 def source_root(curve, power, source):

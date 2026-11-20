@@ -4,7 +4,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 from analyze import load_measurements, SITES, ENU, STATIONS
-from derived import source_root, beam
+from derived import source_root, beam, beam_frame, beam_power, directions_from_offsets, angular_offsets
 
 
 class CampaignTests(unittest.TestCase):
@@ -45,6 +45,27 @@ class CampaignTests(unittest.TestCase):
         self.assertAlmostEqual(distance[0],100000.,places=6)
         self.assertAlmostEqual(east[0],0.,places=6)
         self.assertAlmostEqual(north[0],0.,places=6)
+
+    def test_beam_histogram_and_gain_use_the_same_sky_frame(self):
+        axis,east,north=beam_frame()
+        np.testing.assert_allclose(np.array([east,north,axis])@np.array([east,north,axis]).T,np.eye(3),atol=1e-14)
+        self.assertGreater(east[0],0)
+        self.assertGreater(north[1],0)
+        x,y=np.meshgrid(np.linspace(-2,2,11),np.linspace(-2,2,11))
+        directions=directions_from_offsets(x,y)
+        dx,dy=angular_offsets(directions)
+        np.testing.assert_allclose(dx,x,atol=1e-12)
+        np.testing.assert_allclose(dy,y,atol=1e-12)
+        xyz=STATIONS[0]+100000*directions.reshape(-1,3)@ENU
+        gain,_,_,_,_=beam(xyz)
+        np.testing.assert_allclose(gain,10*np.log10(beam_power(directions,axis)).ravel(),atol=1e-8)
+
+    def test_elevation_offset_is_not_geographic_north(self):
+        az,el=np.deg2rad([14.996337890625,75.9981689453125])
+        d=np.array([np.sin(az)*np.cos(el),np.cos(az)*np.cos(el),np.sin(el)])
+        east,north=angular_offsets(d)
+        self.assertLess(north,-.9)
+        self.assertLess(east,-.2)
 
 
 if __name__=="__main__":unittest.main()
