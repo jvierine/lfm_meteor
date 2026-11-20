@@ -17,4 +17,22 @@ if [[ "$with_mpi" == 1 ]]; then
 else
     cargo build --release --locked
 fi
+if [[ "$(uname -s)" == Linux ]]; then
+    # Compute nodes may lack the login node's HDF5 installation. Bundle resolved
+    # non-glibc dependencies in shared storage, without replacing the loader.
+    libdir=target/release/runtime-lib
+    mkdir -p "$libdir"
+    dependencies=$(ldd target/release/syisr-native)
+    if grep -q 'not found' <<< "$dependencies"; then
+        printf '%s\n' "$dependencies" >&2
+        exit 1
+    fi
+    while read -r library; do
+        case "$(basename "$library")" in
+            libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*|libutil.so.*|ld-linux*) continue ;;
+        esac
+        cp -L "$library" "$libdir/$(basename "$library")"
+    done < <(awk '$2 == "=>" && $3 ~ /^\// {print $3}' <<< "$dependencies")
+    echo "Bundled runtime libraries in $(pwd)/$libdir"
+fi
 echo "Built $(pwd)/target/release/syisr-native"

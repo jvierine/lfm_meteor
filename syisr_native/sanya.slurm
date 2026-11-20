@@ -10,6 +10,7 @@
 set -euo pipefail
 cd /home/juha/src/lfm_meteor/syisr_native
 export PATH="$HOME/texlive/bin/x86_64-linux:$HOME/.cargo/bin:$PATH"
+export LD_LIBRARY_PATH="$PWD/target/release/runtime-lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -20,7 +21,11 @@ workers="${SLURM_CPUS_PER_TASK:-64}"
 mode="${1:-process}"
 
 # Fail before touching products when an old executable is still installed.
-"$binary" plot --help | grep -q -- --workers || {
+if ! help=$("$binary" plot --help); then
+    echo "Executable cannot start. Run bash build.sh on symaster to bundle runtime libraries." >&2
+    exit 1
+fi
+grep -q -- --workers <<< "$help" || {
     echo "Old executable: git pull, then bash build.sh before submitting." >&2
     exit 1
 }

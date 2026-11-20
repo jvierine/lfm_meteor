@@ -81,6 +81,10 @@ independent processes.
 ## Symaster Slurm Jobs
 
 Build once on the login node with `bash build.sh` (no MPI), then submit:
+On Linux the build also copies resolved non-glibc shared libraries, including
+HDF5, into `target/release/runtime-lib`. The Slurm jobs load this shared-directory
+bundle, so HDF5 need not be installed on each compute node. Login and compute
+nodes must have compatible architecture and system C libraries.
 
 ```bash
 sbatch sanya.slurm
