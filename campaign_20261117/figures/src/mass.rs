@@ -116,7 +116,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     }
     legend.position = LegendPosition::CenterRight;
     legend.avoid_data = false;
-    p.legend = Some(legend);
+    // The caption identifies the histogram and interval markers; keep the
+    // shared histogram/speed axes free of a data-obscuring legend.
     f.panels.push(p);
     // Floating axes cover only their respective histogram and speed regions.
     let mut count_axes = Axes::new(

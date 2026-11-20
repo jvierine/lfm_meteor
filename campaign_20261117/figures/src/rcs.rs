@@ -32,8 +32,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         "RCS (dBsm)",
         "Pulse count",
     );
-    a.xticks = (-6..=1)
-        .map(|i| i as f64 * 10.)
+    a.xticks = (-5..=1)
+        .map(|i| i as f64 * 20.)
         .filter(|v| *v >= low && *v <= high)
         .collect();
     let mut p = Panel::new(Rect::new(22., 10., 43., 53.), a);
@@ -58,6 +58,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             "Altitude (km)",
         ),
     );
+    p.axes.xticks = (-5..=1).map(|i|i as f64*20.).filter(|v|*v>=low&&*v<=high).collect();
     p.major_grid("#e4e4e4", 0.4);
     p.scatter_colored(&points(&rcs, &alt), &speed, &color, 2.5, 0.62, "none")?;
     panel_label(&mut f, &p, "(b)");

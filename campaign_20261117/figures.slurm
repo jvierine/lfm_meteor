@@ -29,6 +29,7 @@ export NOVEMBER_FIGURE_OUTPUT="$root/figures/events"
 find "$root/events" -mindepth 2 -maxdepth 2 -name event_plot.h5 -print0 | \
     xargs -0 -r -P "$SLURM_CPUS_PER_TASK" -I '{}' bash -c '
         input="$1"; name=$(basename "$(dirname "$input")")
-        "$NOVEMBER_FIGURE_BINARY" event "$input" "$NOVEMBER_FIGURE_OUTPUT/$name/event"
+        mkdir -p "$NOVEMBER_FIGURE_OUTPUT/$name"
+        "$NOVEMBER_FIGURE_BINARY" event "$input" "$NOVEMBER_FIGURE_OUTPUT/$name/event" >"$NOVEMBER_FIGURE_OUTPUT/$name/render.log" 2>&1
     ' _ '{}' || failed=1
 exit "$failed"

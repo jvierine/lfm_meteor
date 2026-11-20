@@ -160,8 +160,20 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             break;
         }
     }
-    let tick_labels = tick_labels.ok_or_else(|| anyhow::anyhow!(
-        "No common clear longitude-label band at article font size"))?;
+    // Dense catalogues can occupy every shared band. Keep coordinate anchors
+    // on their own meridians and let the placement engine choose clear gaps.
+    let tick_labels = match tick_labels {
+        Some(labels) => labels,
+        None => {
+            let ticks: Vec<_> = [0,270,180,60,300,240,120].iter().map(|&longitude| GraticuleLabel {
+                latex: format!("${longitude}^\\circ$"),
+                required: [0,270,180].contains(&longitude),
+                candidates: (-80..=-10).map(|latitude|panel.data_to_figure(
+                    projection.project([longitude as f64,latitude as f64]).unwrap())).collect(),
+            }).collect();
+            f.graticule_labels(&ticks, &text_obstacles)?
+        }
+    };
     f.labels.extend(tick_labels);
     // Contours may be interrupted, but the outer frame must never be erased.
     let bounds = Rect::new(22.5, 7.5, 135., 67.);

@@ -116,8 +116,10 @@ def create_event_input(event):
         g = h.create_group("beam")
         g["time_s"], g["relative_gain_db"] = time[k], gain_db
         # If absolute calibration is not ready, show the fitted SNR instead.
-        g["rcs_dbsm"] = rcs.get("rcs_dbsm", d["snr_db"][k])
-        g.attrs["echo_quantity"] = "RCS (dBsm)" if rcs else "SNR (dB)"
+        values = rcs.get("rcs_dbsm", d["snr_db"][k])
+        use_rcs = bool(rcs) and np.any(np.isfinite(values) & (gain_db >= -10))
+        g["rcs_dbsm"] = values if use_rcs else d["snr_db"][k]
+        g.attrs["echo_quantity"] = "RCS (dBsm)" if use_rcs else "SNR (dB)"
         g["east_m"], g["north_m"], g["height_km"] = east, north, event["height"][k]
         extent = max(1000, np.max(np.abs(np.r_[east, north]))*1.15)
         g.attrs["extent_m"] = extent

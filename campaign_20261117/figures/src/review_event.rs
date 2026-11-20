@@ -13,7 +13,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let uncertainty=h.attr("show_model_uncertainty").ok().and_then(|a|a.read_scalar::<bool>().ok()).unwrap_or(true);
     let compact = h.attr("compact_article_layout").ok().and_then(|a|a.read_scalar::<bool>().ok()).unwrap_or(false);
     let mut f=Figure::new(IntendedUse::Custom{width_mm:220.,font_pt:10.});
-    f.height_mm=if compact {172.} else {248.};
+    f.height_mm=if compact {190.} else {248.};
     let t=array(h,"time_s")?;let sites=array(h,"station")?;
     let observed=array(h,"seed_apparent_path_m")?;let model=array(h,"modeled_path_m")?;
     let lower=array(h,"path_lower95_m")?;let upper=array(h,"path_upper95_m")?;
@@ -52,26 +52,27 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         panel_label(&mut f,&p,&format!("{})",(b'a'+j as u8) as char));f.panels.push(p);
     }
     let b=h.group("beam")?;let bt=array(&b,"time_s")?;let gain:Vec<_>=array(&b,"relative_gain_db")?.iter().map(|x|2.*x).collect();let rcs=array(&b,"rcs_dbsm")?;
-    let good:Vec<_>=(0..bt.len()).filter(|&i|rcs[i].is_finite()&&gain[i]>=-20.).collect();
+    let quantity=b.attr("echo_quantity").ok().and_then(|a|a.read_scalar::<hdf5::types::VarLenUnicode>().ok()).map(|s|s.as_str().to_owned()).unwrap_or_else(||"RCS (dBsm)".into());
+    let good:Vec<_>=(0..bt.len()).filter(|&i|rcs[i].is_finite()&&(quantity.starts_with("SNR")||gain[i]>=-20.)).collect();
+    anyhow::ensure!(!good.is_empty(), "No usable echo-power samples");
     let ry:Vec<_>=good.iter().map(|&i|rcs[i]).collect();let rt:Vec<_>=good.iter().map(|&i|bt[i]).collect();
     let mut gy=limits(&gain,0.08);gy[0]-=0.25*(gy[1]-gy[0]);let rl=limits(&ry,0.1);
     let to_gain=|r:f64|gy[0]+(r-rl[0])/(rl[1]-rl[0])*(gy[1]-gy[0]);
     let mut a=Axes::new(limits(&bt,0.05),gy,"Time (s)","Gain (dB)");
     let ticks=(rl[0].ceil() as i32..=rl[1].floor() as i32).filter(|v|if compact {v.rem_euclid(5)==0} else {(v-rl[0].ceil() as i32).rem_euclid(2)==0}).map(|v|v as f64).collect();
-    let quantity=b.attr("echo_quantity").ok().and_then(|a|a.read_scalar::<hdf5::types::VarLenUnicode>().ok()).map(|s|s.as_str().to_owned()).unwrap_or_else(||"RCS (dBsm)".into());
     a.secondary_y=Some(SecondaryAxis::new(quantity.clone(),ticks,to_gain)?);
-    let bottom = if compact {115.} else {166.};
+    let bottom = if compact {130.} else {166.};
     let panel_height = if compact {36.} else {54.};
     let mut p=Panel::new(Rect::new(23.,bottom,65.,panel_height),a);
     curve(&mut p,&bt,&gain,COLORS[0],1.2);curve(&mut p,&tx,&[-20.,-20.],"#999999",0.6);
     let mapped:Vec<_>=ry.iter().copied().map(to_gain).collect();curve(&mut p,&rt,&mapped,COLORS[1],0.8);dots(&mut p,&rt,&mapped,COLORS[1],2.5,1.,false)?;
     if compact {
-        let mut key=Panel::new(Rect::new(23.,106.,65.,6.),Axes::new([0.,65.],[0.,6.],"",""));
+        let mut key=Panel::new(Rect::new(23.,118.,65.,6.),Axes::new([0.,65.],[0.,6.],"",""));
         key.axes_visible=false;
         curve(&mut key,&[2.,9.],&[3.,3.],COLORS[0],1.2);
         dots(&mut key,&[47.5],&[3.],COLORS[1],2.5,1.,false)?;
-        f.labels.push(Label::new("Two-way gain",50.,109.));
-        f.labels.push(Label::new(if quantity.starts_with("SNR") {"SNR"} else {"RCS"},84.,109.));
+        f.labels.push(Label::new("Two-way gain",50.,121.));
+        f.labels.push(Label::new(if quantity.starts_with("SNR") {"SNR"} else {"RCS"},84.,121.));
         f.panels.push(key);
     } else {
         legend(&mut p,vec![LegendEntry::line("Two-way gain",COLORS[0]),LegendEntry::circle("RCS",COLORS[1])]);
