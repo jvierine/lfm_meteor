@@ -4,17 +4,24 @@ import concurrent.futures
 import os
 from pathlib import Path
 import traceback
+import time
 import h5py
 import numpy as np
 from scipy.optimize import least_squares
 from analyze import Native, save, STATIONS, C, GAMMA, WAVELENGTH
+from fit_numerics import optimize, profile_interval
+
+FIT_VERSION = "stable-absolute-jacobian-profile-v1"
 
 
 def one(task):
     folder, library = task
     target = folder / "physical.h5"
+    previous=None
     if target.exists():
-        return folder.name, "cached"
+        with h5py.File(target) as h:
+            if h.attrs.get("fit_method_version","")==FIT_VERSION:return folder.name,"cached"
+            previous=h["params"][:]
     try:
         import pymsis
         from astropy.coordinates import EarthLocation
@@ -24,6 +31,7 @@ def one(task):
         with h5py.File(folder / "fit.h5") as h:
             seed = h["params"][:]
             position = h["position_ecef_m"][:]
+            observed_path=h["apparent_path_m"][:]
         origin = EarthLocation.from_geocentric(*position[0], unit=u.m)
         height = np.arange(60., 181., 1.)
         dates = np.repeat(np.datetime64(int(d["time_ns"][0]), "ns"), len(height))
@@ -39,10 +47,10 @@ def one(task):
         model = Native(library, model_dir / "input.h5", len(d["time_s"]))
         lo, hi = np.r_[[-30.]*3, [-50.]*3, -7.], np.r_[[30.]*3, [50.]*3, -2.]
         candidates = []
+        if previous is not None:candidates.append(optimize(model.residual,previous,(lo,hi)))
         for radius in (-5., -4., -3.):
             q = np.r_[seed[:6], radius]
-            f = least_squares(model.residual, q, bounds=(lo, hi), x_scale="jac",
-                              max_nfev=160, ftol=1e-8, xtol=1e-8, gtol=1e-6)
+            f = optimize(model.residual,q,(lo,hi))
             candidates.append(f)
         fit = min(candidates, key=lambda f: f.cost)
         if not np.isfinite(fit.fun).all() or np.max(np.abs(fit.fun)) >= 1e9:
@@ -51,11 +59,21 @@ def one(task):
         covariance = np.linalg.pinv(fit.jac.T @ fit.jac, rcond=1e-13)
         radius = 10**q[6]
         mass = 4*np.pi/3 * 3000 * radius**3
-        width = 1.96*np.sqrt(max(covariance[6, 6], 0))
-        interval = 10**(q[6] + np.array([-width, width]))
-        # Local curvature is explicitly not a validated posterior or total error.
-        resolved = bool(fit.success and -6.9 < q[6]-width and q[6]+width < -2.1 and
-                        0.005 < width < 1/6)
+        profiles={float(q[6]):(fit.cost,q[:6].copy())}
+        def cost_at(radius):
+            if radius not in profiles:
+                nearest=min(profiles,key=lambda x:abs(x-radius))
+                fun=lambda x:model.residual(np.r_[x,radius])
+                trial=optimize(fun,profiles[nearest][1],(lo[:6],hi[:6]),max_nfev=140)
+                profiles[radius]=(trial.cost,trial.x)
+            return profiles[radius][0]
+        interval_log=profile_interval(cost_at,q[6],fit.cost)
+        interval=10**interval_log
+        # A singular or noisy Hessian cannot certify a measured radius.
+        resolved=bool(fit.success and np.isfinite(interval_log).all() and
+            interval_log[0]<q[6]<interval_log[1] and
+            interval_log[1]-interval_log[0]<1/3 and
+            min(v[0] for v in profiles.values())>=fit.cost-.1)
         states = model.call("voltage_states", q, (len(d["time_s"]), 4))
         observable = model.call("voltage_observables", q, (len(d["time_s"]), 2))
         predicted = model.call("voltage_prediction", q, (len(d["time_s"]), d["real"].shape[1], 2))
@@ -68,21 +86,36 @@ def one(task):
         # The fitted waveform includes its complex coefficient; peak modeled
         # power gives |a|^2 for the unit-amplitude transmitted waveform.
         amplitude_power = np.max(predicted[:, :, 0]**2 + predicted[:, :, 1]**2, axis=1)
-        save(target, dict(params=q, covariance=covariance, initial_radius_m=radius,
+        updated=folder/"physical-refined.h5"
+        save(updated, dict(params=q, covariance=covariance, initial_radius_m=radius,
             initial_mass_kg=mass, radius_local95_m=interval,
             mass_local95_kg=4*np.pi/3*3000*interval**3,
             time_ns=d["time_ns"], time_s=d["time_s"], station=d["station"],
             speed_mps=states[:, 1], position_ecef_m=x, height_km=location.height.to_value(u.km),
             latitude_deg=location.lat.deg, longitude_deg=location.lon.deg,
             physical_path_m=observable[:, 0], physical_doppler_hz=observable[:, 1],
+            model_apparent_path_m=observable[:,0]+C*observable[:,1]/GAMMA,
+            path_residual_m=observed_path-observable[:,0]-C*observable[:,1]/GAMMA,
+            multistart_params=np.array([f.x for f in candidates]),
+            multistart_cost=np.array([f.cost for f in candidates]),
+            profile_log10_radius=np.array(sorted(profiles)),
+            profile_cost=np.array([profiles[r][0] for r in sorted(profiles)]),
+            optimizer_optimality=fit.optimality,
             modeled_amplitude_power_adc2=amplitude_power,
             initial_gcrs_position_m=d["center"][:3]+1000*q[:3],
             initial_gcrs_velocity_mps=d["center"][3:]+1000*q[3:6]),
-            {"mass_resolved_local_curvature": resolved, "voltage_cost": fit.cost,
+            {"mass_resolved_local_curvature": resolved, "mass_resolved_profile":resolved,
+             "fit_method_version":FIT_VERSION,"voltage_cost": fit.cost,
              "status": "provisional: reference atmosphere and uncalibrated hardware delays",
-             "interval_method": "local Gaussian curvature only; no coverage validation",
+             "interval_method": "conditional thermal-noise profile likelihood, Delta chi2=3.84; no total-error coverage claim",
              "solar_parameters": "F107=F107a=150 sfu; Ap=4 reference scenario",
              "density_kg_m3": 3000., "Gamma": 1., "sigma_s2_m2": 1e-8})
+        if target.exists():
+            backup=folder/"superseded_mass"/str(time.time_ns());backup.mkdir(parents=True)
+            for name in ("physical.h5","rcs.h5","orbits.h5"):
+                old=folder/name
+                if old.exists():os.replace(old,backup/name)
+        os.replace(updated,target)
         model.close()
         return folder.name, "physical"
     except Exception:
@@ -98,6 +131,10 @@ def main():
     p.add_argument("--limit", type=int, default=0)
     a = p.parse_args()
     folders = sorted(x.parent for x in (a.output / "events").glob("tri_*/fit.h5"))
+    if (a.output/"association_selection.h5").exists():
+        with h5py.File(a.output/"association_selection.h5") as h:
+            accepted={n.decode() for n,k in zip(h["event_id"][:],h["accepted"][:]) if k}
+        folders=[f for f in folders if f.name in accepted]
     if a.limit:
         folders = folders[:a.limit]
     with concurrent.futures.ProcessPoolExecutor(max_workers=a.workers) as pool:

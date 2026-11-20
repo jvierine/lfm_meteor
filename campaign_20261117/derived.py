@@ -167,6 +167,10 @@ def main():
     p.add_argument("--limit", type=int, default=0)
     a = p.parse_args()
     folders = sorted(p.parent for p in (a.output/"events").glob("tri_*/physical.h5"))
+    if (a.output/"association_selection.h5").exists():
+        with h5py.File(a.output/"association_selection.h5") as h:
+            accepted={n.decode() for n,k in zip(h["event_id"][:],h["accepted"][:]) if k}
+        folders=[f for f in folders if f.name in accepted]
     if a.limit:
         folders = folders[:a.limit]
     with concurrent.futures.ProcessPoolExecutor(max_workers=a.workers) as pool:

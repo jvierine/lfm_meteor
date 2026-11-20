@@ -85,7 +85,7 @@ def event_data(folder):
     if (folder/"physical.h5").exists():
         with h5py.File(folder/"physical.h5") as h:
             physical = {k: h[k][()] for k in h}
-            physical["resolved"] = bool(h.attrs["mass_resolved_local_curvature"])
+            physical["resolved"] = bool(h.attrs.get("mass_resolved_profile",False))
     if (folder/"rcs.h5").exists():
         with h5py.File(folder/"rcs.h5") as h:
             rcs = {k: h[k][()] for k in h}
@@ -111,7 +111,10 @@ def create_event_input(event):
     folder = event["folder"]
     time, station = d["time_s"], d["station"]
     order = np.argsort(time)
-    model = d["model_apparent_path_m"]
+    model = physical.get("model_apparent_path_m",d["model_apparent_path_m"])
+    residual_beat=d["residual_beat_hz"]
+    if "physical_path_m" in physical:
+        residual_beat=d["measured_gate_beat_hz"]-physical["physical_doppler_hz"]+(4e6/200e-6)/C*(d["matched_filter_path_m"]-physical["physical_path_m"])
     sigma = C/(4e6/200e-6)*d["conditional_beat_std_hz"]
     speed = physical.get("speed_mps", d["speed_mps"])/1000
     k = station == 0
@@ -120,7 +123,7 @@ def create_event_input(event):
         modeled_path_m=model, path_lower95_m=model, path_upper95_m=model,
         path_measurement_lower95_m=d["apparent_path_m"]-1.96*sigma,
         path_measurement_upper95_m=d["apparent_path_m"]+1.96*sigma,
-        residual_beat_hz=d["residual_beat_hz"], conditional_beat_std_hz=d["conditional_beat_std_hz"],
+        residual_beat_hz=residual_beat, conditional_beat_std_hz=d["conditional_beat_std_hz"],
         speed_time_s=time[order], speed_km_s=speed[order],
         speed_lower95_km_s=speed[order], speed_upper95_km_s=speed[order])
     with h5py.File(folder/"event_plot.h5", "w") as h:
@@ -157,7 +160,7 @@ def catalogue(root, out, workers):
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
         events = [e for e in pool.map(event_data, folders, chunksize=1) if e is not None]
     if not events: return
-    save(out/"figure4.h5", {"residual_m": np.concatenate([e["fit"]["path_residual_m"] for e in events])})
+    save(out/"figure4.h5", {"residual_m": np.concatenate([e["physical"].get("path_residual_m",e["fit"]["path_residual_m"]) for e in events])})
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
         event_inputs = list(pool.map(create_event_input, events, chunksize=1))
     save(out.parent/"event_plot_manifest.h5", {"paths": np.array(event_inputs, dtype="S512")})
@@ -167,7 +170,8 @@ def catalogue(root, out, workers):
         when=str(np.datetime64(int(e["fit"]["time_ns"].min()),"ns"))[:23].replace("T"," ")
         caption="Event %s, %s UTC. Apparent paths, speed, residuals, echo evolution and beam-plane trajectory." % (name.replace("_",r"\_"),when)
         if e["physical"].get("resolved",False):
-            caption+=" The reference-atmosphere dynamic mass is $%.3g$ kg (local-curvature selection)." % e["physical"]["initial_mass_kg"]
+            mantissa,exponent=("%.2e"%e["physical"]["initial_mass_kg"]).split("e")
+            caption+=r" The reference-atmosphere dynamic mass is $%s\times10^{%d}$ kg."%(mantissa,int(exponent))
         atlas.append(r"\begin{minipage}{\linewidth}\centering\includegraphics{memos/november2026/events/%s/event.pdf}\captionof{figure}{%s}\end{minipage}\par\clearpage"%(name,caption))
     (out.parent/"event_atlas.tex").write_text("\n".join(atlas)+"\n")
     (out.parent/"event_examples.tex").write_text("\n".join(atlas[:6])+"\n")
@@ -234,7 +238,7 @@ def catalogue(root, out, workers):
             initial_speed_km_s=np.array([e["speed"] for e in physical]),
             mass_95_lo_kg=np.array([e["physical"]["mass_local95_kg"][0] for e in physical]),
             mass_95_hi_kg=np.array([e["physical"]["mass_local95_kg"][1] for e in physical])),
-            {"interval_method":"local curvature, conditional reference atmosphere", "bin_width_dex": .48})
+            {"interval_method":"conditional radius-profile likelihood; reference atmosphere", "bin_width_dex": .48})
     rcs_events = [e for e in events if e["rcs"]]
     pairs = [e for e in rcs_events if e["physical"].get("resolved",False) and np.isfinite(e["rcs"]["integrated_mass_loss_kg"])]
     if rcs_events and pairs:
@@ -291,7 +295,7 @@ def catalogue(root, out, workers):
             h["plot_keep"]=[bool(np.isfinite(d["a_au"]).all() and np.quantile(d["Q_au"],.975)-np.quantile(d["Q_au"],.025)<20) for e,d in orbital]
     save(out.parent/"catalogue_summary.h5",dict(event_id=np.array([e["folder"].name for e in events],dtype="S32"),
         speed_km_s=np.array([e["speed"] for e in events]),height_km=event_height,
-        path_rms_m=np.array([np.sqrt(np.mean(e["fit"]["path_residual_m"]**2)) for e in events])),
+        path_rms_m=np.array([np.sqrt(np.mean(e["physical"].get("path_residual_m",e["fit"]["path_residual_m"])**2)) for e in events])),
         {"fitted_events":len(folders),"diagnostic_pass_events":len(events),"physical_events":len(physical),"orbit_events":len(orbital)})
     print("PREPARED catalogue",len(events),"physical",len(physical),"orbits",len(orbital),flush=True)
 

@@ -6,9 +6,21 @@ import numpy as np
 from analyze import associate, load_measurements, SITES, ENU, STATIONS
 from derived import source_root, beam, beam_frame, beam_power, directions_from_offsets, angular_offsets
 from overlap import measure_overlap
+from fit_numerics import jacobian, profile_interval
 
 
 class CampaignTests(unittest.TestCase):
+    def test_explicit_jacobian_steps_work_for_zero_and_nonzero_parameters(self):
+        a=np.arange(28,dtype=float).reshape(4,7)/7
+        for x in [np.zeros(7),np.arange(7,dtype=float)]:
+            np.testing.assert_allclose(jacobian(lambda q:a@q,x),a,atol=1e-9)
+
+    def test_profile_intervals_reject_flat_and_boundary_mass_fits(self):
+        expected=np.sqrt(2*1.920729410347062)*.03
+        result=profile_interval(lambda r:.5*((r+4)/.03)**2,-4.,0.)
+        np.testing.assert_allclose(result,[-4-expected,-4+expected],atol=.001)
+        self.assertTrue(np.isnan(profile_interval(lambda r:0.,-3.,0.)).all())
+        self.assertTrue(np.isnan(profile_interval(lambda r:0.,-2.,0.)).all())
     def test_association_stage_excludes_nearby_but_disjoint_events(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
