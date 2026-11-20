@@ -274,17 +274,28 @@ def fit_one(task):
         position += np.einsum("nij,nj->ni", frame[:, 24:33].reshape(-1, 3, 3), native_v)
         # Range residuals and residual beats are diagnostics, not extra likelihood terms.
         path_model = observables[:, 0] + C*observables[:, 1]/GAMMA
-        residual = apparent - path_model
         raw = real + 1j*imag
         predicted = prediction[:, :, 0] + 1j*prediction[:, :, 1]
-        fft = np.fft.fftfreq(8192, 1/FS)
-        beat = []
-        for row, pred in zip(raw, predicted):
+        fft = np.fft.fftfreq(131072, 1/FS)
+        beat, reference_beat, beat_sigma = [], [], []
+        for i, (row, pred) in enumerate(zip(raw, predicted)):
             phase = np.divide(pred, np.abs(pred), out=np.zeros_like(pred), where=np.abs(pred) > .2*np.max(np.abs(pred)))
-            power = np.abs(np.fft.fft(row*np.conj(phase)*np.hanning(1280), 8192))**2
+            power = np.abs(np.fft.fft(row*np.conj(phase)*np.hanning(1280), len(fft)))**2
             beat.append(fft[np.argmax(power)])
+            tau = fields["sample_time_s"][i] - apparent[i]/C
+            reference = np.exp(2j*np.pi*(B/2*tau - GAMMA/2*tau*tau))
+            power = np.abs(np.fft.fft(row*np.conj(reference)*np.hanning(1280), len(fft)))**2
+            reference_beat.append(fft[np.argmax(power)])
+            support = np.abs(pred) > .2*np.max(np.abs(pred))
+            t = fields["sample_time_s"][i, support]
+            per_sample_snr = np.max(np.abs(pred)**2)/fields["noise_power"][i]
+            beat_sigma.append(1/np.sqrt(8*np.pi**2*max(per_sample_snr, 1e-12)*np.sum((t-t.mean())**2)))
+        corrected_apparent = apparent + C/GAMMA*np.array(reference_beat)
+        residual = corrected_apparent - path_model
         save(folder / "fit.h5", dict(params=q, covariance=covariance, time_ns=ns, time_s=dt,
-            station=station, apparent_path_m=apparent, model_apparent_path_m=path_model,
+            station=station, apparent_path_m=corrected_apparent, matched_filter_path_m=apparent,
+            measured_gate_beat_hz=np.array(reference_beat), conditional_beat_std_hz=np.array(beat_sigma),
+            model_apparent_path_m=path_model,
             path_residual_m=residual, residual_beat_hz=np.array(beat),
             position_ecef_m=position, position_gcrs_m=gcrs, speed_mps=states[:, 1],
             initial_gcrs_position_m=center[:3]+1000*q[:3], initial_gcrs_velocity_mps=center[3:]+1000*q[3:6],
