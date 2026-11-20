@@ -13,7 +13,7 @@ export PATH="$HOME/.cargo/bin:$HOME/texlive/bin/x86_64-linux:$PATH"
 export LD_LIBRARY_PATH="$PWD/syisr_native/target/release/runtime-lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export HDF5_DIR="$PWD/syisr_native/target/hdf5-sdk"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-/opt/soft/anaconda3/bin/conda run -n base python -u campaign_20261117/prepare_figures.py
+/opt/soft/anaconda3/bin/conda run -n base python -u campaign_20261117/prepare_figures.py --workers "$SLURM_CPUS_PER_TASK"
 cargo build --release --locked --manifest-path campaign_20261117/figures/Cargo.toml -j "$SLURM_CPUS_PER_TASK"
 root=/gpfs/pub/data_other/juha/20261117_tristatic
 for number in 2 3 4 7 8 9 10; do
