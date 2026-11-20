@@ -78,6 +78,30 @@ target/release/syisr-native plot /home/juha/data/20261117_sanya/event_cuts --wor
 This does not reprocess raw recordings. Plot workers default to 1 and run in
 independent processes.
 
+## Symaster Slurm Jobs
+
+Build once on the login node with `bash build.sh` (no MPI), then submit:
+
+```bash
+sbatch sanya.slurm
+sbatch danzhou.slurm
+sbatch wenchang.slurm
+squeue -u "$USER"
+```
+
+These request 64 CPUs and 64 GB per job: Sanya on node01, Danzhou on node02,
+Wenchang on node03. Outputs go to `/gpfs/pub/data_other/juha/20261117_STATION`.
+Existing runs resume with configuration/build verification; incompatible runs
+fail rather than being overwritten. Logs are written in the submission directory.
+
+For plots only, including existing products in your home directory:
+
+```bash
+sbatch sanya.slurm plot /home/juha/data/20261117_sanya/event_cuts
+sbatch danzhou.slurm plot /home/juha/data/20261117_danzhou/event_cuts
+sbatch wenchang.slurm plot /home/juha/data/20261117_wenchang/event_cuts
+```
+
 ## Optional MPI
 
 For fast storage:
