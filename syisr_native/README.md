@@ -119,6 +119,16 @@ Alternating tail gates calibrate the noise scale; the remaining gates check it.
 No ionospheric layer is used to set the scale. This corrects noise-normalization
 errors, not range-dependent RFI or absolute receiver calibration.
 
+Display the full RTI with a weaker dB colour scale, or explicitly select an
+altitude interval while retaining the full observing time:
+
+```sh
+cargo run --release --locked --example plot_power_db -- rti_noise_calibrated.h5 full_db.png 0 0.5
+cargo run --release --locked --example plot_power_db -- rti_noise_calibrated.h5 e_region.png -0.05 0.15 80 150
+```
+
+Colour limits affect the display only; the output HDF5 retains all dB values.
+
 To independently replay a raw-voltage cut and compare zero-Doppler filtering
 with Doppler predicted from its fitted range migration:
 

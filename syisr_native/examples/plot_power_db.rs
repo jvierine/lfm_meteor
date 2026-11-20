@@ -10,7 +10,26 @@ fn db(p: f64) -> f64 {
 }
 fn main() -> Result<()> {
     let a: Vec<_> = std::env::args().collect();
-    ensure!(a.len() == 3, "usage: plot_power_db RTI.h5 OUTPUT.png");
+    ensure!(
+        [3, 5, 7].contains(&a.len()),
+        "usage: plot_power_db RTI.h5 OUTPUT.png [MIN_DB MAX_DB [MIN_ALT_KM MAX_ALT_KM]]"
+    );
+    let limits = if a.len() >= 5 {
+        [a[3].parse::<f64>()?, a[4].parse::<f64>()?]
+    } else {
+        [-0.2, 2.]
+    };
+    let heights = if a.len() == 7 {
+        [a[5].parse::<f64>()?, a[6].parse::<f64>()?]
+    } else {
+        [80., 600.]
+    };
+    ensure!(
+        limits.iter().chain(heights.iter()).all(|v| v.is_finite())
+            && limits[0] < limits[1]
+            && heights[0] < heights[1],
+        "invalid display limits"
+    );
     let h = hdf5::File::open(&a[1])?;
     let p = h.dataset("power_over_noise")?.read_raw::<f64>()?;
     let t = h.dataset("window_start_utc_ns")?.read_raw::<i64>()?;
@@ -18,8 +37,14 @@ fn main() -> Result<()> {
     let el = h.dataset("tx_azimuth_elevation_deg")?.read_raw::<f64>()?[1];
     let altitude =
         |r: f64| (6371f64.powi(2) + r * r + 2. * 6371. * r * el.to_radians().sin()).sqrt() - 6371.;
-    let lo = r.iter().position(|r| altitude(*r + 1.) >= 80.).unwrap();
-    let hi = r.iter().position(|r| altitude(*r - 1.) >= 600.).unwrap();
+    let lo = r
+        .iter()
+        .position(|r| altitude(*r + 1.) >= heights[0])
+        .unwrap();
+    let hi = r
+        .iter()
+        .position(|r| altitude(*r - 1.) >= heights[1])
+        .unwrap();
     let midnight = t[0].div_euclid(86400000000000) * 86400000000000;
     let t0 = (t[0] - midnight) as f64 / 3.6e12;
     let t1 = t0 + t.len() as f64 / 60.;
@@ -27,18 +52,13 @@ fn main() -> Result<()> {
     f.width_mm = 170.;
     f.height_mm = 100.;
     let scale = f.scale(Scale::new(
-        [-0.2, 2.],
+        limits,
         Normalization::Linear,
         ColorMap::storm(),
     )?);
     let mut panel = Panel::new(
         Rect::new(23., 8., 116., 72.),
-        Axes::new(
-            [t0, t1],
-            [80., 600.],
-            "UTC hour (2026-11-17)",
-            "Altitude (km)",
-        ),
+        Axes::new([t0, t1], heights, "UTC hour (2026-11-17)", "Altitude (km)"),
     );
     let nr = r.len();
     let values: Vec<_> = (lo..hi)
@@ -58,7 +78,14 @@ fn main() -> Result<()> {
         Rect::new(142., 8., 3., 72.),
         scale,
         "Power / noise (dB)",
-        vec![0., 1., 2.],
+        {
+            let first = if limits[0] <= 0. && limits[1] > 0. {
+                0.
+            } else {
+                limits[0]
+            };
+            vec![first, (first + limits[1]) / 2., limits[1]]
+        },
     ));
     f.save(&a[2])?;
     let out = hdf5::File::create(Path::new(&a[2]).with_extension("h5"))?;
@@ -72,6 +99,15 @@ fn main() -> Result<()> {
     out.new_dataset_builder()
         .with_data(&r)
         .create("slant_range_km")?;
+    out.new_dataset_builder()
+        .with_data(&limits)
+        .create("display_limits_db")?;
+    out.new_dataset_builder()
+        .with_data(&heights)
+        .create("display_altitude_bounds_km")?;
+    out.new_dataset_builder()
+        .with_data(&[el])
+        .create("elevation_deg")?;
     out.new_dataset_builder().with_data(b"10 log10(total power / calibrated noise), not 10 log10(P/N-1). Negative dB estimates retained. No extra time/range smoothing.").create("conventions_utf8")?;
     Ok(())
 }
