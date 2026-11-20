@@ -69,6 +69,15 @@ Resume an interrupted run with the same configuration and executable:
 target/release/syisr-native process --config sanya.toml --resume
 ```
 
+## Plot Existing Event Cuts
+
+```bash
+target/release/syisr-native plot /home/juha/data/20261117_sanya/event_cuts --workers 64
+```
+
+This does not reprocess raw recordings. Plot workers default to 1 and run in
+independent processes.
+
 ## Optional MPI
 
 For fast storage:

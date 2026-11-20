@@ -33,7 +33,8 @@ pub fn check_tools() -> Result<()> {
     }
     Ok(())
 }
-pub fn directory(dir: &Path) -> Result<()> {
+pub fn directory(dir: &Path, workers: usize) -> Result<()> {
+    ensure!(workers > 0, "--workers must be at least 1");
     check_tools()?;
     let mut files = std::fs::read_dir(dir)?
         .map(|e| e.map(|e| e.path()))
@@ -46,10 +47,49 @@ pub fn directory(dir: &Path) -> Result<()> {
                 .starts_with("event_")
     });
     files.sort();
-    for file in files {
-        render(&file)?;
+    if workers == 1 {
+        for file in files {
+            render(&file)?;
+        }
+        return Ok(());
     }
-    Ok(())
+    // Separate processes keep TeX rendering and library caches independent.
+    let executable = std::env::current_exe()?;
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::new();
+        for _ in 0..workers.min(files.len()) {
+            let (files, executable, next, stop) = (&files, &executable, &next, &stop);
+            handles.push(scope.spawn(move || -> Result<()> {
+                use std::sync::atomic::Ordering;
+                while !stop.load(Ordering::Relaxed) {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= files.len() {
+                        break;
+                    }
+                    let result = Command::new(executable)
+                        .arg("plot-event")
+                        .arg(&files[i])
+                        .status();
+                    match result {
+                        Ok(status) if status.success() => {}
+                        other => {
+                            stop.store(true, Ordering::Relaxed);
+                            anyhow::bail!("plot failed for {}: {other:?}", files[i].display());
+                        }
+                    }
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("plot worker panicked"))??;
+        }
+        Ok(())
+    })
 }
 pub fn render(path: &Path) -> Result<()> {
     let h = hdf5::File::open(path).with_context(|| format!("opening event {}", path.display()))?;

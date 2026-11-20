@@ -81,7 +81,13 @@ enum Command {
         allow_build_change: bool,
     },
     /// Re-render event HDF5 files without reading raw recordings.
-    Plot { events: PathBuf },
+    Plot {
+        events: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+    },
+    #[command(hide = true)]
+    PlotEvent { event: PathBuf },
 }
 
 #[derive(Clone, Debug)]
@@ -1000,15 +1006,25 @@ fn run(cli: Cli, rank: usize, size: usize, barrier: impl Fn()) -> Result<()> {
             }
             barrier();
         }
-        Command::Plot { events } => {
+        Command::Plot { events, workers } => {
+            ensure!(workers > 0, "--workers must be at least 1");
             if rank == 0 {
                 #[cfg(feature = "plots")]
-                plots::directory(&events)?;
+                plots::directory(&events, workers)?;
                 #[cfg(not(feature = "plots"))]
                 {
                     let _ = events;
                     anyhow::bail!("rebuild with plots feature");
                 }
+            }
+        }
+        Command::PlotEvent { event } => {
+            #[cfg(feature = "plots")]
+            plots::render(&event)?;
+            #[cfg(not(feature = "plots"))]
+            {
+                let _ = event;
+                anyhow::bail!("rebuild with plots feature");
             }
         }
     }
