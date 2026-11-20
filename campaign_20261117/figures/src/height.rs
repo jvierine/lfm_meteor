@@ -51,15 +51,6 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     l.padding_mm = 0.;
     l.avoid_data = false;
     p.legend = Some(l);
-    let lines = [
-        format!(r"Events: mono / tri"),
-        format!(r"$N_{{\rm total}}={}/{}$", count("monostatic_events")?, count("tristatic_events")?),
-        format!(r"{:.1}--{:.1} km: ${}/{}$", common_lo, common_hi, count("monostatic_common_events")?, count("tristatic_common_events")?),
-    ];
-    for (i, text) in lines.iter().enumerate() {
-        let label = Label::new(format!(r"{{\footnotesize {text}}}"), 59., 69. + i as f64 * 4.5);
-        f.labels.push(label);
-    }
     panel_label(&mut f, &p, "(a)");
     f.panels.push(p);
     let mut a = Axes::new([-5., 43.], [80., 120.], "Receiver gain (dBi)", "");
