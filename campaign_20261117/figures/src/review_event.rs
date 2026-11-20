@@ -14,6 +14,9 @@ fn sparse_ticks(p: &mut Panel) {
         for ticks in [&mut a.xticks,&mut a.yticks] {
             if ticks.len()>3 {*ticks=vec![ticks[0],ticks[ticks.len()/2],*ticks.last().unwrap()];}
         }
+        if a.yticks.iter().any(|v|v.abs()>=1000.) {
+            a.yticklabels=Some(a.yticks.iter().map(|v|format!("${v:.0}$")).collect());
+        }
     }
 }
 pub fn figure(h: &hdf5::File) -> Result<Figure> {
@@ -90,10 +93,12 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     }
     sparse_ticks(&mut p);panel_label(&mut f,&p,"e)");f.panels.push(p);
     let extent=attribute(&b,"extent_m")?;
-    let mut p=Panel::new(Rect::new(126.,bottom,54.,panel_height),Axes::new([-extent,extent],[-extent,extent],"East offset (m)","North offset (m)"));
+    let spatial_scale=if extent>5000. {1000.} else {1.};
+    let bound=extent/spatial_scale;
+    let mut p=Panel::new(Rect::new(126.,bottom,54.,panel_height),Axes::new([-bound,bound],[-bound,bound],if spatial_scale>1. {"East offset (km)"} else {"East offset (m)"},if spatial_scale>1. {"North offset (km)"} else {"North offset (m)"}));
     let contours=b.group("contours")?;
-    for name in contours.member_names()?{let g=contours.group(&name)?;for path in g.member_names()?{let a=array(&g,&path)?;let mut l=Line::new(a.chunks_exact(2).map(|v|[v[0],v[1]]).collect(),"#999999");l.width_pt=0.6;p.push(Layer::Line(l));}}
-    let east=array(&b,"east_m")?;let north=array(&b,"north_m")?;let height=array(&b,"height_km")?;
+    for name in contours.member_names()?{let g=contours.group(&name)?;for path in g.member_names()?{let a=array(&g,&path)?;let mut l=Line::new(a.chunks_exact(2).map(|v|[v[0]/spatial_scale,v[1]/spatial_scale]).collect(),"#999999");l.width_pt=0.6;p.push(Layer::Line(l));}}
+    let east:Vec<_>=array(&b,"east_m")?.iter().map(|v|v/spatial_scale).collect();let north:Vec<_>=array(&b,"north_m")?.iter().map(|v|v/spatial_scale).collect();let height=array(&b,"height_km")?;
     anyhow::ensure!(height.len()==east.len() && height.iter().all(|v|v.is_finite()), "Beam altitudes must match plotted positions");
     let scale=Scale::new(limits(&height,0.01),Normalization::Linear,ColorMap::plasma())?;let cid=f.scale(scale.clone());
     curve(&mut p,&east,&north,"#999999",0.6);p.scatter_colored(&points(&east,&north),&height,&scale,3.,1.,"none")?;
