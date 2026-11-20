@@ -1,0 +1,439 @@
+//! Cached per-pulse joint likelihood in path length and dechirped beat.
+//! The change of coordinates retains delay-Doppler coupling; no extra data are added.
+use super::*;
+use nalgebra::{DMatrix,DVector};
+use rand::{Rng,SeedableRng,rngs::StdRng};
+use rand_distr::StandardNormal;
+use std::time::Instant;
+
+struct Surface {origin:[f64;2],half:[f64;2],n:usize,path_cells:usize,values:Vec<f64>,offset:f64}
+pub struct Cache {pulses:Vec<super::reduced::Pulse>,offsets:Vec<f64>}
+
+pub(super) fn tune_scale(log_scale:f64,step:usize,accept:bool)->f64 {
+    (log_scale+(step as f64+10.).powf(-0.6)*((if accept {1.}else{0.})-0.234)).clamp(-8.,4.)
+}
+
+pub(super) struct RadiusTransport {reference:f64,beta:Vec<f64>}
+impl RadiusTransport {
+    pub(super) fn new(x:&DVector<f64>,cov:&DMatrix<f64>)->Self {
+        let beta=(0..6).map(|i|if x.len()==7 {cov[(i,6)]/cov[(6,6)]}else{0.}).collect();
+        Self{reference:x[6],beta}
+    }
+    pub(super) fn physical(&self,y:&DVector<f64>)->DVector<f64> {
+        let mut x=y.clone();
+        if y.len()!=7 || !(-7. ..=-2.).contains(&y[6]){return x;}
+        let delta=y[6]-self.reference;
+        // Drag varies as 1/r. Straighten this correlation while still sampling
+        // log radius. This triangular shear has determinant one: no prior change.
+        let shift=-(-std::f64::consts::LN_10*delta).exp_m1()/std::f64::consts::LN_10-delta;
+        for i in 0..6 {x[i]+=self.beta[i]*shift;}
+        x
+    }
+}
+
+fn cubic(y:[f64;4],t:f64)->f64 {
+    // Four-point Lagrange interpolation, exact for cubic polynomials.
+    -t*(t-1.)*(t-2.)*y[0]/6.+(t+1.)*(t-1.)*(t-2.)*y[1]/2.
+        -(t+1.)*t*(t-2.)*y[2]/2.+(t+1.)*t*(t-1.)*y[3]/6.
+}
+impl Surface {
+    fn at(&self,x:[f64;2])->Option<f64> {
+        let p=[(x[0]-self.origin[0])/self.half[0],(x[1]-self.origin[1])/self.half[1]];
+        let z=p.map(|v|(v+1.)*0.5*(self.n-1) as f64);
+        // Leave a one-cell interpolation guard; never extrapolate or clamp a posterior.
+        if z.iter().any(|v| !v.is_finite() || *v<1. || *v>=(self.n-2) as f64){return None;}
+        let a=z[0].floor() as usize;let b=z[1].floor() as usize;
+        // Cell-averaged pulse support has derivative changes at sample edges.
+        // Never fit a cubic across such an edge when the path grid is aligned.
+        let start=if self.path_cells>=4 {
+            let center=(self.n/2) as i64;let cells=self.path_cells as i64;
+            let lo=(center+((a as i64-center).div_euclid(cells))*cells).max(0) as usize;
+            let hi=(lo+self.path_cells).min(self.n-1);
+            (a-1).clamp(lo,hi-3)
+        }else{a-1};
+        let mut row=[0.;4];
+        for k in 0..4 {
+            let values=std::array::from_fn(|j|self.values[(start+k)*self.n+b+j-1]);
+            if values.iter().any(|v|!v.is_finite()){return None;}
+            row[k]=cubic(values,z[1]-b as f64);
+        }
+        Some(cubic(row,z[0]-(start+1) as f64))
+    }
+}
+
+impl Voltage {
+    pub(super) fn pulse_logp(&self,i:usize,path:f64,beat:f64)->f64 {
+        let fd=beat-self.bandwidth/self.duration*path/C;
+        let fft=self.fft.as_ref().unwrap();let mut s=vec![Complex::new(0.,0.);fft.forward.len()];
+        for j in 0..self.n {
+            let sample=self.sample_time[i*self.n+j];let tau=sample-path/C;
+            let env=((tau+0.5/self.fs)*self.fs).clamp(0.,1.)*((self.duration-tau+0.5/self.fs)*self.fs).clamp(0.,1.);
+            let phase=std::f64::consts::TAU*(self.bandwidth/2.*tau-self.bandwidth/(2.*self.duration)*tau*tau+fd*sample);
+            let (si,co)=phase.sin_cos();s[j]=Complex::new(env*co,env*si);
+        }
+        fft.forward.process(&mut s);
+        for (z,f) in s.iter_mut().zip(&fft.filters[i]){*z*=f;}
+        fft.inverse.process(&mut s);let scale=1./s.len() as f64;
+        let mut cross=Complex::new(0.,0.);let mut norm=0.;
+        for j in self.filter_len-1..self.n {
+            let m=s[j]*scale;let k=i*self.n+j;
+            cross+=m.conj()*Complex::new(self.white_real[k],self.white_imag[k]);norm+=m.norm_sqr();
+        }
+        if norm<10. {return f64::NEG_INFINITY;}
+        // Data-only energy omitted. Same amplitude integral as voltage_sample.
+        cross.norm_sqr()/(norm*self.noise[i])-norm.ln()
+    }
+}
+impl Cache {
+    pub(super) fn build(v:&Voltage,q:&[f64],_n:usize,_expand:f64)->anyhow::Result<Self> {
+        let obs=v.observables(q).ok_or_else(||anyhow::anyhow!("Invalid seed"))?;
+        let mut pulses=Vec::new();let mut offsets=Vec::new();
+        for (i,o) in obs.iter().enumerate() {
+            let beat=o[1]+v.bandwidth/v.duration*o[0]/C;
+            let p=super::reduced::Pulse::build(v,i,beat);
+            let offset=v.pulse_logp(i,o[0],beat);
+            anyhow::ensure!(offset.is_finite(),"Invalid pulse {i}");
+            anyhow::ensure!((p.logp(o[0],beat)-offset).abs()<1e-5,"Reduced pulse {i} disagrees with raw voltage");
+            pulses.push(p);offsets.push(offset);
+        }
+        Ok(Self{pulses,offsets})
+    }
+    /* Archived gridded construction, superseded by analytic envelope statistics.
+    fn old_build(v:&Voltage,q:&[f64],n:usize,expand:f64)->anyhow::Result<Self> {
+        anyhow::ensure!(n>=9 && n%2==1,"Odd grid size >=9 required");
+        let obs=v.observables(q).ok_or_else(||anyhow::anyhow!("Invalid cache seed"))?;
+        let k=v.bandwidth/v.duration/C;let mut surfaces=Vec::new();
+        for (i,o) in obs.iter().enumerate() {
+            let mut origin=[o[0],o[1]+k*o[0]];let offset=v.pulse_logp(i,origin[0],origin[1]);
+            anyhow::ensure!(offset.is_finite(),"Invalid pulse {i}");
+            let mut half=[0.;2];
+            for j in 0..2 {
+                let step=if j==0 {2.} else {5.};let mut a=origin;let mut b=origin;a[j]+=step;b[j]-=step;
+                let curvature=(2.*offset-v.pulse_logp(i,a[0],a[1])-v.pulse_logp(i,b[0],b[1]))/(step*step);
+                half[j]=expand*(12./curvature.max(1e-8).sqrt()).clamp(if j==0 {100.}else{150.},if j==0 {2500.}else{5000.});
+            }
+            let spacing=C/v.fs;let desired=2.*half[0]/(n-1) as f64;
+            let exponent=(spacing/desired).log2().floor();
+            let mut path_cells=0;
+            if exponent>=2. && (v.duration*v.fs-(v.duration*v.fs).round()).abs()<1e-7 {
+                path_cells=2usize.pow(exponent as u32);
+                let edge=C*(v.sample_time[i*v.n]-0.5/v.fs);
+                origin[0]=edge+((origin[0]-edge)/spacing).round()*spacing;
+                half[0]=(n-1) as f64/2.*spacing/path_cells as f64;
+            }
+            let mut values=Vec::with_capacity(n*n);
+            for a in 0..n {for b in 0..n {
+                let x=origin[0]+half[0]*(2.*a as f64/(n-1) as f64-1.);
+                let y=origin[1]+half[1]*(2.*b as f64/(n-1) as f64-1.);
+                values.push(v.pulse_logp(i,x,y)-offset);
+            }}
+            surfaces.push(Surface{origin,half,n,path_cells,values,offset});
+        }
+        Ok(Self{surfaces})
+    }
+    */
+    fn evaluate(&self,v:&Voltage,q:&[f64])->Option<Vec<f64>> {
+        let obs=v.observables(q)?;let k=v.bandwidth/v.duration/C;
+        Some(obs.iter().enumerate().map(|(i,o)|self.pulses[i].logp(o[0],o[1]+k*o[0])-self.offsets[i]).collect())
+    }
+    pub(super) fn logp(&self,v:&Voltage,q:&[f64])->f64 {
+        self.evaluate(v,q).map_or(f64::NEG_INFINITY,|x|x.iter().sum())
+    }
+    pub(super) fn weighted_logp(&self,v:&Voltage,q:&[f64],weights:&[f64])->f64 {
+        self.evaluate(v,q).map_or(f64::NEG_INFINITY,|values|values.iter().zip(weights)
+            .filter(|(_,w)|**w>0.).map(|(x,w)|x*w).sum())
+    }
+    fn exact(&self,v:&Voltage,q:&[f64])->f64 {
+        let Some(obs)=v.observables(q) else{return f64::NEG_INFINITY;};let k=v.bandwidth/v.duration/C;
+        obs.iter().enumerate().map(|(i,o)|v.pulse_logp(i,o[0],o[1]+k*o[0])-self.offsets[i]).sum()
+    }
+    fn save(&self,path:&str)->anyhow::Result<()> {
+        let h=hdf5::File::create(path)?;
+        h.new_dataset_builder().with_data(&self.offsets).create("offset")?;
+        h.new_dataset::<u64>().create("sufficient_statistics_version")?.write_scalar(&1)?;
+        h.flush()?;Ok(())
+    }
+}
+
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_build(v:*const Voltage,q:*const f64,n:usize,expand:f64,path:*const c_char)->*mut Cache {
+    let v=&*v;let result=(||->anyhow::Result<Cache>{let c=Cache::build(v,std::slice::from_raw_parts(q,v.dimension()),n,expand)?;c.save(CStr::from_ptr(path).to_str()?)?;Ok(c)})();
+    match result {Ok(c)=>Box::into_raw(Box::new(c)),Err(e)=>{eprintln!("{e:#}");std::ptr::null_mut()}}
+}
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_free(c:*mut Cache){if !c.is_null(){drop(Box::from_raw(c));}}
+
+/// Diagnostic pulse likelihoods; their sum is exactly the catalogue likelihood.
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_terms(c:*const Cache,v:*const Voltage,
+    q:*const f64,out:*mut f64)->i32 {
+    let c=&*c;let v=&*v;
+    let Some(values)=c.evaluate(v,std::slice::from_raw_parts(q,v.dimension())) else{return 0;};
+    std::slice::from_raw_parts_mut(out,values.len()).copy_from_slice(&values);
+    1
+}
+
+/// Weighted complete-pulse likelihood. Weights never separate delay and beat.
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_weighted_logp(c:*const Cache,v:*const Voltage,
+    q:*const f64,weights:*const f64,exact:i32)->f64 {
+    let c=&*c;let v=&*v;if v.dimension()!=7 {return f64::NEG_INFINITY;}
+    let q=std::slice::from_raw_parts(q,7);
+    let w=std::slice::from_raw_parts(weights,c.pulses.len());
+    if exact==0 {return c.weighted_logp(v,q,w);}
+    let Some(obs)=v.observables(q) else{return f64::NEG_INFINITY;};
+    let k=v.bandwidth/v.duration/C;
+    obs.iter().enumerate().filter(|(i,_)|w[*i]>0.).map(|(i,o)|
+        w[i]*(v.pulse_logp(i,o[0],o[1]+k*o[0])-c.offsets[i])).sum()
+}
+
+/// Independent weighted-likelihood posterior-bootstrap optimization.
+/// Multi-start and repeat-gain checks are retained for every draw.
+#[no_mangle] pub unsafe extern "C" fn voltage_posterior_bootstrap_fit(c:*const Cache,v:*const Voltage,
+    initial:*const f64,covariance:*const f64,weights:*const f64,seconds:f64,
+    result:*mut f64,diagnostics:*mut f64)->i32 {
+    let c=&*c;let v=&*v;if v.dimension()!=7 {return 0;}let began=Instant::now();
+    let initial=DVector::from_column_slice(std::slice::from_raw_parts(initial,7));
+    let cov=DMatrix::from_row_slice(7,7,std::slice::from_raw_parts(covariance,49));
+    let Some(factor)=cov.clone().cholesky() else{return 0;};let factor=factor.l();
+    let weights=std::slice::from_raw_parts(weights,c.pulses.len());
+    if weights.iter().any(|x|!x.is_finite() || *x<0.) || weights.iter().sum::<f64>()<=0. {return 0;}
+    let transport=RadiusTransport::new(&initial,&cov);
+    let logp=|z:&DVector<f64>|c.weighted_logp(v,transport.physical(z).as_slice(),weights);
+    let mut best=initial.clone();let initial_value=logp(&best);
+    for delta in [0.,0.35,-0.35] {
+        let mut start=initial.clone();let radius=(initial[6]+delta).clamp(-6.999999,-2.000001);
+        let change=radius-initial[6];start[6]=radius;
+        for j in 0..6 {start[j]+=cov[(j,6)]/cov[(6,6)]*change;}
+        let q=super::importance::newton_mode(logp,start,&(&factor*4.),seconds);
+        if logp(&q)>logp(&best) {best=q;}
+    }
+    if initial[6]> -2.1 || initial[6]< -6.9 {
+        // At an unresolved drag boundary a local radius perturbation is not a
+        // useful restart. Refit the six kinematic terms at separated radii.
+        let cross=cov.view((0,6),(6,1)).into_owned();
+        let conditional=cov.view((0,0),(6,6)).into_owned()-&cross*cross.transpose()/cov[(6,6)];
+        if let Some(chol)=conditional.cholesky() {
+            let six=chol.l();
+            for radius in [-5.,-4.5,-4.,-3.5,-3.] {
+                let make=|x:&DVector<f64>| {let mut q=initial.clone();q.rows_mut(0,6).copy_from(x);q[6]=radius;q};
+                let conditional_logp=|x:&DVector<f64>|c.weighted_logp(v,make(x).as_slice(),weights);
+                let start=initial.rows(0,6).into_owned();
+                if !conditional_logp(&start).is_finite(){continue;}
+                let x=super::importance::newton_mode(conditional_logp,start,&(&six*4.),seconds.min(0.3));
+                let mut z=make(&x);let delta=radius-initial[6];
+                let shift=-(-std::f64::consts::LN_10*delta).exp_m1()/std::f64::consts::LN_10-delta;
+                for j in 0..6 {z[j]-=cov[(j,6)]/cov[(6,6)]*shift;}
+                if logp(&z)>logp(&best){best=z;}
+            }
+        }
+    }
+    let first=logp(&best);
+    let final_q=super::importance::newton_mode(logp,best.clone(),&factor,seconds);
+    let gain=(logp(&final_q)-first).max(0.);
+    if logp(&final_q)>first {best=final_q;}
+    let physical=transport.physical(&best);let value=logp(&best);
+    if !value.is_finite(){return 0;}
+    std::slice::from_raw_parts_mut(result,7).copy_from_slice(physical.as_slice());
+    std::slice::from_raw_parts_mut(diagnostics,4).copy_from_slice(&[
+        value,value-initial_value,gain,began.elapsed().as_secs_f64()]);1
+}
+
+/// Refit six trajectory coordinates at fixed physical log radius.
+#[no_mangle] pub unsafe extern "C" fn voltage_profile_radius_fit(c:*const Cache,v:*const Voltage,
+    initial:*const f64,covariance:*const f64,radius:f64,seconds:f64,
+    result:*mut f64,diagnostics:*mut f64)->i32 {
+    let c=&*c;let v=&*v;
+    if v.dimension()!=7 || !(-7. ..=-2.).contains(&radius){return 0;}
+    let seed=DVector::from_column_slice(std::slice::from_raw_parts(initial,7));
+    let cov=DMatrix::from_row_slice(7,7,std::slice::from_raw_parts(covariance,49));
+    let cross=cov.view((0,6),(6,1)).into_owned();
+    let conditional=cov.view((0,0),(6,6)).into_owned()-&cross*cross.transpose()/cov[(6,6)];
+    let Some(factor)=conditional.cholesky() else{return 0;};let factor=factor.l();
+    let make=|x:&DVector<f64>| {let mut q=seed.clone();q.rows_mut(0,6).copy_from(x);q[6]=radius;q};
+    let logp=|x:&DVector<f64>|c.logp(v,make(x).as_slice());
+    let plain=seed.rows(0,6).into_owned();let delta=radius-seed[6];
+    let shift=-(-std::f64::consts::LN_10*delta).exp_m1()/std::f64::consts::LN_10;
+    let mut best=plain.clone();
+    for start in [plain.clone(),&plain+cross.column(0)*(delta/cov[(6,6)]),
+        &plain+cross.column(0)*(shift/cov[(6,6)])] {
+        if !logp(&start).is_finite(){continue;}
+        let candidate=super::importance::newton_mode(logp,start,&(&factor*4.),seconds);
+        if logp(&candidate)>logp(&best){best=candidate;}
+    }
+    if !logp(&best).is_finite(){return 0;}
+    // Sample-envelope edges can frustrate Hessian steps. Polish the same
+    // six-dimensional objective without derivatives before checking a repeat.
+    let pivot=best.clone();
+    let (step,_)=simplex_minimize(|z| -logp(&(&pivot+&factor*z)),6,seconds);
+    let candidate=&pivot+&factor*step;
+    if logp(&candidate)>logp(&best){best=candidate;}
+    let before=logp(&best);
+    best=super::importance::newton_mode(logp,best,&factor,seconds);
+    let after=logp(&best);let q=make(&best);
+    std::slice::from_raw_parts_mut(result,7).copy_from_slice(q.as_slice());
+    std::slice::from_raw_parts_mut(diagnostics,2).copy_from_slice(&[after,(after-before).max(0.)]);1
+}
+
+/// Fit each pulse's path/envelope and beat jointly, without any trajectory ODE.
+/// This is an adequacy diagnostic, not additional independent trajectory data.
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_pulse_audit(c:*const Cache,v:*const Voltage,
+    q:*const f64,out:*mut f64)->i32 {
+    let c=&*c;let v=&*v;
+    let Some(obs)=v.observables(std::slice::from_raw_parts(q,v.dimension())) else{return 0;};
+    let out=std::slice::from_raw_parts_mut(out,8*obs.len());
+    let rate=v.bandwidth/v.duration/C;
+    for (i,o) in obs.iter().enumerate() {
+        let origin=[o[0],o[1]+rate*o[0]];
+        let at=|z:&DVector<f64>|c.pulses[i].logp(origin[0]+z[0],origin[1]+100.*z[1]);
+        let (z,ok)=simplex_minimize(|z| -at(z),2,0.25);
+        let peak=at(&z);let mut h=DMatrix::zeros(2,2);let step=[0.02,0.02];
+        for j in 0..2 {
+            let mut a=DVector::zeros(2);a[j]=step[j];
+            h[(j,j)]=-(at(&(&z+&a))-2.*peak+at(&(&z-&a)))/step[j].powi(2);
+        }
+        let a=DVector::from_vec(vec![step[0],0.]);let b=DVector::from_vec(vec![0.,step[1]]);
+        h[(0,1)]=-(at(&(&z+&a+&b))-at(&(&z+&a-&b))-at(&(&z-&a+&b))+at(&(&z-&a-&b)))/(4.*step[0]*step[1]);
+        h[(1,0)]=h[(0,1)];
+        let covariance=h.try_inverse().unwrap_or(DMatrix::from_element(2,2,f64::NAN));
+        out[8*i..8*i+8].copy_from_slice(&[origin[0]+z[0],origin[1]+100.*z[1],
+            peak-at(&DVector::zeros(2)),covariance[(0,0)],100.*covariance[(0,1)],
+            10000.*covariance[(1,1)],if ok {1.}else{0.},z.norm()]);
+    }
+    1
+}
+// Block bootstrap weights act on complete pulse likelihoods, never on separate
+// delay and beat diagnostics. Physical trajectory integration remains unchanged.
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_weighted_fit(c:*const Cache,v:*const Voltage,q:*const f64,
+    transform:*const f64,weights:*const f64,result:*mut f64,seconds:f64)->i32 {
+    let c=&*c;let v=&*v;let n=v.dimension();
+    let center=DVector::from_column_slice(std::slice::from_raw_parts(q,n));
+    let t=DMatrix::from_row_slice(n,n,std::slice::from_raw_parts(transform,n*n));
+    let w=std::slice::from_raw_parts(weights,c.pulses.len());
+    if w.iter().any(|x|!x.is_finite() || *x<0.) || w.iter().sum::<f64>()<=0. {return 0;}
+    let objective=|z:&DVector<f64>| {
+        let p=&center+&t*z;
+        c.evaluate(v,p.as_slice()).map_or(f64::INFINITY,|x|-x.iter().zip(w).map(|(a,b)|a*b).sum::<f64>())
+    };
+    let (z,ok)=simplex_minimize(objective,n,seconds);
+    let p=center+t*z;
+    std::slice::from_raw_parts_mut(result,n).copy_from_slice(p.as_slice());
+    if ok {1}else{0}
+}
+
+pub(super) fn simplex_minimize<F:Fn(&DVector<f64>)->f64>(f:F,n:usize,seconds:f64)->(DVector<f64>,bool) {
+    let started=Instant::now();
+    let mut x=vec![DVector::zeros(n);n+1];
+    for i in 0..n {x[i+1][i]=1.;}
+    let mut y:Vec<f64>=x.iter().map(&f).collect();
+    for _ in 0..6000 {
+        let mut order:Vec<_>=(0..=n).collect();order.sort_by(|&a,&b|y[a].total_cmp(&y[b]));
+        x=order.iter().map(|&i|x[i].clone()).collect();y=order.iter().map(|&i|y[i]).collect();
+        if y[0].is_finite() && y[n]-y[0]<1e-6 && x.iter().map(|p|(p-&x[0]).norm()).fold(0.,f64::max)<0.02 {return (x[0].clone(),true);}
+        if started.elapsed().as_secs_f64()>seconds {break;}
+        let centroid=x[..n].iter().fold(DVector::zeros(n),|a,b|a+b)/n as f64;
+        let reflected=&centroid+(&centroid-&x[n]);let fr=f(&reflected);
+        if fr<y[0] {
+            let expanded=&centroid+2.*(&reflected-&centroid);let fe=f(&expanded);
+            if fe<fr {x[n]=expanded;y[n]=fe;}else{x[n]=reflected;y[n]=fr;}
+        }else if fr<y[n-1] {x[n]=reflected;y[n]=fr;}
+        else {
+            let contracted=if fr<y[n] {&centroid+0.5*(&reflected-&centroid)}else{&centroid+0.5*(&x[n]-&centroid)};
+            let fc=f(&contracted);
+            if fc<fr.min(y[n]) {x[n]=contracted;y[n]=fc;}
+            else {for i in 1..=n {x[i]=&x[0]+0.5*(&x[i]-&x[0]);y[i]=f(&x[i]);}}
+        }
+    }
+    let i=(0..=n).min_by(|&a,&b|y[a].total_cmp(&y[b])).unwrap();(x[i].clone(),false)
+}
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_logp(c:*const Cache,v:*const Voltage,q:*const f64,exact:i32)->f64 {
+    let v=&*v;let q=std::slice::from_raw_parts(q,v.dimension());if exact!=0 {(*c).exact(v,q)}else{(*c).logp(v,q)}
+}
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_sample(c:*const Cache,v:*const Voltage,q:*const f64,cov:*const f64,
+    warmup:usize,draws:usize,seconds:f64,seed:u64,path:*const c_char)->i32 {
+    let result=(||->anyhow::Result<()> {
+        let started=Instant::now();let v=&*v;let c=&*c;let n=v.dimension();
+        let mut rng=StdRng::seed_from_u64(seed);let mut x=DVector::from_column_slice(std::slice::from_raw_parts(q,n));
+        let base=DMatrix::from_row_slice(n,n,std::slice::from_raw_parts(cov,n*n));
+        let transport=RadiusTransport::new(&x,&base);
+        let mut physical_x=transport.physical(&x);
+        let mut chol=base.clone().cholesky().ok_or_else(||anyhow::anyhow!("Proposal covariance not positive definite"))?.l()*(2.38/(n as f64).sqrt());
+        let mut lp=c.logp(v,physical_x.as_slice());anyhow::ensure!(lp.is_finite(),"Nonfinite initial posterior");
+        let mut mean=DVector::zeros(n);let mut scatter=DMatrix::zeros(n,n);
+        let mut log_scale=0_f64;
+        let mut samples=Vec::new();let mut logs=Vec::new();let mut accepted=0u64;let mut outside=0u64;let mut steps=0usize;
+        for step in 0..warmup+draws {
+            if started.elapsed().as_secs_f64()>=seconds {break;}
+            let z=DVector::from_fn(n,|_,_|rng.sample::<f64,_>(StandardNormal));let proposal=&x+(&chol*z)*log_scale.exp();
+            let physical_proposal=transport.physical(&proposal);
+            let candidate=c.logp(v,physical_proposal.as_slice());if !candidate.is_finite(){outside+=1;}
+            let accept=candidate.is_finite() && rng.gen::<f64>().ln()<candidate-lp;
+            if accept {x=proposal;physical_x=physical_proposal;lp=candidate;if step>=warmup {accepted+=1;}}
+            if step<warmup {
+                // Robbins-Monro scale tuning is frozen with the covariance after warmup.
+                log_scale=tune_scale(log_scale,step,accept);
+                let count=(step+1) as f64;let delta=&x-&mean;mean+=&delta/count;scatter+=&delta*(&x-&mean).transpose();
+                if step>=499 && step%100==99 {let covariance=(&scatter/(count-1.)+&base*0.01)*(2.38_f64.powi(2)/n as f64);if let Some(f)=covariance.cholesky(){chol=f.l();}}
+            } else {samples.extend_from_slice(physical_x.as_slice());logs.push(lp);}
+            steps=step+1;
+        }
+        let h=hdf5::File::create(CStr::from_ptr(path).to_str()?)?;
+        h.new_dataset::<f64>().shape((logs.len(),n)).create("samples")?.write_raw(&samples)?;
+        h.new_dataset_builder().with_data(&logs).create("log_probability")?;
+        for (name,value) in [("accepted",accepted),("steps",steps as u64),("outside_proposals",outside)]{h.new_dataset::<u64>().create(name)?.write_scalar(&value)?;}
+        h.new_dataset::<f64>().create("elapsed_seconds")?.write_scalar(&started.elapsed().as_secs_f64())?;
+        h.new_dataset::<f64>().create("frozen_proposal_scale")?.write_scalar(&log_scale.exp())?;
+        h.new_dataset_builder().with_data(&transport.beta).create("radius_transport_beta")?;
+        h.new_dataset::<f64>().create("radius_transport_reference")?.write_scalar(&transport.reference)?;
+        h.flush()?;Ok(())
+    })();match result {Ok(())=>1,Err(e)=>{eprintln!("{e:#}");0}}
+}
+
+#[no_mangle] pub unsafe extern "C" fn voltage_cache_margin(c:*const Cache,v:*const Voltage,q:*const f64)->f64 {
+    let v=&*v;let c=&*c;let q=std::slice::from_raw_parts(q,v.dimension());
+    if c.logp(v,q).is_finite(){1.}else{-1.}
+}
+
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn bootstrap_optimizer_recovers_correlated_quadratic() {
+        let (x,ok)=simplex_minimize(|x| (x[0]+2.*x[1]-7.).powi(2)+0.1*(x[1]+3.).powi(2),2,2.);
+        assert!(ok);assert!((x[0]-13.).abs()<0.01);assert!((x[1]+3.).abs()<0.01);
+    }
+    #[test] fn inverse_radius_transport_preserves_volume_and_local_metric() {
+        let mut center=DVector::zeros(7);center[6]=-4.;
+        let mut cov=DMatrix::identity(7,7);cov[(0,6)]=0.7;cov[(6,0)]=0.7;
+        let t=RadiusTransport::new(&center,&cov);
+        for radius in [-6.,-4.,-2.1] {
+            let mut y=center.clone();y[6]=radius;
+            let mut jac=DMatrix::zeros(7,7);
+            for j in 0..7 {let mut a=y.clone();let mut b=y.clone();a[j]+=1e-5;b[j]-=1e-5;
+                let column=(t.physical(&a)-t.physical(&b))/(2e-5);jac.set_column(j,&column);}
+            assert!((jac.determinant()-1.).abs()<1e-7);
+            if radius==-4. {assert!((jac-DMatrix::identity(7,7)).norm()<1e-8);}
+        }
+    }
+    #[test] fn warmup_scale_recovers_gaussian_from_oversized_steps() {
+        let mut rng=StdRng::seed_from_u64(515);
+        let mut x=[0_f64;7];let mut lp=0.;let mut scale=0.;
+        let mut sum=[0.;7];let mut square=[0.;7];let mut accepted=0;
+        for step in 0..104000 {
+            let y: [f64;7]=std::array::from_fn(|i|x[i]+50.*f64::exp(scale)*rng.sample::<f64,_>(StandardNormal));
+            let candidate=-0.5*y.iter().map(|v|v*v).sum::<f64>();
+            let accept=rng.gen::<f64>().ln()<candidate-lp;
+            if accept {x=y;lp=candidate;}
+            if step<4000 {scale=tune_scale(scale,step,accept);}else {
+                if accept {accepted+=1;}
+                for i in 0..7 {sum[i]+=x[i];square[i]+=x[i]*x[i];}
+            }
+        }
+        assert!((10000..50000).contains(&accepted));
+        for i in 0..7 {assert!((sum[i]/100000.).abs()<0.05);assert!((square[i]/100000.-1.).abs()<0.08);}
+    }
+    #[test] fn cubic_recovers_polynomial() {
+        let f=|x:f64|2.+3.*x-4.*x*x+0.7*x*x*x;
+        for i in 0..100 {let t=i as f64/100.;assert!((cubic([-1.,0.,1.,2.].map(f),t)-f(t)).abs()<1e-12);}
+    }
+    #[test] fn interpolation_respects_sample_edge_cusp() {
+        let n=65;let mut values=Vec::new();
+        for i in 0..n {for j in 0..n {let x=i as f64-32.;let y=j as f64-32.;values.push(-x.abs()-y*y);}}
+        let surface=Surface{origin:[0.,0.],half:[32.,32.],n,path_cells:16,values,offset:0.};
+        for i in -10..10 {let x=i as f64/11.;let y=0.37;assert!((surface.at([x,y]).unwrap()+x.abs()+y*y).abs()<1e-10);}
+    }
+}
