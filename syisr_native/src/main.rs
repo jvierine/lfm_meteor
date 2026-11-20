@@ -1197,6 +1197,10 @@ mod tests {
             },
         };
         run(cli, 0, 1, || {}).unwrap();
+        if overlap {
+            let audit = File::open(c.output_dir.join("input_reconciliation.h5")).unwrap();
+            assert_eq!(audit.dataset("duplicate_frames").unwrap().shape(), vec![8, 5]);
+        }
         let f = File::open(c.output_dir.join("catalogue.h5")).unwrap();
         assert_eq!(
             f.dataset("event_pulse_counts")
