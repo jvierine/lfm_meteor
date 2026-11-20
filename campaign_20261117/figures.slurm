@@ -14,7 +14,11 @@ export LD_LIBRARY_PATH="$PWD/syisr_native/target/release/runtime-lib${LD_LIBRARY
 export HDF5_DIR="$PWD/syisr_native/target/hdf5-sdk"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 /opt/soft/anaconda3/bin/conda run -n base python -u campaign_20261117/prepare_figures.py --workers "$SLURM_CPUS_PER_TASK"
-cargo build --release --locked --manifest-path campaign_20261117/figures/Cargo.toml -j "$SLURM_CPUS_PER_TASK"
+link_flags=()
+if [[ -f "$PWD/syisr_native/target/centos7-link/libc.so" ]]; then
+    link_flags=(-L "native=$PWD/syisr_native/target/centos7-link")
+fi
+cargo rustc --release --locked --manifest-path campaign_20261117/figures/Cargo.toml -j "$SLURM_CPUS_PER_TASK" -- "${link_flags[@]}"
 root=/gpfs/pub/data_other/juha/20261117_tristatic
 failed=0
 for number in 2 3 4 7 8 9 10; do
