@@ -17,7 +17,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     anyhow::ensure!(lon.len() == lat.len() && lon.len() == speed.len());
     anyhow::ensure!(visible.len() == x.len() * y.len() && visible.len() == effective.len());
     let article = ArticleLayout::new(184., 10.)?;
-    let mut f = article.figure(1., 88.)?;
+    let mut f = article.figure(1., 101.)?;
     let projection = Projection::Hammer {
         central_longitude: 270.,
         west_positive: true,
@@ -165,13 +165,17 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let tick_labels = match tick_labels {
         Some(labels) => labels,
         None => {
-            let ticks: Vec<_> = [0,270,180,60,300,240,120].iter().map(|&longitude| GraticuleLabel {
+            let ticks: Vec<_> = [0,270,180].iter().map(|&longitude| GraticuleLabel {
                 latex: format!("${longitude}^\\circ$"),
                 required: [0,270,180].contains(&longitude),
-                candidates: (-80..=-10).map(|latitude|panel.data_to_figure(
-                    projection.project([longitude as f64,latitude as f64]).unwrap())).collect(),
+                candidates: vec![[panel.data_to_figure(projection.project(
+                    [longitude as f64,-55.]).unwrap())[0],84.]],
             }).collect();
-            f.graticule_labels(&ticks, &text_obstacles)?
+            let mut labels=f.graticule_labels(&ticks, &text_obstacles)?;
+            for (label,longitude) in labels.iter_mut().zip([0.,270.,180.]) {
+                label.leader=Some(panel.data_to_figure(projection.project([longitude,-55.]).unwrap()));
+            }
+            labels
         }
     };
     f.labels.extend(tick_labels);
@@ -198,7 +202,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     f.labels.push(Label::new(
         r"Sun-centered ecliptic longitude, $\lambda-\lambda_\odot$",
         90.,
-        83.,
+        95.,
     ));
     let mut ylabel = Label::new(r"Ecliptic latitude, $\beta$", 5., 41.);
     ylabel.rotation = -90.;
