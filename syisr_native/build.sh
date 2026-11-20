@@ -23,10 +23,13 @@ fi
 if [[ -f target/centos7-link/libc.so ]]; then
     # Link only the delivered binary against the compute-node C libraries;
     # build scripts and proc macros must still run against the login-node ABI.
-    args=()
-    if [[ "$with_mpi" == 1 ]]; then args=(--features mpi); fi
-    cargo rustc --release --locked --bin syisr-native "${args[@]}" -- \
-        -L "native=$(pwd)/target/centos7-link"
+    if [[ "$with_mpi" == 1 ]]; then
+        cargo rustc --release --locked --bin syisr-native --features mpi -- \
+            -L "native=$(pwd)/target/centos7-link"
+    else
+        cargo rustc --release --locked --bin syisr-native -- \
+            -L "native=$(pwd)/target/centos7-link"
+    fi
 fi
 if [[ "$(uname -s)" == Linux ]]; then
     # Compute nodes may lack the login node's HDF5 installation. Bundle resolved
