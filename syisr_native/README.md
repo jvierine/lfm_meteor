@@ -60,6 +60,11 @@ Files with the same start time are excluded only after a complete byte-for-byte
 comparison confirms duplication; the mapping is saved in `run.h5`. Conflicting
 recordings fail explicitly. If raw files were replaced after a run began, keep
 the previous output and start a new output directory rather than forcing resume.
+If copied blocks or clock jumps overlap across files, extraction switches to a
+chronological merge after scanning. Repeated pulses are removed only when their
+raw headers and voltage words match exactly. `input_reconciliation.h5` records
+both source locations. Earlier previews are archived before the corrected
+catalogue and plots are rebuilt; normal recordings still publish incrementally.
 
 Outputs in the selected directory:
 

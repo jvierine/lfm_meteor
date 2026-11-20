@@ -1126,15 +1126,20 @@ mod tests {
     }
     #[test]
     fn real_format_end_to_end_with_cross_file_event() {
-        cross_file_recovery(1);
+        cross_file_recovery(1, false);
     }
 
     #[test]
     fn local_workers_recover_cross_file_event() {
-        cross_file_recovery(3);
+        cross_file_recovery(3, false);
     }
 
-    fn cross_file_recovery(workers: usize) {
+    #[test]
+    fn overlapping_copied_blocks_are_byte_verified_and_counted_once() {
+        cross_file_recovery(3, true);
+    }
+
+    fn cross_file_recovery(workers: usize, overlap: bool) {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let mut c = Config::load(Path::new("config.toml")).unwrap();
@@ -1166,6 +1171,14 @@ mod tests {
                 }
                 f.write_all(&[0u8; 8]).unwrap();
             }
+        }
+        if overlap {
+            let a = std::fs::read(dir.path().join("raw-0.dat")).unwrap();
+            let b = std::fs::read(dir.path().join("raw-1.dat")).unwrap();
+            let frame_size = a.len() / 8;
+            let mut copied = a[4 * frame_size..].to_vec();
+            copied.extend_from_slice(&b[..4 * frame_size]);
+            std::fs::write(dir.path().join("raw-copy.dat"), copied).unwrap();
         }
         let config = dir.path().join("run.toml");
         std::fs::write(&config, toml::to_string(&c).unwrap()).unwrap();
