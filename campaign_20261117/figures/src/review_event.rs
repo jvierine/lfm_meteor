@@ -9,6 +9,13 @@ fn legend(p: &mut Panel, entries: Vec<LegendEntry>) {
     let mut l=Legend::new(entries);l.position=LegendPosition::LowerLeft;
     l.avoid_data=false;l.allow_reused_marker_shapes=true;l.background_opacity=0.85;l.padding_mm=1.;p.legend=Some(l);
 }
+fn sparse_ticks(p: &mut Panel) {
+    if let Some(a)=p.axes.as_mut() {
+        for ticks in [&mut a.xticks,&mut a.yticks] {
+            if ticks.len()>3 {*ticks=vec![ticks[0],ticks[ticks.len()/2],*ticks.last().unwrap()];}
+        }
+    }
+}
 pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let uncertainty=h.attr("show_model_uncertainty").ok().and_then(|a|a.read_scalar::<bool>().ok()).unwrap_or(true);
     let compact = h.attr("compact_article_layout").ok().and_then(|a|a.read_scalar::<bool>().ok()).unwrap_or(false);
@@ -51,6 +58,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             }
             if j==0{legend(&mut p,(0..3).map(|s|LegendEntry::circle(SITES[s],COLORS[s])).collect());}
         }
+        sparse_ticks(&mut p);
         panel_label(&mut f,&p,&format!("{})",(b'a'+j as u8) as char));f.panels.push(p);
     }
     let b=h.group("beam")?;let bt=array(&b,"time_s")?;let gain:Vec<_>=array(&b,"relative_gain_db")?.iter().map(|x|2.*x).collect();let rcs=array(&b,"rcs_dbsm")?;
@@ -80,7 +88,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     } else {
         legend(&mut p,vec![LegendEntry::line("Two-way gain",COLORS[0]),LegendEntry::circle("RCS",COLORS[1])]);
     }
-    panel_label(&mut f,&p,"e)");f.panels.push(p);
+    sparse_ticks(&mut p);panel_label(&mut f,&p,"e)");f.panels.push(p);
     let extent=attribute(&b,"extent_m")?;
     let mut p=Panel::new(Rect::new(126.,bottom,54.,panel_height),Axes::new([-extent,extent],[-extent,extent],"East offset (m)","North offset (m)"));
     let contours=b.group("contours")?;
@@ -90,8 +98,9 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let scale=Scale::new(limits(&height,0.01),Normalization::Linear,ColorMap::plasma())?;let cid=f.scale(scale.clone());
     curve(&mut p,&east,&north,"#999999",0.6);p.scatter_colored(&points(&east,&north),&height,&scale,3.,1.,"none")?;
     let span=scale.limits[1]-scale.limits[0];
-    let step=if span<1. {0.2} else if span<3. {0.5} else {1.};
+    let raw=span/3.;let magnitude=10_f64.powf(raw.log10().floor());
+    let step=[1.,2.,5.,10.].into_iter().find(|v|v*magnitude>=raw).unwrap()*magnitude;
     let ticks=((scale.limits[0]/step).ceil() as i32..=(scale.limits[1]/step).floor() as i32).map(|v|v as f64*step).collect();
-    f.colorbars.push(Colorbar::new(Rect::new(184.,bottom,2.,panel_height),cid,"Altitude (km)",ticks));panel_label(&mut f,&p,"f)");f.panels.push(p);
+    f.colorbars.push(Colorbar::new(Rect::new(184.,bottom,2.,panel_height),cid,"Altitude (km)",ticks));sparse_ticks(&mut p);panel_label(&mut f,&p,"f)");f.panels.push(p);
     article_figure(f, 1.)
 }
