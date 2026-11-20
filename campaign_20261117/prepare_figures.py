@@ -174,7 +174,9 @@ def catalogue(root, out, workers):
     axis = ENU.T @ np.array([np.sin(a)*np.cos(el),np.cos(a)*np.cos(el),np.sin(el)])
     points = STATIONS[0] + (gh*1000/np.sin(el))[:,None]*axis
     remote = []
-    for s, pointing in [(1,(151.2652587890625,37.3260498046875)),(2,(225.7855224609375,29.2950439453125))]:
+    for s in (1,2):
+        with h5py.File(root/("20261117_"+SITES[s])/"event_cuts/event_000000.h5") as h:
+            pointing=(float(h["pulses/rx_azimuth_deg"][0]),float(h["pulses/rx_elevation_deg"][0]))
         from analyze import enu_matrix, LLH
         matrix = enu_matrix(*LLH[s,:2])
         direction = (points-STATIONS[s]) @ matrix.T
@@ -193,13 +195,17 @@ def catalogue(root, out, workers):
         counts=counts.T, east_edges=xe, north_edges=ye, gain_grid_deg=grid,gain_db=gain_grid),
         {"containment_level_db": -3., "remote_gain_model": "rectangular aperture; header pointing"})
     event_height = np.array([np.median(e["height"]) for e in events])
+    common=np.logical_and.reduce([g>=np.max(g)-3 for g in remote])
+    if not common.any(): raise ValueError("recorded remote beams have no shared half-power altitude interval")
+    common_lo,common_hi=gh[common].min(),gh[common].max()
     with h5py.File(out/"altitude_correction.h5","w") as h:
         h.attrs.update(monostatic_events=len(mono),tristatic_events=len(events),
-            monostatic_common_events=np.sum((mono>=92)&(mono<=95)),
-            tristatic_common_events=np.sum((event_height>=92)&(event_height<=95)))
+            common_lower_km=common_lo,common_upper_km=common_hi,
+            monostatic_common_events=np.sum((mono>=common_lo)&(mono<=common_hi)),
+            tristatic_common_events=np.sum((event_height>=common_lo)&(event_height<=common_hi)))
 
     physical = [e for e in events if e["physical"]]
-    if physical:
+    if physical and any(e["physical"]["resolved"] for e in physical):
         save(out/"figure7.h5", dict(selected=np.array([e["physical"]["resolved"] for e in physical]),
             initial_mass_kg=np.array([e["physical"]["initial_mass_kg"] for e in physical]),
             initial_speed_km_s=np.array([e["speed"] for e in physical]),
