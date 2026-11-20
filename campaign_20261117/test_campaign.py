@@ -3,12 +3,32 @@ import unittest
 from pathlib import Path
 import h5py
 import numpy as np
-from analyze import load_measurements, SITES, ENU, STATIONS
+from analyze import associate, load_measurements, SITES, ENU, STATIONS
 from derived import source_root, beam, beam_frame, beam_power, directions_from_offsets, angular_offsets
 from overlap import measure_overlap
 
 
 class CampaignTests(unittest.TestCase):
+    def test_association_stage_excludes_nearby_but_disjoint_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for s,site in enumerate(SITES):
+                folder=root/("20261117_"+site)
+                (folder/"event_cuts").mkdir(parents=True)
+                times=np.arange(20,dtype=np.int64)*5000000+(125000000 if s else 0)
+                with h5py.File(folder/"catalogue.h5","w") as h:
+                    h["event_start_utc_ns"]=[times[0]]
+                    h["event_stop_utc_ns"]=[times[-1]]
+                    h["event_peak_snr_db"]=[20.]
+                with h5py.File(folder/"event_cuts/event_000000.h5","w") as h:
+                    h["ransac_inlier"]=np.ones(20,np.uint8)
+                    h["pulses/peak_snr_db"]=np.full(20,20.)
+                    h["pulses/utc_ns"]=times
+            associate(root,root/"out")
+            with h5py.File(root/"out/associations.h5") as h:
+                self.assertEqual(len(h["station_event_indices"]),0)
+                self.assertEqual(len(h["insufficient_overlap_station_event_indices"]),1)
+
     def test_disjoint_station_arcs_cannot_form_tristatic_event(self):
         t=np.arange(20,dtype=np.int64)*5000000
         self.assertFalse(measure_overlap([t,t+125000000,t+125000000])[0])
