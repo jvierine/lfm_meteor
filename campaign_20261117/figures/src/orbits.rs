@@ -33,7 +33,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     anyhow::ensure!(!keep.is_empty(), "No finite orbit intervals for display");
     let class: Vec<_> = probability.iter().map(|&p| p >= 0.5).collect();
     let mut f = Figure::new(IntendedUse::ArticleWide);
-    f.height_mm = 108.8;
+    f.height_mm = 117.8;
     let cometary_color = LineStyle::for_series(0).color;
     let asteroidal_color = LineStyle::for_series(1).color;
     f.font_pt = 8.;
@@ -99,7 +99,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         let mut p = Panel::new(
             Rect::new(
                 20. + (index % 2) as f64 * 82.,
-                8. + (index / 2) as f64 * 48.8,
+                17. + (index / 2) as f64 * 48.8,
                 66.,
                 35.5,
             ),
@@ -149,6 +149,9 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             }
             let mut l = Legend::new(entries);
             l.allow_reused_marker_shapes = true;
+            l.position=LegendPosition::OutsideAboveCenter;
+            l.columns=3;
+            l.avoid_data=false;
             p.legend = Some(l);
         }
         panel_label(&mut f, &p, &format!("({})", (b'a' + index as u8) as char));
