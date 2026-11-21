@@ -32,7 +32,9 @@ def main():
     assert len(selected)==13
     out=a.root/'extreme_mass_atlas';out.mkdir(exist_ok=True)
     text=[r'\documentclass[10pt]{article}',r'\usepackage[a4paper,margin=12mm]{geometry}',
-          r'\usepackage{graphicx,amsmath}',r'\pagestyle{plain}',r'\begin{document}']
+          r'\usepackage{graphicx,amsmath}',
+          r'\graphicspath{{memos/november2026/extreme_mass_atlas/}{}}',
+          r'\pagestyle{plain}',r'\begin{document}']
     for i,(mass,name,interval) in enumerate(selected):
         label=('Largest %d'%(i+1)) if i<3 else ('Smallest %d'%(i-2))
         source=a.root/'figures/events'/name/'event.pdf'
