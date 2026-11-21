@@ -7,9 +7,14 @@ from analyze import associate, load_measurements, SITES, ENU, STATIONS
 from derived import source_root, beam, beam_frame, beam_power, directions_from_offsets, angular_offsets
 from overlap import measure_overlap
 from fit_numerics import jacobian, optimize, profile_interval
+from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_review_support_uses_pulses_not_interval_envelopes(self):
+        times=np.array([0.,.005,.010,.000025,.010025,.020])
+        station=np.array([0,0,0,1,1,2])
+        np.testing.assert_array_equal(multi_receiver_mask(times,station),[True,False,True,True,True,False])
     def test_explicit_jacobian_steps_work_for_zero_and_nonzero_parameters(self):
         a=np.arange(28,dtype=float).reshape(4,7)/7
         for x in [np.zeros(7),np.arange(7,dtype=float)]:

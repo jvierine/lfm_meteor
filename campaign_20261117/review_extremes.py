@@ -20,6 +20,13 @@ def core_mask(times, station):
     return (times>=lower)&(times<=upper)
 
 
+def multi_receiver_mask(times, station):
+    support=np.zeros(len(times),int)
+    for site in range(3):
+        support+=np.any(np.abs(times[:,None]-times[station==site][None,:])<=1e-4,axis=1)
+    return support>=2
+
+
 def one(task):
     root,library,event,variant=task
     folder=root/'events'/('tri_%06d'%event)
@@ -34,6 +41,11 @@ def one(task):
             measured=h['apparent_path_m'][:]
         mask=np.ones(len(data['time_s']),bool)
         if variant=='core': mask=core_mask(data['time_s'],data['station'])
+        if variant in ('multi2','clean586'):
+            mask=multi_receiver_mask(data['time_s'],data['station'])
+        if variant=='clean586':
+            # Explicit review trial: the first 20 ms contain 100--566 m residuals.
+            mask&=data['time_s']>=.035-1e-4
         # Retain the original reference epoch, so initial masses remain comparable.
         selected={k:(v[mask] if k in ROWS else v) for k,v in data.items()}
         save(output/'input.h5',selected,{'selection':variant,'original_epoch_preserved':True})
@@ -86,11 +98,12 @@ def main():
     p.add_argument('--root',type=Path,default=Path('/gpfs/pub/data_other/juha/20261117_tristatic'))
     p.add_argument('--library',type=Path,required=True)
     p.add_argument('--workers',type=int,default=1)
+    p.add_argument('--variants',nargs='+',choices=['full','core','multi2','clean586'],default=['full','core'])
     a=p.parse_args()
-    tasks=[(a.root,a.library.resolve(),n,v) for n in EVENTS for v in ('full','core')]
+    tasks=[(a.root,a.library.resolve(),n,v) for n in EVENTS for v in a.variants if v!='clean586' or n==586]
     with concurrent.futures.ProcessPoolExecutor(max_workers=a.workers) as pool:
         results=list(pool.map(one,tasks))
-    save(a.root/'extreme_review/status.h5',{'event':np.array([r[0] for r in results],dtype='S32'),
+    save(a.root/('extreme_review/status_'+ '_'.join(a.variants)+'.h5'),{'event':np.array([r[0] for r in results],dtype='S32'),
         'variant':np.array([r[1] for r in results],dtype='S16'),'status':np.array([r[2] for r in results],dtype='S16')})
     if any(r[2]=='failed' for r in results):raise SystemExit('Review failures: inspect error.log')
 

@@ -17,4 +17,4 @@ if [[ -f "$PWD/syisr_native/target/centos7-link/libc.so" ]]; then
     link_flags=(-L "native=$PWD/syisr_native/target/centos7-link")
 fi
 cargo rustc --release --locked --manifest-path tristatic_native/Cargo.toml -j "$SLURM_CPUS_PER_TASK" -- "${link_flags[@]}"
-/opt/soft/anaconda3/bin/conda run --no-capture-output -n base python -u campaign_20261117/review_extremes.py --library tristatic_native/target/release/libtristatic_native.so --workers "$SLURM_CPUS_PER_TASK"
+/opt/soft/anaconda3/bin/conda run --no-capture-output -n base python -u campaign_20261117/review_extremes.py --library tristatic_native/target/release/libtristatic_native.so --workers "$SLURM_CPUS_PER_TASK" "$@"
