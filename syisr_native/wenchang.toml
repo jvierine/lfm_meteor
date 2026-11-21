@@ -15,8 +15,8 @@ max_resync_bytes = 4000000
 allow_orphaned_tail = true
 chirp_direction = "down"
 # Do not transplant the April 2024 satellite calibration to this recording.
-delay_correction_us = 0.0
-delay_calibration = "uncalibrated: header gate front only"
+delay_correction_us = -5.976391135593515
+delay_calibration = "2026-11-17 common additive delay calibration for all three sites"
 
 # These are apparent total transmitter-target-receiver path lengths c*tau, not heights.
 min_range_km = 200.0

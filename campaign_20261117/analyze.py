@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import time
 import traceback
+import toml
 
 import h5py
 import numpy as np
@@ -28,6 +29,12 @@ SITES = ("sanya", "danzhou", "wenchang")
 LLH = np.array([[18.3492, 109.6222, 50.0], [19.5281, 109.1322, 99.9],
                 [19.5982, 110.7908, 24.9]])
 PTR = ct.POINTER(ct.c_double)
+
+
+def remaining_delay_correction(h):
+    """Apply only the part of the calibration absent from the stored product."""
+    config = toml.loads(bytes(h["config_toml_utf8"][:]).decode("utf-8"))
+    return DELAY_CORRECTION_US - float(config["delay_correction_us"])
 
 
 def ecef(llh):
@@ -149,6 +156,7 @@ def load_measurements(root, indices):
     for station, (site, index) in enumerate(zip(SITES, indices)):
         path = root / ("20261117_" + site) / "event_cuts" / ("event_%06d.h5" % index)
         with h5py.File(path) as h:
+            correction_us = remaining_delay_correction(h)
             p = h["pulses"]
             offsets = h["raw/pulse_offsets"][:]
             words = h["raw/iq_words_iq"][:].reshape(-1, 2)
@@ -162,13 +170,13 @@ def load_measurements(root, indices):
                 iq = words[int(offsets[k])+first:int(offsets[k])+first+1280]
                 # Preserve the station reader's Q + i I convention, not I + i Q.
                 raw = iq[:, 1].astype(float) + 1j*iq[:, 0]
-                sample = (h["raw/first_delay_us"][k] + DELAY_CORRECTION_US)*1e-6 + (first + np.arange(1280))/FS
+                sample = (h["raw/first_delay_us"][k] + correction_us)*1e-6 + (first + np.arange(1280))/FS
                 noise = float(p["raw_noise_power_adc2"][k])
                 if not np.isfinite(noise) or noise <= 0:
                     continue
                 rows.append(dict(station=station, ns=int(p["utc_ns"][k]), raw=raw,
                     sample=sample, noise=noise, snr=float(p["peak_snr_db"][k]),
-                    apparent=C*(float(p["apparent_delay_us"][k]) + DELAY_CORRECTION_US)*1e-6,
+                    apparent=C*(float(p["apparent_delay_us"][k]) + correction_us)*1e-6,
                     az=float(p["tx_azimuth_deg"][k]), el=float(p["tx_elevation_deg"][k]),
                     rxaz=float(p["rx_azimuth_deg"][k]), rxel=float(p["rx_elevation_deg"][k])))
     rows.sort(key=lambda r: (r["ns"], r["station"]))

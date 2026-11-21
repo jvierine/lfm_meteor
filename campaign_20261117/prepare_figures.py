@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 import h5py
 import numpy as np
-from analyze import SITES, STATIONS, ENU, C, save
+from analyze import SITES, STATIONS, ENU, C, save, remaining_delay_correction
 from derived import beam, beam_frame, beam_power, angular_offsets, directions_from_offsets
 
 
@@ -26,7 +26,7 @@ def overview(root, out):
             t = h["event_start_utc_ns"][:]
             r = h["event_median_apparent_range_km"][:]
             times.extend(t)
-            delays.extend(r*1000/C*1e6*(2 if site == "sanya" else 1))
+            delays.extend(r*1000/C*1e6*(2 if site == "sanya" else 1) + remaining_delay_correction(h))
             sites.extend([site]*len(t))
             counts.append(np.histogram((t-day)/3.6e12, np.arange(11, 26))[0])
     out.mkdir(parents=True, exist_ok=True)
@@ -178,7 +178,7 @@ def catalogue(root, out, workers):
 
     # Height and pointing offsets use geodetic positions, not slant range.
     with h5py.File(root/"20261117_sanya/catalogue.h5") as h:
-        ranges = h["event_median_apparent_range_km"][:]
+        ranges = h["event_median_apparent_range_km"][:] + C*remaining_delay_correction(h)*1e-9/2
     mono = np.sqrt(6371**2+ranges**2+2*6371*ranges*np.sin(np.deg2rad(75)))-6371
     heights = np.concatenate([e["height"] for e in events])
     east, north = [], []

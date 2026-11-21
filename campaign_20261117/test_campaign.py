@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 import h5py
 import numpy as np
-from analyze import associate, load_measurements, SITES, ENU, STATIONS
+from analyze import associate, load_measurements, SITES, ENU, STATIONS, C, DELAY_CORRECTION_US, remaining_delay_correction
 from derived import source_root, beam, beam_frame, beam_power, directions_from_offsets, angular_offsets
 from overlap import measure_overlap
 from fit_numerics import jacobian, optimize, profile_interval
@@ -11,6 +11,13 @@ from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_calibration_is_not_applied_twice(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with h5py.File(Path(temp)/"test.h5", "w") as h:
+                h["config_toml_utf8"] = np.frombuffer(
+                    ("delay_correction_us = %.16g\n" % DELAY_CORRECTION_US).encode(), dtype=np.uint8)
+                self.assertAlmostEqual(remaining_delay_correction(h), 0., places=12)
+
     def test_mass_selection_excludes_nulls_and_sidelobes(self):
         from physical import mass_fit_mask
         from analyze import WAVELENGTH
@@ -90,6 +97,7 @@ class CampaignTests(unittest.TestCase):
                 path=root/("20261117_"+site)/"event_cuts/event_000000.h5"
                 path.parent.mkdir(parents=True)
                 with h5py.File(path,"w") as h:
+                    h["config_toml_utf8"]=np.frombuffer(b"delay_correction_us = 0.0\n",dtype=np.uint8)
                     p=h.create_group("pulses")
                     for key,value in dict(echo_start_sample=[800]*3,peak_snr_db=[20.]*3,
                         utc_ns=[1000000000,1005000000,1010000000],raw_noise_power_adc2=[1.]*3,
@@ -105,7 +113,11 @@ class CampaignTests(unittest.TestCase):
             self.assertEqual(len(rows),9)
             np.testing.assert_array_equal(rows[0]["raw"],np.full(1280,7+3j))
             # The cut's start delay already contains its nonzero sample index.
-            self.assertAlmostEqual(rows[0]["sample"][0],466e-6+(800-240)/4e6)
+            for row in rows:
+                self.assertAlmostEqual(row["sample"][0],
+                    (466.+DELAY_CORRECTION_US)*1e-6+(800-240)/4e6, places=12)
+                self.assertAlmostEqual(row["apparent"],
+                    C*(566.+DELAY_CORRECTION_US)*1e-6, places=8)
 
     def test_lookup_inversion_does_not_hide_out_of_domain_or_multiple_roots(self):
         source=np.array([1.,2.,3.,4.])
