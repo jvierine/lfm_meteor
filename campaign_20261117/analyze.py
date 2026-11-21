@@ -11,7 +11,10 @@ import os
 from pathlib import Path
 import time
 import traceback
-import toml
+try:
+    import tomllib as toml
+except ImportError:
+    import toml
 
 import h5py
 import numpy as np
