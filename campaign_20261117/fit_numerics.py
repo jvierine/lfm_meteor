@@ -35,7 +35,10 @@ def profile_interval(profile_cost, center, minimum_cost, bounds=(-6.999,-2.001),
             if outside==inside: break
             value=profile_cost(outside)-target
             if np.isfinite(value) and value>0:
-                crossing=brentq(lambda x:profile_cost(x)-target,min(inside,outside),max(inside,outside),xtol=.001)
+                candidate=brentq(lambda x:profile_cost(x)-target,min(inside,outside),max(inside,outside),xtol=1e-7)
+                # A sign change across a discontinuity is not an LR crossing.
+                if abs(profile_cost(candidate)-target) <= .02:
+                    crossing=candidate
                 break
             if outside==bound: break
             inside=outside

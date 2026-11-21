@@ -28,6 +28,10 @@ class CampaignTests(unittest.TestCase):
         np.testing.assert_allclose(result,[-4-expected,-4+expected],atol=.001)
         self.assertTrue(np.isnan(profile_interval(lambda r:0.,-3.,0.)).all())
         self.assertTrue(np.isnan(profile_interval(lambda r:0.,-2.,0.)).all())
+
+    def test_profile_jump_is_not_a_confidence_limit(self):
+        result=profile_interval(lambda r:0. if abs(r+4)<.002 else 11000.,-4.,0.)
+        self.assertTrue(np.isnan(result).all())
     def test_association_stage_excludes_nearby_but_disjoint_events(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
