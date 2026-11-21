@@ -11,7 +11,7 @@ from scipy.optimize import least_squares
 from analyze import Native, save, STATIONS, C, GAMMA, WAVELENGTH
 from fit_numerics import optimize, profile_interval
 
-FIT_VERSION = "stable-absolute-jacobian-profile-v1"
+FIT_VERSION = "endpoint-safe-verified-profile-v2"
 
 
 def one(task):
