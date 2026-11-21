@@ -46,7 +46,10 @@ def main():
     p.add_argument("--root",type=Path,default=Path("/gpfs/pub/data_other/juha/20261117_tristatic"))
     p.add_argument("--workers",type=int,default=1)
     args=p.parse_args()
-    folders=sorted(f.parent for f in (args.root/"events").glob("tri_*/fit.h5"))
+    with h5py.File(args.root/"associations.h5") as h:
+        count=len(h["station_event_indices"])
+    folders=[args.root/"events"/("tri_%06d" % i) for i in range(count)]
+    folders=[f for f in folders if (f/"fit.h5").exists()]
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
         result=list(pool.map(audit_one,folders))
     from analyze import save
