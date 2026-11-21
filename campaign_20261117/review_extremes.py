@@ -37,6 +37,7 @@ def one(task):
             data={k:h[k][()] for k in h}
         with h5py.File(folder/'physical.h5') as h:
             original=h['params'][:]
+            original_positions=h['position_ecef_m'][:]
         with h5py.File(folder/'fit.h5') as h:
             measured=h['apparent_path_m'][:]
         mask=np.ones(len(data['time_s']),bool)
@@ -46,6 +47,12 @@ def one(task):
         if variant=='clean586':
             # Explicit review trial: the first 20 ms contain 100--566 m residuals.
             mask&=data['time_s']>=.035-1e-4
+        if variant=='mainlobe':
+            from derived import beam
+            # Use geometry, not residual size, to exclude the sidelobe tail.
+            mask=core_mask(data['time_s'],data['station']) & (beam(original_positions)[0]>=-10.)
+            if any(sum(mask&(data['station']==s))<6 for s in range(3)):
+                raise ValueError('Insufficient three-station main-lobe coverage')
         # Retain the original reference epoch, so initial masses remain comparable.
         selected={k:(v[mask] if k in ROWS else v) for k,v in data.items()}
         save(output/'input.h5',selected,{'selection':variant,'original_epoch_preserved':True})
@@ -98,9 +105,10 @@ def main():
     p.add_argument('--root',type=Path,default=Path('/gpfs/pub/data_other/juha/20261117_tristatic'))
     p.add_argument('--library',type=Path,required=True)
     p.add_argument('--workers',type=int,default=1)
-    p.add_argument('--variants',nargs='+',choices=['full','core','multi2','clean586'],default=['full','core'])
+    p.add_argument('--variants',nargs='+',choices=['full','core','multi2','clean586','mainlobe'],default=['full','core'])
+    p.add_argument('--events',type=int,nargs='+',default=EVENTS)
     a=p.parse_args()
-    tasks=[(a.root,a.library.resolve(),n,v) for n in EVENTS for v in a.variants if v!='clean586' or n==586]
+    tasks=[(a.root,a.library.resolve(),n,v) for n in a.events for v in a.variants if v!='clean586' or n==586]
     with concurrent.futures.ProcessPoolExecutor(max_workers=a.workers) as pool:
         results=list(pool.map(one,tasks))
     save(a.root/('extreme_review/status_'+ '_'.join(a.variants)+'.h5'),{'event':np.array([r[0] for r in results],dtype='S32'),
