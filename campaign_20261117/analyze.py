@@ -22,6 +22,8 @@ B = 4e6
 T = 200e-6
 GAMMA = B / T
 WAVELENGTH = C / 430e6
+# Common additive propagation-delay calibration for all three receivers.
+DELAY_CORRECTION_US = -5.976391135593515
 SITES = ("sanya", "danzhou", "wenchang")
 LLH = np.array([[18.3492, 109.6222, 50.0], [19.5281, 109.1322, 99.9],
                 [19.5982, 110.7908, 24.9]])
@@ -100,7 +102,8 @@ def associate(root, out):
          "ambiguous_sanya_indices": np.asarray(ambiguous, dtype=np.int64),
          "station_counts": np.array([len(x["event_start_utc_ns"]) for x in catalogues])},
          {"method": "unique candidates; >=6 shared pulses, >=25 ms, >=50 percent of every station; 100 us matching tolerance",
-          "hardware_delay_status": "recorded gate timing; independent calibration not yet established"})
+          "hardware_delay_status": "common calibrated delay at all three sites",
+          "delay_correction_us": DELAY_CORRECTION_US})
     print("ASSOCIATIONS", np.sum(keep & sufficient), "insufficient overlap",np.sum(keep & ~sufficient), "ambiguous", len(ambiguous) + np.sum(~keep), flush=True)
 
 
@@ -159,13 +162,13 @@ def load_measurements(root, indices):
                 iq = words[int(offsets[k])+first:int(offsets[k])+first+1280]
                 # Preserve the station reader's Q + i I convention, not I + i Q.
                 raw = iq[:, 1].astype(float) + 1j*iq[:, 0]
-                sample = h["raw/first_delay_us"][k]*1e-6 + (first + np.arange(1280))/FS
+                sample = (h["raw/first_delay_us"][k] + DELAY_CORRECTION_US)*1e-6 + (first + np.arange(1280))/FS
                 noise = float(p["raw_noise_power_adc2"][k])
                 if not np.isfinite(noise) or noise <= 0:
                     continue
                 rows.append(dict(station=station, ns=int(p["utc_ns"][k]), raw=raw,
                     sample=sample, noise=noise, snr=float(p["peak_snr_db"][k]),
-                    apparent=C*float(p["apparent_delay_us"][k])*1e-6,
+                    apparent=C*(float(p["apparent_delay_us"][k]) + DELAY_CORRECTION_US)*1e-6,
                     az=float(p["tx_azimuth_deg"][k]), el=float(p["tx_elevation_deg"][k]),
                     rxaz=float(p["rx_azimuth_deg"][k]), rxel=float(p["rx_elevation_deg"][k])))
     rows.sort(key=lambda r: (r["ns"], r["station"]))
@@ -263,7 +266,8 @@ def fit_one(task):
             sample_time_s=np.array([r["sample"] for r in rows]),
             fs=FS, bandwidth=B, duration=T, wavelength=WAVELENGTH,
             whitener_real=np.ones((len(rows), 1)), whitener_imag=np.zeros((len(rows), 1)))
-        save(folder / "input.h5", fields, {"calibration": "recorded gate timing; no April hardware correction", "whitening": "none"})
+        save(folder / "input.h5", fields, {"calibration": "common additive delay correction at all three sites",
+             "delay_correction_us": DELAY_CORRECTION_US, "whitening": "none"})
         # First establish a kinematic solution. The eight-parameter kernel tends
         # to constant velocity as its exponential deceleration amplitude -> 0.
         model = Native(library, folder / "input.h5", len(rows))
@@ -315,7 +319,8 @@ def fit_one(task):
             {"optimizer_success": bool(fit.success), "seed_path_rms_m": seed_rms,
              "path_rms_m": np.sqrt(np.mean(residual**2)), "voltage_cost": float(fit.cost),
              "model": "kinematic exponential deceleration; physical drag fit pending",
-             "status": "provisional: uncalibrated hardware delays", "mass_available": False})
+             "status": "common delay calibration applied", "delay_correction_us": DELAY_CORRECTION_US,
+             "mass_available": False})
         model.close()
         return event, "fit"
     except Exception:
