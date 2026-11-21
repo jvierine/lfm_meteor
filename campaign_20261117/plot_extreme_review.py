@@ -3,6 +3,7 @@ import argparse
 import concurrent.futures
 from pathlib import Path
 import subprocess
+import html
 import h5py
 import numpy as np
 from astropy.coordinates import EarthLocation
@@ -48,6 +49,25 @@ def main():
     paths=sorted((a.root/'extreme_review').glob('tri_*/*/review.h5'))
     with concurrent.futures.ProcessPoolExecutor(max_workers=a.workers) as pool:
         list(pool.map(one,[(p,a.root,a.library.resolve(),a.renderer.resolve()) for p in paths]))
+    write_gallery(a.root/'extreme_review')
+
+
+def write_gallery(root):
+    sections=[]
+    for event in sorted(root.glob('tri_*')):
+        figures=[]
+        for variant in ('full','core','multi2','clean586'):
+            path=event/variant/'review.h5'
+            if not path.exists():continue
+            with h5py.File(path) as h:
+                rms=np.sqrt(np.mean(h['path_residual_m'][:]**2))
+                mass=float(h['initial_mass_kg'][()])
+                interval=h['radius_interval_m'][:]
+                status='finite conditional interval' if np.isfinite(interval).all() else 'mass interval unresolved'
+            relative=event.name+'/'+variant+'/event'
+            figures.append('<figure><figcaption>%s: RMS %.2f m; trial mass %.3g kg; %s</figcaption><a href="%s.pdf"><img loading="lazy" src="%s.png"></a></figure>'%(variant,rms,mass,status,relative,relative))
+        sections.append('<section><h2>%s</h2>%s</section>'%(html.escape(event.name),''.join(figures)))
+    (root/'index.html').write_text('<!doctype html><meta charset="utf-8"><title>Extreme-event fit review</title><style>body{font:16px sans-serif;margin:24px;color:#222}figure{margin:12px 0 28px}img{width:100%;max-width:1100px}figcaption{margin:8px 0}section{border-top:1px solid #bbb}</style><h1>Extreme-event fit review</h1><p>Diagnostic trials, not catalogue replacements. Full: all retained pulses. Core: common three-station time interval. Multi2: contemporaneous detections at two or more receivers. Clean586: multi2 after 35 ms. Trial masses are not accepted estimates; finite conditional intervals alone do not establish robustness.</p>'+''.join(sections))
 
 
 if __name__=='__main__':main()
