@@ -6,6 +6,7 @@ mod rcs;
 mod radiants;
 mod orbits;
 mod review_event;
+mod pointing;
 use anyhow::{bail, Result};
 use rustplotlib::*;
 use std::path::Path;
@@ -45,6 +46,7 @@ fn main() -> Result<()> {
         "figure8" => rcs::figure(&h)?,
         "figure9" => radiants::figure(&h)?,
         "figure10" => orbits::figure(&h)?,
+        "pointing" => pointing::figure(&h)?,
         name => bail!("unknown figure {name}"),
     };
     let path = Path::new(&args[3]);
