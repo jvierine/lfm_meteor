@@ -7,6 +7,7 @@ import argparse
 import concurrent.futures
 from pathlib import Path
 import traceback
+import shutil
 import h5py
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
@@ -14,6 +15,7 @@ from analyze import C, FS, WAVELENGTH, STATIONS, ENU, save
 
 RATE_FACTOR = 4*np.sqrt(2*np.pi)*951.*3.8e-26
 SANYA_AZ_EL = (14.996337890625, 74.9981689453125)
+RCS_AZ_EL = (14.73774082860065, 74.61819138688253)
 
 
 def beam_frame(az=SANYA_AZ_EL[0], el=SANYA_AZ_EL[1]):
@@ -56,6 +58,10 @@ def beam(points, az=SANYA_AZ_EL[0], el=SANYA_AZ_EL[1]):
     gain_db = 10*np.log10(np.maximum(power, 1e-30))
     gain = 10**((46 + 25*np.log10(np.sin(e)) + gain_db)/10)
     return gain_db, gain, distance, relative @ east, relative @ north
+
+
+def rcs_beam(points):
+    return beam(points, *RCS_AZ_EL)
 
 
 def source_root(curve, power, source):
@@ -119,14 +125,14 @@ def orbit_product(folder, state, covariance, epoch_ns):
 
 
 def one(task):
-    folder, lookup = task
+    folder, lookup, rcs_only = task
     try:
         with h5py.File(folder / "physical.h5") as h:
             d = {k: h[k][()] for k in h}
         with h5py.File(folder / "input.h5") as h:
             noise = h["noise_power"][:]
         keep = d["station"] == 0
-        gain_db, gain, distance, east, north = beam(d["position_ecef_m"][keep])
+        gain_db, gain, distance, east, north = rcs_beam(d["position_ecef_m"][keep])
         received = d["modeled_amplitude_power_adc2"][keep]/noise[keep] * 1.380649e-23*120.*FS
         rcs = received*(4*np.pi)**3 * distance**4 / (4.7e6*gain**2*WAVELENGTH**2)
         rcs_db = 10*np.log10(rcs)
@@ -142,6 +148,13 @@ def one(task):
         valid = (gain_db >= -10) & np.isfinite(rate)
         pairs = valid[:-1] & valid[1:] & (np.diff(times) <= .050001)
         mass = np.sum(np.diff(times)[pairs]*(rate[:-1][pairs]+rate[1:][pairs])/2) if pairs.any() else np.nan
+        old = folder / "rcs.h5"
+        backup = folder / "rcs_recorded_pointing.h5"
+        if old.exists() and not backup.exists():
+            with h5py.File(old) as h:
+                calibrated = h.attrs.get("pointing_calibration", "")
+            if not calibrated:
+                shutil.copy2(old, backup)
         save(folder / "rcs.h5", dict(time_s=times, time_ns=d["time_ns"][keep],
             rcs_dbsm=rcs_db, relative_gain_db=gain_db, height_km=d["height_km"][keep],
             speed_km_s=d["speed_mps"][keep]/1000, east_m=east, north_m=north,
@@ -149,10 +162,13 @@ def one(task):
             source_in_domain=np.isfinite(roots), in_beam=valid, integrated_mass_loss_kg=mass),
             {"system_temperature_k": 120., "calibration": "reference temperature, not November sky-noise calibration",
              "beam": "40 m square aperture; 46 dBi normal gain with cos^2.5 scan loss",
+             "beam_azimuth_deg": RCS_AZ_EL[0], "beam_elevation_deg": RCS_AZ_EL[1],
+             "pointing_calibration": "empirical meteor-pattern registration; timing held fixed",
              "lookup": str(lookup), "mass_rate_factor": RATE_FACTOR,
              "inversion": "unique within-table root only; no boundary clipping or extrapolation"})
         state = np.r_[d["initial_gcrs_position_m"], d["initial_gcrs_velocity_mps"]]
-        orbit_product(folder, state, d["covariance"], int(d["time_ns"][0]))
+        if not rcs_only:
+            orbit_product(folder, state, d["covariance"], int(d["time_ns"][0]))
         return folder.name, "derived"
     except Exception:
         (folder / "derived_error.log").write_text(traceback.format_exc())
@@ -165,6 +181,7 @@ def main():
     p.add_argument("--lookup", type=Path, required=True)
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--rcs-only", action="store_true", help="Leave physical fits and orbit products unchanged")
     a = p.parse_args()
     folders = sorted(p.parent for p in (a.output/"events").glob("tri_*/physical.h5"))
     if (a.output/"association_selection.h5").exists():
@@ -174,7 +191,7 @@ def main():
     if a.limit:
         folders = folders[:a.limit]
     with concurrent.futures.ProcessPoolExecutor(max_workers=a.workers) as pool:
-        results = list(pool.map(one, [(f, a.lookup) for f in folders], chunksize=1))
+        results = list(pool.map(one, [(f, a.lookup, a.rcs_only) for f in folders], chunksize=1))
     save(a.output/"derived_status.h5", {"event": np.array([r[0] for r in results], dtype="S32"),
         "status": np.array([r[1] for r in results], dtype="S16")})
     print("DERIVED", {s:sum(r[1]==s for r in results) for s in ("derived", "failed")}, flush=True)

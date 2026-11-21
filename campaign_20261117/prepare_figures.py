@@ -5,7 +5,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 from analyze import SITES, STATIONS, ENU, C, save, remaining_delay_correction
-from derived import beam, beam_frame, beam_power, angular_offsets, directions_from_offsets
+from derived import beam, rcs_beam, RCS_AZ_EL, beam_frame, beam_power, angular_offsets, directions_from_offsets
 
 
 def retained_ids(root):
@@ -118,7 +118,7 @@ def create_event_input(event):
     sigma = C/(4e6/200e-6)*d["conditional_beat_std_hz"]
     speed = physical.get("speed_mps", d["speed_mps"])/1000
     k = station == 0
-    gain_db, gain, distance, east, north = beam(physical.get("position_ecef_m", d["position_ecef_m"])[k])
+    gain_db, gain, distance, east, north = rcs_beam(physical.get("position_ecef_m", d["position_ecef_m"])[k])
     fields = dict(time_s=time, station=station.astype(float), seed_apparent_path_m=d["apparent_path_m"],
         modeled_path_m=model, path_lower95_m=model, path_upper95_m=model,
         path_measurement_lower95_m=d["apparent_path_m"]-1.96*sigma,
@@ -193,7 +193,7 @@ def catalogue(root, out, workers):
     counts, xe, ye = np.histogram2d(east, north, bins=(grid, grid))
     xx, yy = np.meshgrid(grid, grid)
     axis, sky_east, sky_north = beam_frame()
-    gain_grid = 10*np.log10(np.maximum(beam_power(directions_from_offsets(xx,yy),axis),1e-30))
+    gain_grid = 10*np.log10(np.maximum(beam_power(directions_from_offsets(xx,yy),beam_frame(*RCS_AZ_EL)[0]),1e-30))
     gh = np.linspace(80, 120, 401)
     # Relative coverage from actual beam geometry; no absolute remote-gain claim.
     a, el = np.deg2rad([15,75])
