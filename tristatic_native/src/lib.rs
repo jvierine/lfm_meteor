@@ -86,7 +86,11 @@ pub fn shrinking_trajectory<F:Fn(f64)->f64>(times:&[f64],speed0:f64,radius0:f64,
     }
     times.iter().map(|&t| {
         let y=if t==0. {Vector2::new(0.,speed0)} else {
-            dense.evaluate(t).ok_or_else(||anyhow::anyhow!("Missing dense output"))?
+            // The last adaptive step can end one ulp before the requested time.
+            // Only snap roundoff at that endpoint, never extrapolate a missing arc.
+            let (_, upper)=dense.bounds();
+            let query=if t>upper && t-upper<=32.*f64::EPSILON*t.abs().max(1.) {upper} else {t};
+            dense.evaluate(query).ok_or_else(||anyhow::anyhow!("Missing dense output"))?
         };
         let radius=radius0*(sigma*(y[1]*y[1]-speed0*speed0)/6.).exp();
         let mass=4.*std::f64::consts::PI/3.*material*radius.powi(3);
@@ -126,6 +130,13 @@ pub fn shrinking_trajectory<F:Fn(f64)->f64>(times:&[f64],speed0:f64,radius0:f64,
             assert!((y[1]-v/(1.+k*v*t)).abs()<1e-4);
             assert!((y[0]-(k*v*t).ln_1p()/k).abs()<1e-4);
             assert_eq!(y[2],r);
+        }
+    }
+    #[test] fn short_arc_endpoint_is_valid_across_radius_trials() {
+        for i in 0..500 {
+            let radius=10_f64.powf(-6.+i as f64/125.);
+            let result=shrinking_trajectory(&[0.,0.005,0.055],52063.,radius,3000.,1e-8,|_|3e-7);
+            assert!(result.is_ok(), "radius {radius}: {result:?}");
         }
     }
     #[test] fn mass_speed_invariant() {
