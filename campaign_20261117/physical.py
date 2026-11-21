@@ -11,7 +11,21 @@ from scipy.optimize import least_squares
 from analyze import Native, save, STATIONS, C, GAMMA, WAVELENGTH
 from fit_numerics import optimize, profile_interval
 
-FIT_VERSION = "endpoint-safe-verified-profile-v2"
+FIT_VERSION = "mainlobe-minus10db-profile-v3"
+ROWS = ('time_s','time_ns','station','frames','rx','real','imag','noise_power',
+        'sample_time_s','whitener_real','whitener_imag')
+
+
+def mass_fit_mask(position):
+    from derived import beam, beam_frame
+    from analyze import ENU
+    relative = (position-STATIONS[0]) @ ENU.T
+    direction = relative/np.linalg.norm(relative, axis=1)[:, None]
+    axis = beam_frame()[0]
+    aperture_offset = 40/WAVELENGTH*(direction-axis)
+    gain = beam(position)[0]
+    mainlobe = (direction @ axis > 0) & np.all(np.abs(aperture_offset[:, :2]) < 1, axis=1)
+    return mainlobe & np.isfinite(gain) & (gain >= -10.), gain
 
 
 def one(task):
@@ -32,6 +46,27 @@ def one(task):
             seed = h["params"][:]
             position = h["position_ecef_m"][:]
             observed_path=h["apparent_path_m"][:]
+        mask, selection_gain = mass_fit_mask(position)
+        save(folder / "dynamic_mass_selection.h5",
+             dict(retained=mask, one_way_gain_db=selection_gain, time_ns=d['time_ns'], station=d['station']),
+             dict(threshold_db=-10., geometry='kinematic fit; Sanya transmit main lobe',
+                  fit_method_version=FIT_VERSION))
+        if any(np.count_nonzero(mask & (d['station']==s)) < 6 for s in range(3)):
+            # Keep the existing trajectory, but never retain its old mass selection.
+            if target.exists():
+                import shutil
+                backup=folder/'superseded_mass'/str(time.time_ns())
+                backup.mkdir(parents=True)
+                shutil.copy2(target, backup/'physical.h5')
+                with h5py.File(target, 'r+') as h:
+                    for key, value in [('dynamic_mass_fit_mask', mask), ('mass_fit_one_way_gain_db', selection_gain)]:
+                        if key in h: del h[key]
+                        h[key]=value
+                    h.attrs['mass_resolved_profile']=False
+                    h.attrs['mass_resolved_local_curvature']=False
+                    h.attrs['dynamic_mass_fit_status']='insufficient main-lobe measurements; previous trajectory retained'
+                    h.attrs['fit_method_version']=FIT_VERSION
+            return folder.name, 'insufficient'
         origin = EarthLocation.from_geocentric(*position[0], unit=u.m)
         height = np.arange(60., 181., 1.)
         dates = np.repeat(np.datetime64(int(d["time_ns"][0]), "ns"), len(height))
@@ -44,7 +79,9 @@ def one(task):
         model_dir = folder / "drag_model"
         save(model_dir / "input.h5", d, {"density_model": "NRLMSIS2.1 reference F107=150, F107a=150, Ap=4",
              "material_density_kg_m3": 3000., "Gamma": 1., "sigma_s2_m2": 1e-8})
-        model = Native(library, model_dir / "input.h5", len(d["time_s"]))
+        selected = {k: (v[mask] if k in ROWS else v) for k,v in d.items()}
+        save(model_dir / 'mainlobe_input.h5', selected, {'threshold_db': -10.})
+        model = Native(library, model_dir / "mainlobe_input.h5", int(mask.sum()))
         lo, hi = np.r_[[-30.]*3, [-50.]*3, -7.], np.r_[[30.]*3, [50.]*3, -2.]
         candidates = []
         if previous is not None:candidates.append(optimize(model.residual,previous,(lo,hi)))
@@ -74,6 +111,9 @@ def one(task):
             interval_log[0]<q[6]<interval_log[1] and
             interval_log[1]-interval_log[0]<1/3 and
             min(v[0] for v in profiles.values())>=fit.cost-.1)
+        model.close()
+        # Full-arc predictions remain available; only the masked voltages were fitted.
+        model = Native(library, model_dir / 'input.h5', len(d['time_s']))
         states = model.call("voltage_states", q, (len(d["time_s"]), 4))
         observable = model.call("voltage_observables", q, (len(d["time_s"]), 2))
         predicted = model.call("voltage_prediction", q, (len(d["time_s"]), d["real"].shape[1], 2))
@@ -88,6 +128,7 @@ def one(task):
         amplitude_power = np.max(predicted[:, :, 0]**2 + predicted[:, :, 1]**2, axis=1)
         updated=folder/"physical-refined.h5"
         save(updated, dict(params=q, covariance=covariance, initial_radius_m=radius,
+            dynamic_mass_fit_mask=mask, mass_fit_one_way_gain_db=selection_gain,
             initial_mass_kg=mass, radius_local95_m=interval,
             mass_local95_kg=4*np.pi/3*3000*interval**3,
             time_ns=d["time_ns"], time_s=d["time_s"], station=d["station"],
@@ -106,6 +147,8 @@ def one(task):
             initial_gcrs_velocity_mps=d["center"][3:]+1000*q[3:6]),
             {"mass_resolved_local_curvature": resolved, "mass_resolved_profile":resolved,
              "fit_method_version":FIT_VERSION,"voltage_cost": fit.cost,
+             "dynamic_mass_fit_status":"fitted inside -10 dB one-way transmit main lobe",
+             "mass_selection_geometry":"fixed kinematic trajectory; original epoch preserved",
              "status": "provisional: reference atmosphere and uncalibrated hardware delays",
              "interval_method": "conditional thermal-noise profile likelihood, Delta chi2=3.84; no total-error coverage claim",
              "solar_parameters": "F107=F107a=150 sfu; Ap=4 reference scenario",
@@ -120,6 +163,15 @@ def one(task):
         return folder.name, "physical"
     except Exception:
         (folder / "physical_error.log").write_text(traceback.format_exc())
+        if target.exists():
+            import shutil
+            backup=folder/'superseded_mass'/str(time.time_ns())
+            backup.mkdir(parents=True)
+            shutil.copy2(target, backup/'physical.h5')
+            with h5py.File(target, 'r+') as h:
+                h.attrs['mass_resolved_profile']=False
+                h.attrs['mass_resolved_local_curvature']=False
+                h.attrs['dynamic_mass_fit_status']='main-lobe refit failed; previous trajectory retained'
         return folder.name, "failed"
 
 
@@ -141,7 +193,7 @@ def main():
         result = list(pool.map(one, [(f, a.library.resolve()) for f in folders], chunksize=1))
     save(a.output / "physical_status.h5", {"event": np.array([r[0] for r in result], dtype="S32"),
          "status": np.array([r[1] for r in result], dtype="S16")})
-    print("PHYSICAL", {s: sum(r[1] == s for r in result) for s in ("physical", "cached", "failed")}, flush=True)
+    print("PHYSICAL", {s: sum(r[1] == s for r in result) for s in ("physical", "cached", "insufficient", "failed")}, flush=True)
 
 
 if __name__ == "__main__":

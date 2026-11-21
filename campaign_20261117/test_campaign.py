@@ -11,6 +11,18 @@ from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_mass_selection_excludes_nulls_and_sidelobes(self):
+        from physical import mass_fit_mask
+        from analyze import WAVELENGTH
+        axis = beam_frame()[0]
+        directions = np.repeat(axis[None, :], 4, axis=0)
+        directions[:, 0] += np.array([0., .5, 1., 1.43])*WAVELENGTH/40
+        directions[:, 2] = np.sqrt(1-np.sum(directions[:, :2]**2, axis=1))
+        positions = STATIONS[0]+120000*directions@ENU
+        mask, gain = mass_fit_mask(positions)
+        np.testing.assert_array_equal(mask, [True, True, False, False])
+        self.assertGreater(gain[1], -10.)
+
     def test_review_support_uses_pulses_not_interval_envelopes(self):
         times=np.array([0.,.005,.010,.000025,.010025,.020])
         station=np.array([0,0,0,1,1,2])

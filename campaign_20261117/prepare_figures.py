@@ -183,7 +183,8 @@ def catalogue(root, out, workers):
     heights = np.concatenate([e["height"] for e in events])
     east, north = [], []
     for e in events:
-        p = e["physical"].get("position_ecef_m", e["fit"]["position_ecef_m"])
+        # Preserve the full measured arc, including sidelobes excluded from mass fits.
+        p = e["fit"]["position_ecef_m"]
         local = (p-STATIONS[0]) @ ENU.T
         dx, dy = angular_offsets(local/np.linalg.norm(local,axis=1)[:,None])
         east.extend(dx)
