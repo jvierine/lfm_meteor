@@ -11,6 +11,11 @@ from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_monostatic_selection_checks_height_and_slow_long_tracks(self):
+        from monostatic_selection import meteor_mask
+        keep,_,_=meteor_mask([100.,74.,121.,100.,100.,100.],
+                            [.1,.1,.1,.6,.6,.1],[0.,20.,20.,2.,20.,2.])
+        np.testing.assert_array_equal(keep,[True,False,False,False,True,True])
     def test_outlier_rejection_is_limited_to_isolated_measurements(self):
         from quality import isolated_outlier_mask
         t=np.tile(np.arange(30)*.005,3);s=np.repeat(np.arange(3),30)

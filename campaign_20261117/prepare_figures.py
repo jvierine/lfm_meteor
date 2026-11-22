@@ -6,6 +6,7 @@ import h5py
 import numpy as np
 from analyze import SITES, STATIONS, ENU, C, save, remaining_delay_correction
 from derived import beam, rcs_beam, RCS_AZ_EL, beam_frame, beam_power, angular_offsets, directions_from_offsets
+from monostatic_selection import load_selection
 
 
 def retained_ids(root):
@@ -25,6 +26,9 @@ def overview(root, out):
         with h5py.File(root / ("20261117_"+site) / "catalogue.h5") as h:
             t = h["event_start_utc_ns"][:]
             r = h["event_median_apparent_range_km"][:]
+            if site=='sanya':
+                keep,_=load_selection(root/'20261117_sanya')
+                t=t[keep];r=r[keep]
             times.extend(t)
             delays.extend(r*1000/C*1e6*(2 if site == "sanya" else 1) + remaining_delay_correction(h))
             sites.extend([site]*len(t))
@@ -179,9 +183,8 @@ def catalogue(root, out, workers):
     (out.parent/"event_examples.tex").write_text("\n".join(atlas[:6])+"\n")
 
     # Height and pointing offsets use geodetic positions, not slant range.
-    with h5py.File(root/"20261117_sanya/catalogue.h5") as h:
-        ranges = h["event_median_apparent_range_km"][:] + C*remaining_delay_correction(h)*1e-9/2
-    mono = np.sqrt(6371**2+ranges**2+2*6371*ranges*np.sin(np.deg2rad(75)))-6371
+    mono_keep,mono_height=load_selection(root/'20261117_sanya')
+    mono=mono_height[mono_keep]
     heights = np.concatenate([e["height"] for e in events])
     east, north = [], []
     for e in events:
