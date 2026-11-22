@@ -150,7 +150,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
             let mut l = Legend::new(entries);
             l.allow_reused_marker_shapes = true;
             l.position=LegendPosition::OutsideAboveCenter;
-            l.columns=3;
+            l.columns=l.entries.len().min(3);
             l.avoid_data=false;
             p.legend = Some(l);
         }
