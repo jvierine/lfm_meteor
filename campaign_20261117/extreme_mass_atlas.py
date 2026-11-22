@@ -51,6 +51,9 @@ def main():
         heading=r'\noindent{\Large\bfseries %s: %s}\par\medskip' % (label,name.replace('_',r'\_'))
         annotation=[r'\noindent{\large Dynamic initial mass: $m_0=%s\ \mathrm{kg}$}\par' % scientific(mass),
             r'\noindent Conditional 95\%% interval: $[%s,\ %s]\ \mathrm{kg}$.\par\medskip' % tuple(scientific(v) for v in interval)] if resolved else [r'\noindent{\large\bfseries Dynamic mass unresolved in the new fit.}\par\medskip']
+        with h5py.File(a.root/'events'/name/'physical.h5') as h:
+            if 'path_quality_pass' in h.attrs and not h.attrs['path_quality_pass']:
+                annotation=[r'\noindent{\large\bfseries Dynamic fit rejected: fitted path residual reaches 40 m.}\par\medskip']
         text.extend([heading]+annotation+[
             r'\noindent Coloured measurements constrain the dynamic fit; grey measurements are excluded.\par\medskip',
             r'\noindent\includegraphics[width=\linewidth,height=0.84\textheight,keepaspectratio]{%s.pdf}' % name,
