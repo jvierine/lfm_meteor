@@ -111,7 +111,7 @@ def one(task):
             fits=[optimize(model.residual,x,factor) for x in starts]
             fit=min(fits,key=lambda f:f.cost);q=fit.x
             interval=np.full(2,np.nan)
-            if kind in ('baseline','noise_recovery'):
+            if kind in ('baseline','noise_recovery','mainlobe_corrected'):
                 cache={float(q[6]):(fit.cost,q[:6].copy())}
                 def at(radius):
                     if radius not in cache:
@@ -149,6 +149,7 @@ def main():
     p.add_argument('--library',type=Path,required=True)
     p.add_argument('--workers',type=int,default=1)
     p.add_argument('--simulations',type=int,default=32)
+    p.add_argument('--kinds',nargs='+',help='Run only these diagnostic task kinds')
     a=p.parse_args();tasks=[]
     for event in (411,563):
         folder=a.root/'events'/('tri_%06d'%event)
@@ -164,9 +165,13 @@ def main():
         for radius in radii:tasks.append((a.root,a.library.resolve(),event,'radius_scan',int(round(radius*1000000))))
         for index in range(a.simulations):tasks.append((a.root,a.library.resolve(),event,'noise_recovery',index))
     out=a.root/'mass_uncertainty_audit_20261122'
+    if a.kinds:
+        tasks=[task for task in tasks if task[3] in a.kinds]
+        if not tasks:raise ValueError('No tasks match --kinds')
     with concurrent.futures.ProcessPoolExecutor(a.workers) as pool:
         result=list(pool.map(one,tasks,chunksize=1))
-    save(out/'status.h5',dict(event=np.array([r[0] for r in result]),
+    status_name='status.h5' if not a.kinds else 'status_selected.h5'
+    save(out/status_name,dict(event=np.array([r[0] for r in result]),
         kind=np.array([r[1] for r in result],dtype='S32'),index=np.array([r[2] for r in result]),
         status=np.array([r[3] for r in result],dtype='S16')),
         {'diagnostic_only':True,'production_files_changed':False,'noise_simulations_per_event':a.simulations})
