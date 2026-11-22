@@ -120,6 +120,7 @@ def create_event_input(event):
     k = station == 0
     gain_db, gain, distance, east, north = rcs_beam(physical.get("position_ecef_m", d["position_ecef_m"])[k])
     fields = dict(time_s=time, station=station.astype(float), seed_apparent_path_m=d["apparent_path_m"],
+        dynamic_mass_fit_used=physical.get("dynamic_mass_fit_mask",np.ones(len(time),dtype=bool)).astype(float),
         modeled_path_m=model, path_lower95_m=model, path_upper95_m=model,
         path_measurement_lower95_m=d["apparent_path_m"]-1.96*sigma,
         path_measurement_upper95_m=d["apparent_path_m"]+1.96*sigma,

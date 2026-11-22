@@ -44,6 +44,7 @@ def main():
         text.extend([heading,
             r'\noindent{\large Dynamic initial mass: $m_0=%s\ \mathrm{kg}$}\par' % scientific(mass),
             r'\noindent Conditional 95\%% interval: $[%s,\ %s]\ \mathrm{kg}$.\par\medskip' % tuple(scientific(v) for v in interval),
+            r'\noindent Coloured measurements constrain the dynamic fit; grey measurements are excluded.\par\medskip',
             r'\noindent\includegraphics[width=\linewidth,height=0.84\textheight,keepaspectratio]{%s.pdf}' % name,
             r'\clearpage'])
         print(label,name,'mass_kg',mass,'interval',interval,flush=True)

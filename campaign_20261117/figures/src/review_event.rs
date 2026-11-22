@@ -25,6 +25,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     let mut f=Figure::new(IntendedUse::Custom{width_mm:220.,font_pt:10.});
     f.height_mm=if compact {190.} else {248.};
     let t=array(h,"time_s")?;let sites=array(h,"station")?;
+    let used=if h.link_exists("dynamic_mass_fit_used") {array(h,"dynamic_mass_fit_used")?} else {vec![1.;t.len()]};
     let observed=array(h,"seed_apparent_path_m")?;let model=array(h,"modeled_path_m")?;
     let lower=array(h,"path_lower95_m")?;let upper=array(h,"path_upper95_m")?;
     let ml=array(h,"path_measurement_lower95_m")?;let mh=array(h,"path_measurement_upper95_m")?;
@@ -56,8 +57,16 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
                     curve(&mut p,&x,&ids.iter().map(|&i|(model[i]-offset(i))/1000.).collect::<Vec<_>>(),COLORS[s],1.);
                 }
                 let errors:Vec<_>=ids.iter().map(|&i|match j{0=>[(ml[i]-offset(i))/1000.,(mh[i]-offset(i))/1000.],2=>[model[i]-mh[i],model[i]-ml[i]],_=>[beat[i]-1.96*bs[i],beat[i]+1.96*bs[i]]}).collect();
-                p.errorbars(&points(&x,&y),None,Some(&errors),COLORS[s],0.6,1.4,0.8)?;
-                dots(&mut p,&x,&y,COLORS[s],2.3,1.,false)?;
+                for active in [false,true] {
+                    let keep:Vec<_>=(0..ids.len()).filter(|&k|(used[ids[k]]>0.5)==active).collect();
+                    if keep.is_empty() {continue;}
+                    let xx:Vec<_>=keep.iter().map(|&k|x[k]).collect();
+                    let yy:Vec<_>=keep.iter().map(|&k|y[k]).collect();
+                    let ee:Vec<_>=keep.iter().map(|&k|errors[k]).collect();
+                    let color=if active {COLORS[s]} else {"#cccccc"};
+                    p.errorbars(&points(&xx,&yy),None,Some(&ee),color,0.6,1.4,0.8)?;
+                    dots(&mut p,&xx,&yy,color,2.3,1.,false)?;
+                }
             }
             if j==0{legend(&mut p,(0..3).map(|s|LegendEntry::circle(SITES[s],COLORS[s])).collect());}
         }
