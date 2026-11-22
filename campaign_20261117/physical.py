@@ -10,9 +10,9 @@ import numpy as np
 from scipy.optimize import least_squares
 from analyze import Native, save, STATIONS, C, GAMMA, WAVELENGTH
 from fit_numerics import optimize, profile_interval
-from quality import path_quality
+from quality import path_quality, isolated_outlier_mask
 
-FIT_VERSION = "three-station-four-ipp-profile-v1"
+FIT_VERSION = "three-station-four-ipp-outliers-profile-v2"
 ROWS = ('time_s','time_ns','station','frames','rx','real','imag','noise_power',
         'sample_time_s','whitener_real','whitener_imag')
 
@@ -44,12 +44,12 @@ def three_station_mask(times, station, window_s=.020, tolerance_s=.0001):
 
 
 def one(task):
-    folder, library = task
+    folder, library, force = task
     target = folder / "physical.h5"
     previous=None
     if target.exists():
         with h5py.File(target) as h:
-            if h.attrs.get("fit_method_version","")==FIT_VERSION and h.attrs.get('path_quality_limit_m',0)==40.:
+            if not force and h.attrs.get("fit_method_version","")==FIT_VERSION and h.attrs.get('path_quality_limit_m',0)==40.:
                 return folder.name,"cached"
             previous=h["params"][:]
     try:
@@ -64,6 +64,7 @@ def one(task):
             observed_path=h["apparent_path_m"][:]
         _, selection_gain = mass_fit_mask(position)
         mask = three_station_mask(d['time_s'],d['station'])
+        original_mask=mask.copy()
         save(folder / "dynamic_mass_selection.h5",
              dict(retained=mask, one_way_gain_db=selection_gain, time_ns=d['time_ns'], station=d['station']),
              dict(window_s=.020, timing_tolerance_s=.0001,
@@ -108,6 +109,37 @@ def one(task):
             f = optimize(model.residual,q,(lo,hi))
             candidates.append(f)
         fit = min(candidates, key=lambda f: f.cost)
+        passing=[];clippable=[]
+        for candidate in candidates:
+            obs=model.call('voltage_observables',candidate.x,(int(mask.sum()),2))
+            residual=np.zeros(len(mask));residual[mask]=observed_path[mask]-obs[:,0]-C*obs[:,1]/GAMMA
+            if path_quality(residual,mask)[0]:passing.append(candidate)
+            elif isolated_outlier_mask(d['time_s'],d['station'],residual,mask,original_mask)[0] is not None:
+                clippable.append(candidate)
+        if passing or clippable:
+            fit=min(passing or clippable,key=lambda f:f.cost)
+        rejection_status='not needed'
+        rejection_iterations=0
+        for iteration in range(3):
+            obs=model.call('voltage_observables',fit.x,(int(mask.sum()),2))
+            residual=np.zeros(len(mask))
+            residual[mask]=observed_path[mask]-obs[:,0]-C*obs[:,1]/GAMMA
+            if path_quality(residual,mask)[0]:break
+            proposal,rejection_status=isolated_outlier_mask(d['time_s'],d['station'],residual,mask,original_mask)
+            if proposal is None:break
+            support=three_station_mask(d['time_s'][proposal],d['station'][proposal])
+            proposal[np.flatnonzero(proposal)]=support
+            station_loss=any(np.count_nonzero(original_mask & (d['station']==s) & ~proposal)>.1*np.count_nonzero(original_mask & (d['station']==s)) for s in range(3))
+            if station_loss or any(np.count_nonzero(proposal & (d['station']==s))<6 for s in range(3)) or np.count_nonzero(original_mask & ~proposal)>.1*original_mask.sum():
+                rejection_status='coverage loss after outlier removal';break
+            selected={k:(v[proposal] if k in ROWS else v) for k,v in d.items()}
+            model.close()
+            save(model_dir/'three_station_input.h5',selected,{'window_s':.020,'outlier_iteration':iteration+1})
+            model=Native(library,model_dir/'three_station_input.h5',int(proposal.sum()))
+            trials=[optimize(model.residual,start,(lo,hi)) for start in (fit.x,np.r_[seed[:6],fit.x[6]])]
+            fit=min(trials,key=lambda f:f.cost)
+            mask=proposal
+            rejection_iterations+=1
         if not np.isfinite(fit.fun).all() or np.max(np.abs(fit.fun)) >= 1e9:
             raise ValueError("no valid physical trajectory among radius starts")
         q = fit.x
@@ -146,11 +178,17 @@ def one(task):
         amplitude_power = np.max(predicted[:, :, 0]**2 + predicted[:, :, 1]**2, axis=1)
         path_residual=observed_path-observable[:,0]-C*observable[:,1]/GAMMA
         quality_pass,max_residual,bad_count=path_quality(path_residual,mask)
+        save(folder/'dynamic_mass_selection.h5',
+             dict(retained=mask,initial_retained=original_mask,outlier_rejected=original_mask & ~mask,
+                  one_way_gain_db=selection_gain,time_ns=d['time_ns'],station=d['station']),
+             dict(window_s=.020,outlier_rejection_status=rejection_status,fit_method_version=FIT_VERSION))
         interval_resolved=resolved
         resolved=resolved and quality_pass
         updated=folder/"physical-refined.h5"
         save(updated, dict(params=q, covariance=covariance, initial_radius_m=radius,
             dynamic_mass_fit_mask=mask, mass_fit_one_way_gain_db=selection_gain,
+            dynamic_mass_initial_mask=original_mask,
+            dynamic_mass_outlier_mask=original_mask & ~mask,
             initial_mass_kg=mass, radius_local95_m=interval,
             mass_local95_kg=4*np.pi/3*3000*interval**3,
             time_ns=d["time_ns"], time_s=d["time_s"], station=d["station"],
@@ -170,6 +208,8 @@ def one(task):
             {"mass_resolved_local_curvature": resolved, "mass_resolved_profile":resolved,
              "mass_interval_resolved_profile":interval_resolved,
              "path_quality_pass":quality_pass,"path_quality_limit_m":40.,
+             "outlier_rejection_status":rejection_status,"outlier_rejection_iterations":rejection_iterations,
+             "outlier_rejection_policy":"at most 10 percent overall and per station; no run of three; preserve three-station four-IPP coverage; at most three refits",
              "max_used_path_residual_m":max_residual,"bad_used_path_measurements":bad_count,
              "fit_method_version":FIT_VERSION,"voltage_cost": fit.cost,
              "dynamic_mass_fit_status":("fitted where all three sites detect within four IPPs" if quality_pass else "rejected: fitted path residual reaches or exceeds 40 m; review required"),
@@ -206,6 +246,7 @@ def main():
     p.add_argument("--library", type=Path, required=True)
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--retry-quality-failed",action='store_true')
     a = p.parse_args()
     folders = sorted(x.parent for x in (a.output / "events").glob("tri_*/fit.h5"))
     if (a.output/"association_selection.h5").exists():
@@ -214,8 +255,14 @@ def main():
         folders=[f for f in folders if f.name in accepted]
     if a.limit:
         folders = folders[:a.limit]
+    if a.retry_quality_failed:
+        failed=[]
+        for folder in folders:
+            with h5py.File(folder/'physical.h5') as h:
+                if not h.attrs.get('path_quality_pass',False):failed.append(folder)
+        folders=failed
     with concurrent.futures.ProcessPoolExecutor(max_workers=a.workers) as pool:
-        result = list(pool.map(one, [(f, a.library.resolve()) for f in folders], chunksize=1))
+        result = list(pool.map(one, [(f, a.library.resolve(),a.retry_quality_failed) for f in folders], chunksize=1))
     save(a.output / "physical_status.h5", {"event": np.array([r[0] for r in result], dtype="S32"),
          "status": np.array([r[1] for r in result], dtype="S16")})
     print("PHYSICAL", {s: sum(r[1] == s for r in result) for s in ("physical", "cached", "insufficient", "failed")}, flush=True)

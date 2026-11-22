@@ -11,6 +11,16 @@ from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_outlier_rejection_is_limited_to_isolated_measurements(self):
+        from quality import isolated_outlier_mask
+        t=np.tile(np.arange(30)*.005,3);s=np.repeat(np.arange(3),30)
+        mask=np.ones(90,dtype=bool);r=np.zeros(90);r[10]=50.
+        proposal,_=isolated_outlier_mask(t,s,r,mask,mask)
+        self.assertEqual(proposal.sum(),89)
+        r[11:13]=50.
+        self.assertIsNone(isolated_outlier_mask(t,s,r,mask,mask)[0])
+        r[:]=0.;r[[2,8,15,22]]=50.
+        self.assertIsNone(isolated_outlier_mask(t,s,r,mask,mask)[0])
     def test_quality_requires_every_used_residual_below_40_m(self):
         from quality import path_quality
         self.assertTrue(path_quality([39.99,-39.99,1000],[True,True,False])[0])

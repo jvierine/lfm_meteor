@@ -8,6 +8,28 @@ from analyze import save
 LIMIT_M=40.
 
 
+def isolated_outlier_mask(times,station,residual,mask,original):
+    """At most 10% removed overall and per site; never a run of three."""
+    times=np.asarray(times);station=np.asarray(station)
+    bad=mask & (~np.isfinite(residual)|(abs(residual)>=LIMIT_M))
+    proposal=mask & ~bad
+    if not bad.any():return proposal,'no outliers'
+    for site in range(3):
+        ids=np.flatnonzero(mask & (station==site))
+        ids=ids[np.argsort(times[ids])]
+        run=0
+        for i in ids:
+            run=run+1 if bad[i] else 0
+            if run>=3:return None,'systematic residual run'
+        base=original & (station==site)
+        if np.count_nonzero(proposal & base)<6:return None,'insufficient station coverage'
+        if np.count_nonzero(base & ~proposal)>.1*np.count_nonzero(base):
+            return None,'too many station outliers'
+    if np.count_nonzero(original & ~proposal)>.1*np.count_nonzero(original):
+        return None,'too many outliers'
+    return proposal,'isolated outliers removed'
+
+
 def path_quality(residual,mask):
     values=np.asarray(residual)[np.asarray(mask,dtype=bool)]
     maximum=float(np.max(abs(values))) if len(values) and np.isfinite(values).all() else np.inf
