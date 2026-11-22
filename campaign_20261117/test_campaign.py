@@ -11,6 +11,10 @@ from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_altitude_reference_tracks_observed_peak_not_pointing(self):
+        from influx import peak_reference_band
+        self.assertEqual(peak_reference_band([93.1,93.2,93.8,95.]),(92.,95.))
+        self.assertEqual(peak_reference_band([99.1,99.2,99.8,102.]),(98.,101.))
     def test_influx_interval_intersection_excludes_recording_gaps(self):
         from influx import intersect,weights
         a=np.array([[0,10],[20,30]]);b=np.array([[5,25]])

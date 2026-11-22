@@ -235,13 +235,16 @@ def catalogue(root, out, workers):
          "beam_axis_enu": axis, "beam_east_enu": sky_east, "beam_north_enu": sky_north})
     event_height = np.array([np.median(e["height"]) for e in events])
     common=np.logical_and.reduce([g>=peak-3 for g,peak in zip(remote,remote_peak)])
-    if not common.any(): raise ValueError("recorded remote beams have no shared half-power altitude interval")
-    common_lo,common_hi=gh[common].min(),gh[common].max()
+    model_common_lo,model_common_hi=(gh[common].min(),gh[common].max()) if common.any() else (np.nan,np.nan)
+    from influx import peak_reference_band
+    common_lo,common_hi=peak_reference_band(tri_event_height)
     with h5py.File(out/"altitude_correction.h5","w") as h:
         h.attrs.update(monostatic_events=len(mono),tristatic_events=len(events),
             common_lower_km=common_lo,common_upper_km=common_hi,
-            monostatic_common_events=np.sum((mono>=common_lo)&(mono<=common_hi)),
-            tristatic_common_events=np.sum((event_height>=common_lo)&(event_height<=common_hi)))
+            reference_selection='three-km band around observed tri-static peak',
+            modeled_half_power_lower_km=model_common_lo,modeled_half_power_upper_km=model_common_hi,
+            monostatic_common_events=np.sum((mono>=common_lo)&(mono<common_hi)),
+            tristatic_common_events=np.sum((event_height>=common_lo)&(event_height<common_hi)))
 
     physical = [e for e in events if e["physical"] and e["physical"].get("quality_pass",False)]
     if physical and any(e["physical"]["resolved"] for e in physical):

@@ -36,6 +36,14 @@ def weights(area,altitude,exposure,speed,p,altitude_factor):
     return 4*earth/area*24/np.asarray(exposure)*(72/np.asarray(speed))**p*altitude_factor
 
 
+def peak_reference_band(height):
+    edges=np.arange(75.,122.)
+    counts=np.histogram(height,edges)[0]
+    if not counts.any():raise ValueError('No meteor-layer heights for empirical peak')
+    peak=float(edges[np.argmax(counts)])
+    return peak-1.,peak+2.
+
+
 def collecting_area(cutoff,altitude,step=.05):
     axis=beam_frame(*RCS_AZ_EL)[0]
     up=altitude-LLH[0,2]/1000
@@ -109,7 +117,7 @@ def main():
             mask=h['dynamic_mass_fit_mask'][:]
             gain=rcs_beam(h['position_ecef_m'][:][mask])[0]
             velocity=h['initial_gcrs_velocity_mps'][:]
-            height=float(np.median(h['height_km'][:][mask]))
+            height=float(np.median(h['height_km'][:]))
         with h5py.File(folder/'rcs.h5') as h:rcs=float(h['integrated_mass_loss_kg'][()])
         rows.append((name,epoch,velocity,height,np.max(gain),mass,bounds,rcs))
     names=np.array([r[0] for r in rows],dtype='S32')
@@ -117,7 +125,7 @@ def main():
     v=np.array([r[2] for r in rows]);speed=np.linalg.norm(v,axis=1)/1000
     height=np.array([r[3] for r in rows]);max_gain=np.array([r[4] for r in rows])
     mass=np.array([r[5] for r in rows]);bounds=np.array([r[6] for r in rows]);rcs=np.array([r[7] for r in rows])
-    lower,upper=common_band(a.root)
+    lower,upper=peak_reference_band(height)
     altitude=(lower+upper)/2
     mono_keep,mono_height=load_selection(a.root/'20261117_sanya')
     with h5py.File(a.root/'20261117_sanya/catalogue.h5') as h:
@@ -162,6 +170,7 @@ def main():
     with h5py.File(out,'w') as h:
         h.attrs.update(dataset='2026-11-17 only; no April data',live_hours=live_h,
             common_lower_km=lower,common_upper_km=upper,reference_altitude_km=altitude,
+            altitude_reference='three-km band centred on the observed one-km tri-static histogram peak; not nominal receiver pointing',
             collecting_area_km2=area,coarse_area_km2=collecting_area(cutoff,altitude),
             containment_cutoff_db=cutoff,altitude_factor=falt,monostatic_total=mono_total,
             monostatic_common=mono_common,tristatic_common=tri_common,quality_events=len(rows),
