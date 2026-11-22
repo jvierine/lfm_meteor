@@ -11,7 +11,7 @@ from scipy.optimize import least_squares
 from analyze import Native, save, STATIONS, C, GAMMA, WAVELENGTH
 from fit_numerics import optimize, profile_interval
 
-FIT_VERSION = "mainlobe-minus10db-profile-v3"
+FIT_VERSION = "three-station-four-ipp-profile-v1"
 ROWS = ('time_s','time_ns','station','frames','rx','real','imag','noise_power',
         'sample_time_s','whitener_real','whitener_imag')
 
@@ -26,6 +26,20 @@ def mass_fit_mask(position):
     gain = beam(position)[0]
     mainlobe = (direction @ axis > 0) & np.all(np.abs(aperture_offset[:, :2]) < 1, axis=1)
     return mainlobe & np.isfinite(gain) & (gain >= -10.), gain
+
+
+def three_station_mask(times, station, window_s=.020, tolerance_s=.0001):
+    """Union of windows spanning at most four IPPs and containing all sites."""
+    times=np.asarray(times);station=np.asarray(station)
+    order=np.argsort(times);t=times[order];s=station[order]
+    changes=np.zeros(len(t)+1,dtype=int)
+    for left in range(len(t)):
+        right=int(np.searchsorted(t,t[left]+window_s+tolerance_s,side='right'))
+        if all(np.any(s[left:right]==site) for site in range(3)):
+            changes[left]+=1;changes[right]-=1
+    result=np.zeros(len(t),dtype=bool)
+    result[order]=np.cumsum(changes[:-1])>0
+    return result
 
 
 def one(task):
@@ -46,10 +60,12 @@ def one(task):
             seed = h["params"][:]
             position = h["position_ecef_m"][:]
             observed_path=h["apparent_path_m"][:]
-        mask, selection_gain = mass_fit_mask(position)
+        _, selection_gain = mass_fit_mask(position)
+        mask = three_station_mask(d['time_s'],d['station'])
         save(folder / "dynamic_mass_selection.h5",
              dict(retained=mask, one_way_gain_db=selection_gain, time_ns=d['time_ns'], station=d['station']),
-             dict(threshold_db=-10., geometry='kinematic fit; Sanya transmit main lobe',
+             dict(window_s=.020, timing_tolerance_s=.0001,
+                  geometry='all three stations detected within a four-IPP window; no beam-gain cut',
                   fit_method_version=FIT_VERSION))
         if any(np.count_nonzero(mask & (d['station']==s)) < 6 for s in range(3)):
             # Keep the existing trajectory, but never retain its old mass selection.
@@ -64,7 +80,7 @@ def one(task):
                         h[key]=value
                     h.attrs['mass_resolved_profile']=False
                     h.attrs['mass_resolved_local_curvature']=False
-                    h.attrs['dynamic_mass_fit_status']='insufficient main-lobe measurements; previous trajectory retained'
+                    h.attrs['dynamic_mass_fit_status']='insufficient three-station four-IPP coverage; previous trajectory retained'
                     h.attrs['fit_method_version']=FIT_VERSION
             return folder.name, 'insufficient'
         origin = EarthLocation.from_geocentric(*position[0], unit=u.m)
@@ -80,8 +96,8 @@ def one(task):
         save(model_dir / "input.h5", d, {"density_model": "NRLMSIS2.1 reference F107=150, F107a=150, Ap=4",
              "material_density_kg_m3": 3000., "Gamma": 1., "sigma_s2_m2": 1e-8})
         selected = {k: (v[mask] if k in ROWS else v) for k,v in d.items()}
-        save(model_dir / 'mainlobe_input.h5', selected, {'threshold_db': -10.})
-        model = Native(library, model_dir / "mainlobe_input.h5", int(mask.sum()))
+        save(model_dir / 'three_station_input.h5', selected, {'window_s': .020})
+        model = Native(library, model_dir / "three_station_input.h5", int(mask.sum()))
         lo, hi = np.r_[[-30.]*3, [-50.]*3, -7.], np.r_[[30.]*3, [50.]*3, -2.]
         candidates = []
         if previous is not None:candidates.append(optimize(model.residual,previous,(lo,hi)))
@@ -147,9 +163,9 @@ def one(task):
             initial_gcrs_velocity_mps=d["center"][3:]+1000*q[3:6]),
             {"mass_resolved_local_curvature": resolved, "mass_resolved_profile":resolved,
              "fit_method_version":FIT_VERSION,"voltage_cost": fit.cost,
-             "dynamic_mass_fit_status":"fitted inside -10 dB one-way transmit main lobe",
-             "mass_selection_geometry":"fixed kinematic trajectory; original epoch preserved",
-             "status": "provisional: reference atmosphere and uncalibrated hardware delays",
+             "dynamic_mass_fit_status":"fitted where all three sites detect within four IPPs",
+             "mass_selection_geometry":"20 ms window plus 100 us timing tolerance; no beam-gain cut; original epoch preserved",
+             "status": "reference atmosphere; common calibrated delay",
              "interval_method": "conditional thermal-noise profile likelihood, Delta chi2=3.84; no total-error coverage claim",
              "solar_parameters": "F107=F107a=150 sfu; Ap=4 reference scenario",
              "density_kg_m3": 3000., "Gamma": 1., "sigma_s2_m2": 1e-8})

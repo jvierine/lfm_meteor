@@ -11,6 +11,16 @@ from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_three_station_four_ipp_windows_do_not_admit_single_site_tails(self):
+        from physical import three_station_mask
+        times=np.array([0.,.01,.02,.025,.05,.06,.10])
+        station=np.array([0,1,2,0,0,1,2])
+        np.testing.assert_array_equal(three_station_mask(times,station),
+                                     [True,True,True,True,False,False,False])
+        np.testing.assert_array_equal(three_station_mask(times[::-1],station[::-1]),
+                                     [False,False,False,True,True,True,True])
+        self.assertFalse(three_station_mask([0.,.02,.04],[0,1,2]).any())
+
     def test_calibration_is_not_applied_twice(self):
         with tempfile.TemporaryDirectory() as temp:
             with h5py.File(Path(temp)/"test.h5", "w") as h:
