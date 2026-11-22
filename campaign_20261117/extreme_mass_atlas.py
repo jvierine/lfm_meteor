@@ -18,7 +18,7 @@ def main():
     p.add_argument('--fixed-selection',type=Path,help='Review these same events, including newly unresolved masses')
     p.add_argument('--output-name',default='extreme_mass_atlas')
     a=p.parse_args()
-    with h5py.File(a.root/'catalogue_summary.h5') as h:
+    with h5py.File(a.fixed_selection or a.root/'catalogue_summary.h5') as h:
         names=[n.decode() for n in h['event_id'][:]]
     rows=[]
     for name in names:
