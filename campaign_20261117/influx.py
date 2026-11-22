@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 import h5py
 import numpy as np
-from analyze import STATIONS, ENU, LLH, save
+from analyze import STATIONS, ENU, LLH, C, enu_matrix, save
 from derived import RCS_AZ_EL, beam_frame, beam_power, rcs_beam
 from monostatic_selection import load_selection
 
@@ -51,12 +51,41 @@ def collecting_area(cutoff,altitude,step=.05):
     return float(inside.sum()*step**2)
 
 
+def common_band(root):
+    from astropy.coordinates import EarthLocation
+    from astropy import units as u
+    heights=np.arange(75.,120.001,.1)
+    axis=ENU.T@beam_frame(*RCS_AZ_EL)[0]
+    distance=(heights*1000-LLH[0,2])/np.sin(np.deg2rad(RCS_AZ_EL[1]))
+    for _ in range(4):
+        xyz=STATIONS[0]+distance[:,None]*axis
+        actual=EarthLocation.from_geocentric(xyz[:,0]*u.m,xyz[:,1]*u.m,xyz[:,2]*u.m).height.to_value(u.m)
+        distance+=(heights*1000-actual)/np.sin(np.deg2rad(RCS_AZ_EL[1]))
+    xyz=STATIONS[0]+distance[:,None]*axis
+    overlap=np.ones(len(heights),dtype=bool)
+    for site,name in ((1,'danzhou'),(2,'wenchang')):
+        with h5py.File(root/('20261117_'+name)/'event_cuts/event_000000.h5') as h:
+            az,el=np.deg2rad([h['pulses/rx_azimuth_deg'][0],h['pulses/rx_elevation_deg'][0]])
+        pointing=np.array([np.sin(az)*np.cos(el),np.cos(az)*np.cos(el),np.sin(el)])
+        az,el=np.deg2rad((158.3,70.) if site==1 else (221.9,70.))
+        normal=np.array([np.sin(az)*np.cos(el),np.cos(az)*np.cos(el),np.sin(el)])
+        tilt=np.array([0.,0.,1.])-normal[2]*normal;tilt/=np.linalg.norm(tilt)
+        cross=np.cross(normal,tilt)
+        direction=(xyz-STATIONS[site])@enu_matrix(*LLH[site,:2]).T
+        direction/=np.linalg.norm(direction,axis=1)[:,None]
+        power=np.sinc(32/(C/430e6)*((direction-pointing)@tilt))**2*np.sinc(24/(C/430e6)*((direction-pointing)@cross))**2
+        overlap &= power>=10**(-3/10)
+    if not overlap.any():raise ValueError('No shared remote half-power interval along fitted transmitter beam')
+    return float(heights[overlap].min()),float(heights[overlap].max())
+
+
 def main():
     from astropy.coordinates import SkyCoord,GCRS,GeocentricTrueEcliptic,get_sun
     from astropy.time import Time
     from astropy import units as u
     from astropy.utils import iers
     iers.conf.auto_download=False
+    iers.conf.iers_degraded_accuracy='warn'
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--root',type=Path,default=Path('/gpfs/pub/data_other/juha'))
     a=p.parse_args();root=a.root/'20261117_tristatic'
@@ -88,8 +117,7 @@ def main():
     v=np.array([r[2] for r in rows]);speed=np.linalg.norm(v,axis=1)/1000
     height=np.array([r[3] for r in rows]);max_gain=np.array([r[4] for r in rows])
     mass=np.array([r[5] for r in rows]);bounds=np.array([r[6] for r in rows]);rcs=np.array([r[7] for r in rows])
-    with h5py.File(root/'figure_data/altitude_correction.h5') as h:
-        lower=float(h.attrs['common_lower_km']);upper=float(h.attrs['common_upper_km'])
+    lower,upper=common_band(a.root)
     altitude=(lower+upper)/2
     mono_keep,mono_height=load_selection(a.root/'20261117_sanya')
     with h5py.File(a.root/'20261117_sanya/catalogue.h5') as h:
@@ -122,6 +150,8 @@ def main():
         ends=np.minimum(starts+60000000000,hi)
         ticks.extend(starts+(ends-starts)//2);durations.extend((ends-starts)/3.6e12)
     t=Time(np.asarray(ticks,dtype=np.longdouble)/1e9,format='unix',scale='utc')
+    # Sub-second Earth-rotation corrections are negligible for minute exposure bins.
+    t.delta_ut1_utc=0.
     lst=t.sidereal_time('apparent',longitude=LLH[0,1]*u.deg).rad
     dec=family.dec.rad;ra=family.ra.rad;phi=np.deg2rad(LLH[0,0])
     sine=np.sin(phi)*np.sin(dec[...,None])+np.cos(phi)*np.cos(dec[...,None])*np.cos(lst-ra[...,None])
@@ -138,6 +168,7 @@ def main():
             interpretation='pilot extrapolation using reference atmosphere and 120 K RCS calibration',
             uncertainty='p=3..3.5 and conditional dynamic-mass endpoints are sensitivity envelopes, not global confidence intervals; RCS mass uncertainty not available; sampling intervals exclude systematic errors',
             exposure_convention='fourfold reflected Sun-centred ecliptic radiants; sum of above-horizon sin(elevation)^1.47 over simultaneous recorded intervals',
+            exposure_earth_rotation='UTC approximates UT1 for minute-resolution radiant exposure only',
             area_convention='horizontal plane at common altitude; 95-percent event-maximum gain containment; fitted pointing; no factor inherited from April')
         h['event_id']=names;h['recording_intervals_utc_ns']=intervals
         h['speed_km_s']=speed;h['family_effective_hours']=exposure
