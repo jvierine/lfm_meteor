@@ -201,10 +201,15 @@ def catalogue(root, out, workers):
     gain_grid = 10*np.log10(np.maximum(beam_power(directions_from_offsets(xx,yy),beam_frame(*RCS_AZ_EL)[0]),1e-30))
     gh = np.linspace(80, 120, 401)
     # Relative coverage from actual beam geometry; no absolute remote-gain claim.
-    a, el = np.deg2rad([15,75])
+    a, el = np.deg2rad(RCS_AZ_EL)
     axis = ENU.T @ np.array([np.sin(a)*np.cos(el),np.cos(a)*np.cos(el),np.sin(el)])
     points = STATIONS[0] + (gh*1000/np.sin(el))[:,None]*axis
-    remote = []
+    from astropy.coordinates import EarthLocation
+    from astropy import units as u
+    for _ in range(4):
+        actual=EarthLocation.from_geocentric(points[:,0]*u.m,points[:,1]*u.m,points[:,2]*u.m).height.to_value(u.m)
+        points+=(gh*1000-actual)[:,None]/np.sin(el)*axis
+    remote = [];remote_peak=[]
     for s in (1,2):
         with h5py.File(root/("20261117_"+SITES[s])/"event_cuts/event_000000.h5") as h:
             pointing=(float(h["pulses/rx_azimuth_deg"][0]),float(h["pulses/rx_elevation_deg"][0]))
@@ -220,6 +225,7 @@ def catalogue(root, out, workers):
         cross=np.cross(normal,tilt)
         power=np.sinc(32/(C/430e6)*((direction-b)@tilt))**2*np.sinc(24/(C/430e6)*((direction-b)@cross))**2
         remote.append(43+25*np.log10(normal@b)+10*np.log10(np.maximum(power,1e-15)))
+        remote_peak.append(43+25*np.log10(normal@b))
     tri_event_height=np.array([np.median(e["height"]) for e in events])
     save(out/"figure3.h5", dict(tristatic_height_km=tri_event_height, monostatic_height_km=mono,
         gain_height_km=gh, gain_Danzhou=remote[0], gain_Wenchang=remote[1],
@@ -228,7 +234,7 @@ def catalogue(root, out, workers):
          "beam_coordinates": "orthonormal east/north sky tangent plane; gnomonic angles",
          "beam_axis_enu": axis, "beam_east_enu": sky_east, "beam_north_enu": sky_north})
     event_height = np.array([np.median(e["height"]) for e in events])
-    common=np.logical_and.reduce([g>=np.max(g)-3 for g in remote])
+    common=np.logical_and.reduce([g>=peak-3 for g,peak in zip(remote,remote_peak)])
     if not common.any(): raise ValueError("recorded remote beams have no shared half-power altitude interval")
     common_lo,common_hi=gh[common].min(),gh[common].max()
     with h5py.File(out/"altitude_correction.h5","w") as h:
