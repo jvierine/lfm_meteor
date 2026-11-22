@@ -11,6 +11,13 @@ from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_influx_interval_intersection_excludes_recording_gaps(self):
+        from influx import intersect,weights
+        a=np.array([[0,10],[20,30]]);b=np.array([[5,25]])
+        np.testing.assert_array_equal(intersect(a,b),[[5,10],[20,25]])
+        w=weights(10.,102.,np.array([12.]),np.array([36.]),3.,2.)
+        np.testing.assert_allclose(weights(20.,102.,np.array([12.]),np.array([36.]),3.,2.),w/2)
+        np.testing.assert_allclose(weights(10.,102.,np.array([12.]),np.array([36.]),3.5,2.),w*np.sqrt(2))
     def test_monostatic_selection_checks_height_and_slow_long_tracks(self):
         from monostatic_selection import meteor_mask
         keep,_,_=meteor_mask([100.,74.,121.,100.,100.,100.],
