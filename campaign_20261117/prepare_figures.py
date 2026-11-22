@@ -86,6 +86,7 @@ def event_data(folder):
         with h5py.File(folder/"physical.h5") as h:
             physical = {k: h[k][()] for k in h}
             physical["resolved"] = bool(h.attrs.get("mass_resolved_profile",False))
+            physical["quality_pass"] = bool(h.attrs.get("path_quality_pass",False))
     if (folder/"rcs.h5").exists():
         with h5py.File(folder/"rcs.h5") as h:
             rcs = {k: h[k][()] for k in h}
@@ -233,7 +234,7 @@ def catalogue(root, out, workers):
             monostatic_common_events=np.sum((mono>=common_lo)&(mono<=common_hi)),
             tristatic_common_events=np.sum((event_height>=common_lo)&(event_height<=common_hi)))
 
-    physical = [e for e in events if e["physical"]]
+    physical = [e for e in events if e["physical"] and e["physical"].get("quality_pass",False)]
     if physical and any(e["physical"]["resolved"] for e in physical):
         save(out/"figure7.h5", dict(selected=np.array([e["physical"]["resolved"] for e in physical]),
             initial_mass_kg=np.array([e["physical"]["initial_mass_kg"] for e in physical]),
@@ -241,7 +242,7 @@ def catalogue(root, out, workers):
             mass_95_lo_kg=np.array([e["physical"]["mass_local95_kg"][0] for e in physical]),
             mass_95_hi_kg=np.array([e["physical"]["mass_local95_kg"][1] for e in physical])),
             {"interval_method":"conditional radius-profile likelihood; reference atmosphere", "bin_width_dex": .48})
-    rcs_events = [e for e in events if e["rcs"]]
+    rcs_events = [e for e in events if e["rcs"] and e["physical"].get("quality_pass",False)]
     pairs = [e for e in rcs_events if e["physical"].get("resolved",False) and np.isfinite(e["rcs"]["integrated_mass_loss_kg"])]
     if rcs_events and pairs:
         with h5py.File(out/"figure8.h5","w") as h:
@@ -286,7 +287,7 @@ def catalogue(root, out, workers):
     orbital=[]
     for e in events:
         path=e["folder"]/"orbits.h5"
-        if path.exists():
+        if path.exists() and e["physical"].get("quality_pass",False):
             with h5py.File(path) as h: orbital.append((e,{k:h[k][:] for k in h}))
     if orbital:
         with h5py.File(out/"figure10.h5","w") as h:

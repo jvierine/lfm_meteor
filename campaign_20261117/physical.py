@@ -10,6 +10,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from analyze import Native, save, STATIONS, C, GAMMA, WAVELENGTH
 from fit_numerics import optimize, profile_interval
+from quality import path_quality
 
 FIT_VERSION = "three-station-four-ipp-profile-v1"
 ROWS = ('time_s','time_ns','station','frames','rx','real','imag','noise_power',
@@ -48,7 +49,8 @@ def one(task):
     previous=None
     if target.exists():
         with h5py.File(target) as h:
-            if h.attrs.get("fit_method_version","")==FIT_VERSION:return folder.name,"cached"
+            if h.attrs.get("fit_method_version","")==FIT_VERSION and h.attrs.get('path_quality_limit_m',0)==40.:
+                return folder.name,"cached"
             previous=h["params"][:]
     try:
         import pymsis
@@ -142,6 +144,10 @@ def one(task):
         # The fitted waveform includes its complex coefficient; peak modeled
         # power gives |a|^2 for the unit-amplitude transmitted waveform.
         amplitude_power = np.max(predicted[:, :, 0]**2 + predicted[:, :, 1]**2, axis=1)
+        path_residual=observed_path-observable[:,0]-C*observable[:,1]/GAMMA
+        quality_pass,max_residual,bad_count=path_quality(path_residual,mask)
+        interval_resolved=resolved
+        resolved=resolved and quality_pass
         updated=folder/"physical-refined.h5"
         save(updated, dict(params=q, covariance=covariance, initial_radius_m=radius,
             dynamic_mass_fit_mask=mask, mass_fit_one_way_gain_db=selection_gain,
@@ -152,7 +158,7 @@ def one(task):
             latitude_deg=location.lat.deg, longitude_deg=location.lon.deg,
             physical_path_m=observable[:, 0], physical_doppler_hz=observable[:, 1],
             model_apparent_path_m=observable[:,0]+C*observable[:,1]/GAMMA,
-            path_residual_m=observed_path-observable[:,0]-C*observable[:,1]/GAMMA,
+            path_residual_m=path_residual,
             multistart_params=np.array([f.x for f in candidates]),
             multistart_cost=np.array([f.cost for f in candidates]),
             profile_log10_radius=np.array(sorted(profiles)),
@@ -162,8 +168,11 @@ def one(task):
             initial_gcrs_position_m=d["center"][:3]+1000*q[:3],
             initial_gcrs_velocity_mps=d["center"][3:]+1000*q[3:6]),
             {"mass_resolved_local_curvature": resolved, "mass_resolved_profile":resolved,
+             "mass_interval_resolved_profile":interval_resolved,
+             "path_quality_pass":quality_pass,"path_quality_limit_m":40.,
+             "max_used_path_residual_m":max_residual,"bad_used_path_measurements":bad_count,
              "fit_method_version":FIT_VERSION,"voltage_cost": fit.cost,
-             "dynamic_mass_fit_status":"fitted where all three sites detect within four IPPs",
+             "dynamic_mass_fit_status":("fitted where all three sites detect within four IPPs" if quality_pass else "rejected: fitted path residual reaches or exceeds 40 m; review required"),
              "mass_selection_geometry":"20 ms window plus 100 us timing tolerance; no beam-gain cut; original epoch preserved",
              "status": "reference atmosphere; common calibrated delay",
              "interval_method": "conditional thermal-noise profile likelihood, Delta chi2=3.84; no total-error coverage claim",

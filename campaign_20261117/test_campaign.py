@@ -11,6 +11,12 @@ from review_extremes import multi_receiver_mask
 
 
 class CampaignTests(unittest.TestCase):
+    def test_quality_requires_every_used_residual_below_40_m(self):
+        from quality import path_quality
+        self.assertTrue(path_quality([39.99,-39.99,1000],[True,True,False])[0])
+        self.assertFalse(path_quality([0.,40.],[True,True])[0])
+        self.assertFalse(path_quality([np.nan],[True])[0])
+        self.assertFalse(path_quality([],[])[0])
     def test_three_station_four_ipp_windows_do_not_admit_single_site_tails(self):
         from physical import three_station_mask
         times=np.array([0.,.01,.02,.025,.05,.06,.10])
