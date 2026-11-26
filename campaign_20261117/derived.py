@@ -18,6 +18,21 @@ SANYA_AZ_EL = (14.996337890625, 74.9981689453125)
 RCS_AZ_EL = (14.73774082860065, 74.61819138688253)
 
 
+def phase_table_pointing(pointing, boresight, design_mhz=440., operating_mhz=430.):
+    """Map fixed phase gradients to a direction in the array's forward hemisphere."""
+    axis = beam_frame(*pointing)[0]
+    normal = beam_frame(*boresight)[0]
+    if axis @ normal <= 0:
+        raise ValueError("Commanded pointing is outside the forward hemisphere")
+    transverse = (axis - (axis @ normal)*normal) * (design_mhz/operating_mhz)
+    squared = transverse @ transverse
+    if squared >= 1:
+        raise ValueError("Phase gradient has no forward steering solution")
+    b = transverse + np.sqrt(1-squared)*normal
+    return (float(np.rad2deg(np.arctan2(b[0], b[1])) % 360),
+            float(np.rad2deg(np.arcsin(np.clip(b[2], -1, 1)))))
+
+
 def beam_frame(az=SANYA_AZ_EL[0], el=SANYA_AZ_EL[1]):
     a, e = np.deg2rad([az, el])
     axis = np.array([np.sin(a)*np.cos(e), np.cos(a)*np.cos(e), np.sin(e)])

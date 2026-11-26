@@ -5,7 +5,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 from analyze import SITES, STATIONS, ENU, C, save, remaining_delay_correction
-from derived import beam, rcs_beam, RCS_AZ_EL, beam_frame, beam_power, angular_offsets, directions_from_offsets
+from derived import beam, rcs_beam, RCS_AZ_EL, beam_frame, beam_power, angular_offsets, directions_from_offsets, phase_table_pointing
 from monostatic_selection import load_selection
 
 
@@ -157,7 +157,7 @@ def create_event_input(event):
     return str(folder/"event_plot.h5")
 
 
-def catalogue(root, out, workers):
+def catalogue(root, out, workers, correct_remote_phase_table=False):
     import concurrent.futures
     folders = sorted(x.parent for x in (out.parent/"events").glob("tri_*/fit.h5"))
     accepted=retained_ids(out.parent)
@@ -217,9 +217,12 @@ def catalogue(root, out, workers):
         matrix = enu_matrix(*LLH[s,:2])
         direction = (points-STATIONS[s]) @ matrix.T
         direction /= np.linalg.norm(direction,axis=1)[:,None]
+        bore = (158.3,70.) if s==1 else (221.9,70.)
+        if correct_remote_phase_table:
+            pointing = phase_table_pointing(pointing, bore)
         az, elev = np.deg2rad(pointing)
         b = np.array([np.sin(az)*np.cos(elev),np.cos(az)*np.cos(elev),np.sin(elev)])
-        bore_az,bore_el=np.deg2rad((158.3,70.) if s==1 else (221.9,70.))
+        bore_az,bore_el=np.deg2rad(bore)
         normal=np.array([np.sin(bore_az)*np.cos(bore_el),np.cos(bore_az)*np.cos(bore_el),np.sin(bore_el)])
         tilt=np.array([0.,0.,1.])-normal[2]*normal;tilt/=np.linalg.norm(tilt)
         cross=np.cross(normal,tilt)
@@ -230,7 +233,7 @@ def catalogue(root, out, workers):
     save(out/"figure3.h5", dict(tristatic_height_km=tri_event_height, monostatic_height_km=mono,
         gain_height_km=gh, gain_Danzhou=remote[0], gain_Wenchang=remote[1],
         counts=counts.T, east_edges=xe, north_edges=ye, gain_grid_deg=grid,gain_db=gain_grid),
-        {"containment_level_db": -3., "remote_gain_model": "rectangular aperture; header pointing",
+        {"containment_level_db": -3., "remote_gain_model": "rectangular aperture; 440-to-430 MHz fixed-phase correction" if correct_remote_phase_table else "rectangular aperture; header pointing",
          "beam_coordinates": "orthonormal east/north sky tangent plane; gnomonic angles",
          "beam_axis_enu": axis, "beam_east_enu": sky_east, "beam_north_enu": sky_north})
     event_height = np.array([np.median(e["height"]) for e in events])
