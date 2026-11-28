@@ -159,7 +159,7 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
     let bins = ((range[1] - start) / width).ceil() as usize;
     let edges: Vec<f64> = (0..=bins).map(|i| start + i as f64 * width).collect();
     let counts: Vec<Vec<f64>> = xs.iter().map(|x| histogram(x, &edges)).collect();
-    let count_max = (counts.iter().flatten().copied().fold(30_f64, f64::max) / 20.).ceil() * 20.;
+    let count_max = [0, 1].map(|j| (counts[j].iter().copied().fold(30_f64, f64::max) / 100.).ceil() * 100.);
     let interval_values: Vec<f64> = lows.iter().chain(&highs).flatten().map(|v| v.log10()).collect();
     let mut xlim = limits(&interval_values, 0.03);
     xlim[0] = xlim[0].min(edges[0]);
@@ -193,11 +193,11 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
         }
         curve(&mut p, &xlim, &[0., 0.], "#777777", 0.6);
         for i in 0..bins {
-            let height = counts[j][i] * 30. / count_max;
+            let height = counts[j][i] * 30. / count_max[j];
             rect(&mut p, [edges[i], edges[i+1]], if j == 0 { [0., height] } else { [-height, 0.] }, color, 0.5);
         }
         let median = quantile(&xs[j], 0.5);
-        let histogram_height = counts[j].iter().copied().fold(0_f64, f64::max) * 30. / count_max;
+        let histogram_height = counts[j].iter().copied().fold(0_f64, f64::max) * 30. / count_max[j];
         let mut line = Line::new(vec![[median, 0.], [median, sign * histogram_height]], color);
         line.width_pt = 1.; line.dash = Some("2 1".into());
         p.push(Layer::Line(line));
@@ -205,7 +205,7 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
         let bounds: Vec<[f64;2]> = (0..xs[j].len()).map(|i|
             [lows[j][i].log10().min(xs[j][i]), highs[j][i].log10().max(xs[j][i])]).collect();
         p.errorbars(&points(&xs[j], &ys), Some(&bounds), None, color, 0.65, 2.4, 0.5)?;
-        dots(&mut p, &xs[j], &ys, color, 3.2, 0.9, true)?;
+        dots(&mut p, &xs[j], &ys, color, 1.4, 0.9, false)?;
         let name = if j == 0 { "Dynamic mass" } else { "RCS mass loss" };
         f.labels.push(Label::new(name, if j == 0 {44.} else {58.}, top + panel_height * if j == 0 {24. / 55.} else {31. / 55.}));
         f.panels.push(p);
@@ -214,10 +214,10 @@ fn mirrored_figure(h: &hdf5::File) -> Result<Figure> {
         sa.secondary_y = Some(SecondaryAxis::new(r"Initial speed ($\mathrm{km\,s^{-1}}$)", vec![0.,30.,60.], move |v| sign*v)?);
         f.panels.push(Panel::new(Rect::new(16., if j == 0 {top+2.*unit_mm} else {top+33.*unit_mm}, 56., 20.*unit_mm), sa));
     }
-    let mut ca = Axes::new(xlim, [-count_max, count_max], "", "Events / bin");
+    let mut ca = Axes::new(xlim, [-1., 1.], "", "Events / bin");
     ca.show_x_axis = false;
-    ca.yticks = (-4..=4).map(|i| count_max * i as f64 / 4.).collect();
-    ca.yticklabels = Some((-4_i32..=4).map(|i| format!("{:.0}", count_max * i.abs() as f64 / 4.)).collect());
+    ca.yticks = (-4..=4).map(|i| i as f64 / 4.).collect();
+    ca.yticklabels = Some((-4_i32..=4).map(|i| format!("{:.0}", count_max[usize::from(i < 0)] * i.abs() as f64 / 4.)).collect());
     f.panels.push(Panel::new(Rect::new(16., center-30.*unit_mm, 56., 60.*unit_mm), ca));
     Ok(f)
 }

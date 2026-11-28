@@ -17,7 +17,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     anyhow::ensure!(lon.len() == lat.len() && lon.len() == speed.len());
     anyhow::ensure!(visible.len() == x.len() * y.len() && visible.len() == effective.len());
     let article = ArticleLayout::new(184., 10.)?;
-    let mut f = article.figure(1., 101.)?;
+    let mut f = article.figure(1., 94.)?;
     let projection = Projection::Hammer {
         central_longitude: 270.,
         west_positive: true,
@@ -87,18 +87,23 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         panel.push(Layer::Line(meridian));
     }
     let max = effective.iter().copied().fold(0_f64, f64::max).floor() as usize;
-    let contour = Contour::new(
+    let levels: Vec<_> = if max >= 12 {
+        (3..=max).step_by(3).collect()
+    } else {
+        (1..=max).collect()
+    };
+    let contour = (max > 0).then(|| Contour::new(
         x,
         y,
         effective,
-        (1..=max).map(|i| i as f64).collect(),
+        levels.iter().map(|&i| i as f64).collect(),
         gray,
         false,
-    )?;
+    )).transpose()?;
     let mut contour_paths = Vec::new();
-    for level in 1..=max {
+    for level in levels {
         let mut candidates = Vec::new();
-        for path in contour.paths(level as f64) {
+        for path in contour.as_ref().unwrap().paths(level as f64) {
             let geographic: Vec<_> = path.iter().map(|p| [270. - p[0], p[1]]).collect();
             let mut line = projection.line(&geographic, "#929292");
             line.width_pt = 0.6;
@@ -109,7 +114,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         contour_paths.push((level, candidates));
     }
     panel.push(Layer::Line(frame));
-    let speed_scale = Scale::new([15., 71.], Normalization::Linear, ColorMap::turbo())?;
+    let speed_scale = Scale::new([15., 71.], Normalization::Linear, ColorMap::storm())?;
     let speed_id = f.scale(speed_scale.clone());
     for (longitude, value) in [(0., 0.), (180., 1.)] {
         let scale = Scale::new(
@@ -136,7 +141,8 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         let p = panel.data_to_figure(p);
         text_obstacles.push(Rect::new(p[0] - 1., p[1] - 1., 2., 2.));
     }
-    panel.scatter_colored(&points, &speed, &speed_scale, 4., 0.76, "white")?;
+    anyhow::ensure!(speed.iter().all(|v| v.is_finite()), "Nonfinite radiant speed");
+    panel.scatter_colored(&points, &speed, &speed_scale, 2.1, 0.72, "none")?;
     let p = panel.data_to_figure(projection.project([270., 0.]).unwrap());
     f.labels.push(Label::new(
         r"{\fontsize{16}{19}\selectfont$\otimes$}",
@@ -202,7 +208,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     f.labels.push(Label::new(
         r"Sun-centered ecliptic longitude, $\lambda-\lambda_\odot$",
         90.,
-        95.,
+        90.,
     ));
     let mut ylabel = Label::new(r"Ecliptic latitude, $\beta$", 5., 41.);
     ylabel.rotation = -90.;

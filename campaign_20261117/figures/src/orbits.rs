@@ -136,7 +136,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
                     shape: MarkerShape::Triangle, size_pt: 5., color: [0.13, 0.13, 0.13],
                 })?;
             } else {
-                dots(&mut p, &x, &y, color, 3., 0.82, false)?;
+                dots(&mut p, &x, &y, color, 2., 0.57, false)?;
             }
         }
         if index == 0 {
