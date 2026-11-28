@@ -148,16 +148,16 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
         let bounds: Vec<_> = indices.iter().map(|&i| [lo[i], hi[i]]).collect();
         if !pts.is_empty() {
             p.errorbars(&pts, horizontal.then_some(&bounds), (!horizontal).then_some(&bounds),
-                "#333333", 0.55, 1.3, 0.75)?;
+                "#555555", 0.4, 1., 0.35)?;
         }
     }
-    for complete in [false, true] {
-        let (x,y): (Vec<_>,Vec<_>) = good.iter().copied().filter(|&i|
-            (valid(xlo[i], xhi[i]) && valid(ylo[i], yhi[i])) == complete)
-            .map(|i| (power[i], sigma[i])).unzip();
-        if !x.is_empty() {
-            dots(&mut p, &x, &y, if complete { "#111111" } else { "#888888" }, 1.25, 0.7, false)?;
-        }
+    if event.link_exists("speed_km_s") {
+        let speeds = array(&event, "speed_km_s")?;
+        anyhow::ensure!(speeds.len() == power.len() && good.iter().all(|&i| speeds[i].is_finite()));
+        let values: Vec<_> = good.iter().map(|&i| speeds[i]).collect();
+        p.scatter_colored(&points(&x, &y), &values, &color, 1.5, 0.85, "none")?;
+    } else {
+        dots(&mut p, &x, &y, "#333333", 1.25, 0.7, false)?;
     }
     let mut l = Line::new(vec![[xr[0], xr[0]], [xr[1], xr[1]]], "#666666");
     l.dash = Some("2 1".into());
@@ -174,7 +174,7 @@ pub fn figure(h: &hdf5::File) -> Result<Figure> {
     f.colorbars.push(Colorbar::new(
         Rect::new(138., 10., 2., 53.),
         cid,
-        r"Mean speed ($\mathrm{km\,s^{-1}}$)",
+        r"Speed ($\mathrm{km\,s^{-1}}$)",
         vec![20., 40., 60.],
     ));
     article_figure(f, 1.)
