@@ -45,6 +45,16 @@ fn main() -> Result<()> {
     }
     p.push(Layer::Line(halo));
     p.push(Layer::Line(line));
+    f.labels.push(Label::new("Monostatic / tri-static at peak", 60., 60.));
+    for (i, values) in series.chunks_exact(bins.len()-1).enumerate() {
+        let (j, count) = values.iter().enumerate().max_by(|(_,a),(_,b)| a.total_cmp(b)).unwrap();
+        let mut label = Label::new(
+            format!("{}: {:.2}", ["Apr", "17 Nov", "21 Nov"][i], mono[j] / count),
+            60., 64. + 3.8*i as f64,
+        );
+        label.color = colors[i].into();
+        f.labels.push(label);
+    }
     let mut entries: Vec<_> = labels.into_iter().zip(colors)
         .map(|(date, color)| LegendEntry::line(date, color)).collect();
     entries.push(LegendEntry {
