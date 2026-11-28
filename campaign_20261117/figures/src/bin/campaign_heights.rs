@@ -25,9 +25,12 @@ fn main() -> Result<()> {
         pts.extend([[n*mono_scale,bins[j]],[n*mono_scale,bins[j+1]]]);
     }
     pts.push([0.,*bins.last().unwrap()]);
-    let mut line = Line::new(pts, "#555555");
+    let mut line = Line::new(pts, "#111111");
+    line.width_pt = 1.15;
     line.dash = Some("3 2".into());
-    p.push(Layer::Line(line));
+    let mut halo = Line::new(line.points.clone(), "#ffffff");
+    halo.width_pt = 2.1;
+    halo.dash = line.dash.clone();
     let labels = ["22 April 2024", "17 November 2026", "21 November 2026"];
     let colors = ["#0072b2","#d55e00","#009e73"];
     for (i, v) in series.chunks_exact(bins.len()-1).enumerate() {
@@ -40,12 +43,14 @@ fn main() -> Result<()> {
         line.width_pt = 1.25;
         p.push(Layer::Line(line));
     }
+    p.push(Layer::Line(halo));
+    p.push(Layer::Line(line));
     let mut entries: Vec<_> = labels.into_iter().zip(colors)
         .map(|(date, color)| LegendEntry::line(date, color)).collect();
     entries.push(LegendEntry {
         label: "All monostatic".into(),
         symbol: LegendSymbol::Line {
-            color: "#555555".into(), width_pt: 1., dash: Some("3 2".into()),
+            color: "#111111".into(), width_pt: 1.15, dash: Some("3 2".into()),
         },
     });
     let mut legend = Legend::new(entries);
